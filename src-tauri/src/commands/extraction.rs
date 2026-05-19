@@ -5,12 +5,14 @@
 
 use crate::commands::formation::APP_DIR;
 use crate::core::extraction::{
-    EntityExtractor, EntitySpan, GlinerExtractor, ModelPaths, ENTITY_LABELS,
+    default_relation_schema, extract_entities_and_relations, EntityExtractor, EntitySpan,
+    GlinerExtractor, ModelPaths, RelationSpan, ENTITY_LABELS,
 };
 use crate::core::formation_state::FormationState;
-use crate::core::memory::{MemoryHandle, UpsertedEntity};
+use crate::core::memory::{FactWriteInput, MemoryHandle, UpsertedEntity};
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
+use std::collections::HashMap;
 use tauri::State;
 
 #[derive(Debug, Serialize)]
@@ -64,6 +66,13 @@ pub struct UpsertedSpan {
     pub was_new: bool,
 }
 
+/// Minimum span confidence we'll accept into the store. Anything noisier
+/// creates entities you'd immediately want to discard from the staging tray.
+const MIN_ENTITY_CONFIDENCE: f32 = 0.5;
+/// Same for relations — RE is generally noisier than NER, so we set the bar
+/// a touch higher. Tunable per-tier in Phase 2 follow-ups.
+const MIN_RELATION_CONFIDENCE: f32 = 0.6;
+
 /// Run NER over `text` (using the canonical Sediment entity-type set), then
 /// upsert each detected entity into SurrealDB. Idempotent — re-running on the
 /// same text returns the same entity ids with `was_new = false`.
@@ -93,8 +102,7 @@ pub async fn extract_and_upsert(
 
     let mut results = Vec::with_capacity(flat.len());
     for span in flat {
-        // Skip noise: anything below 0.5 prob would create garbage entities.
-        if span.probability < 0.5 {
+        if span.probability < MIN_ENTITY_CONFIDENCE {
             continue;
         }
         let upserted: UpsertedEntity = store
@@ -109,4 +117,117 @@ pub async fn extract_and_upsert(
         });
     }
     Ok(results)
+}
+
+#[derive(Debug, Serialize)]
+pub struct FactWritten {
+    pub fact_id: String,
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExtractFactsResult {
+    pub entities: Vec<UpsertedSpan>,
+    pub facts: Vec<FactWritten>,
+    pub skipped_low_confidence: usize,
+    pub skipped_unresolved_entity: usize,
+}
+
+/// Full extraction pipeline: NER + RE on `text`, upsert every entity, write
+/// every relation as a bi-temporal fact. Returns a structured summary the
+/// chat pane can render. `source_chat_id` flows into each fact's provenance.
+#[tauri::command]
+pub async fn extract_facts(
+    text: String,
+    source_chat_id: String,
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+) -> AppResult<ExtractFactsResult> {
+    let formation_root = formation.require()?;
+    let app_dir = formation_root.join(APP_DIR);
+    let paths = ModelPaths::under_app_dir(&app_dir);
+    if !paths.exist() {
+        return Err(AppError::other(
+            crate::core::extraction::model_bootstrap_hint(&paths),
+        ));
+    }
+
+    let extractor = GlinerExtractor::new(paths);
+    let schema = default_relation_schema();
+    let (entities, relations): (Vec<EntitySpan>, Vec<RelationSpan>) =
+        extract_entities_and_relations(&extractor, &text, ENTITY_LABELS, &schema)?;
+
+    let memory_dir = app_dir.join("memory");
+    let store = memory.get_or_init(&memory_dir).await?;
+
+    let mut skipped_low_confidence = 0usize;
+    let mut skipped_unresolved_entity = 0usize;
+
+    // Phase 1: upsert entities, build a name → entity_id map for relation lookup.
+    let mut name_to_id: HashMap<String, String> = HashMap::new();
+    let mut upserted_spans: Vec<UpsertedSpan> = Vec::new();
+    for span in entities {
+        if span.probability < MIN_ENTITY_CONFIDENCE {
+            skipped_low_confidence += 1;
+            continue;
+        }
+        let upserted = store
+            .upsert_entity(&span.text, &span.class, Vec::new())
+            .await?;
+        name_to_id.insert(span.text.clone(), upserted.id.clone());
+        upserted_spans.push(UpsertedSpan {
+            text: span.text,
+            class: span.class,
+            probability: span.probability,
+            entity_id: upserted.id,
+            was_new: upserted.was_new,
+        });
+    }
+
+    // Phase 2: write facts. Both subject and object texts must resolve to
+    // entities we just upserted; otherwise the relation is unresolvable
+    // (e.g. RE proposed a subject that NER didn't surface).
+    let valid_from = chrono::Utc::now();
+    let mut facts_written: Vec<FactWritten> = Vec::new();
+    for rel in relations {
+        if rel.probability < MIN_RELATION_CONFIDENCE {
+            skipped_low_confidence += 1;
+            continue;
+        }
+        let Some(subject_id) = name_to_id.get(&rel.subject).cloned() else {
+            skipped_unresolved_entity += 1;
+            continue;
+        };
+        let Some(object_id) = name_to_id.get(&rel.object).cloned() else {
+            skipped_unresolved_entity += 1;
+            continue;
+        };
+        let fact_id = store
+            .relate_fact(FactWriteInput {
+                subject_id,
+                predicate: rel.predicate.clone(),
+                object_id,
+                valid_from,
+                source_chat_id: source_chat_id.clone(),
+                confidence: rel.probability as f64,
+            })
+            .await?;
+        facts_written.push(FactWritten {
+            fact_id,
+            subject: rel.subject,
+            predicate: rel.predicate,
+            object: rel.object,
+            confidence: rel.probability,
+        });
+    }
+
+    Ok(ExtractFactsResult {
+        entities: upserted_spans,
+        facts: facts_written,
+        skipped_low_confidence,
+        skipped_unresolved_entity,
+    })
 }
