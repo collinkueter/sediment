@@ -1,0 +1,80 @@
+[package]
+name = "sediment"
+version = "0.1.0"
+description = "Sediment — local-first AI note-taking with a temporal knowledge graph"
+authors = ["Collin Kueter"]
+edition = "2021"
+rust-version = "1.80"
+
+[lib]
+# The `_lib` suffix avoids name collisions on Windows; see https://github.com/rust-lang/cargo/issues/8519
+name = "sediment_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# --- Tauri ---
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-fs = "2"
+
+# --- Serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- Errors / logging ---
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+
+# --- Async runtime ---
+tokio = { version = "1", features = ["full"] }
+
+# --- Vault: file watcher and traversal ---
+notify = "6"
+notify-debouncer-full = "0.3"
+walkdir = "2"
+
+# --- Hardware probe ---
+sysinfo = "0.31"
+
+# --- Time ---
+chrono = { version = "0.4", features = ["serde"] }
+
+# --- SurrealDB (embedded; replaces FalkorDB + LanceDB + Graphiti per v0.2 spec) ---
+# kv-surrealkv = file-backed embedded store. default-features = false drops the
+# client/server protocol layers we don't need in-process.
+surrealdb = { version = "3.0", default-features = false, features = ["kv-surrealkv"] }
+
+# --- Ollama (M6) ---
+ollama-rs = { version = "0.2", features = ["stream"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# --- Entity/relation extraction (Phase 2) ---
+# Spec v0.2 mentioned graphrag-rs but on inspection that crate is a 50KLOC
+# opinionated framework that brings LanceDB back via persistent-storage.
+# gline-rs is the focused GLiNER inference engine — pure Rust + ONNX, supports
+# both NER and (via multitask GLiNER models) relation extraction.
+gline-rs = "1.0"
+# orp = ONNX runtime pipeline. gline-rs depends on it and exposes APIs that
+# take orp's `RuntimeParameters`, so we depend on it directly to construct one.
+orp = "0.9"
+
+# --- Utility ---
+uuid = { version = "1", features = ["v4", "serde"] }
+futures = "0.3"
+async-trait = "0.1"
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
