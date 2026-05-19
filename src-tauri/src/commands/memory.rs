@@ -5,7 +5,7 @@
 
 use crate::commands::formation::APP_DIR;
 use crate::core::formation_state::FormationState;
-use crate::core::memory::{ChunkHit, MemoryHandle, NoteChunkInput};
+use crate::core::memory::{ChunkHit, FactRow, FactWriteInput, MemoryHandle, NoteChunkInput};
 use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
@@ -208,6 +208,76 @@ pub async fn search_notes(
 pub struct IndexNoteResult {
     pub note_path: String,
     pub chunk_count: usize,
+}
+
+/// JS-facing payload for `relate_fact_command`. Mirrors `FactWriteInput` but
+/// expresses time as ISO-8601 strings since serde_json round-trips DateTime
+/// through RFC3339 anyway and this is friendlier to construct from TS.
+#[derive(Debug, Deserialize)]
+pub struct RelateFactPayload {
+    pub subject_id: String,
+    pub predicate: String,
+    pub object_id: String,
+    /// ISO-8601 / RFC3339. If `None`, the server uses `now()`.
+    #[serde(default)]
+    pub valid_from: Option<String>,
+    pub source_chat_id: String,
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
+}
+
+fn default_confidence() -> f64 {
+    1.0
+}
+
+#[derive(Debug, Serialize)]
+pub struct RelateFactResult {
+    pub fact_id: String,
+}
+
+/// Write a bi-temporal fact edge with supersession. JS-callable wrapper over
+/// `MemoryStore::relate_fact`. Returns the new fact's record id as a string.
+#[tauri::command]
+pub async fn relate_fact_command(
+    payload: RelateFactPayload,
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+) -> AppResult<RelateFactResult> {
+    let formation_root = formation.require()?;
+    let memory_dir = formation_root.join(APP_DIR).join("memory");
+    let store = memory.get_or_init(&memory_dir).await?;
+
+    let valid_from = match payload.valid_from {
+        Some(s) => chrono::DateTime::parse_from_rfc3339(&s)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .map_err(|e| AppError::other(format!("parse valid_from: {e}")))?,
+        None => chrono::Utc::now(),
+    };
+
+    let fact_id = store
+        .relate_fact(FactWriteInput {
+            subject_id: payload.subject_id,
+            predicate: payload.predicate,
+            object_id: payload.object_id,
+            valid_from,
+            source_chat_id: payload.source_chat_id,
+            confidence: payload.confidence,
+        })
+        .await?;
+    Ok(RelateFactResult { fact_id })
+}
+
+/// All currently-valid facts about a subject (valid_to IS NONE).
+#[tauri::command]
+pub async fn current_facts(
+    subject_id: String,
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+) -> AppResult<Vec<FactRow>> {
+    let formation_root = formation.require()?;
+    let memory_dir = formation_root.join(APP_DIR).join("memory");
+    let store = memory.get_or_init(&memory_dir).await?;
+    store.current_facts(&subject_id).await
 }
 
 /// Split markdown into chunks of `CHUNK_MAX_CHARS` or less, preferring

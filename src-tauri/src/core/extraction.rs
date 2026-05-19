@@ -19,6 +19,21 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::sync::OnceCell;
 
+/// Canonical entity type labels passed to GLiNER and stored in SurrealDB's
+/// `entity.entity_type` (matches the schema ASSERT in core::memory). Keeping
+/// these in one place means schema and extractor never disagree.
+pub const ENTITY_LABELS: &[&str] = &[
+    "person",
+    "organization",
+    "meeting",
+    "project",
+    "task",
+    "topic",
+    "location",
+    "date",
+    "event",
+];
+
 /// A single entity span returned by the NER model.
 #[derive(Debug, Clone, Serialize)]
 pub struct EntitySpan {

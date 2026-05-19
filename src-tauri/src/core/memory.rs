@@ -6,7 +6,7 @@ use crate::error::{AppError, AppResult};
 use std::path::Path;
 use std::sync::Arc;
 use surrealdb::engine::local::{Db, SurrealKv};
-use surrealdb::types::SurrealValue;
+use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
 use surrealdb::Surreal;
 use tokio::sync::OnceCell;
 
@@ -79,6 +79,207 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Upsert an entity by canonical_name + aliases.
+    ///
+    /// Resolution order:
+    /// 1. Match on `canonical_name = $name`.
+    /// 2. Match on `$name IN aliases`.
+    ///
+    /// On hit, merge any new aliases. On miss, CREATE with a slug-derived id
+    /// (`entity:bill_gates`), suffixed `_2`/`_3`... if the slug collides with
+    /// an unrelated entity. Idempotent for repeat calls with the same name.
+    pub async fn upsert_entity(
+        &self,
+        canonical_name: &str,
+        entity_type: &str,
+        aliases: Vec<String>,
+    ) -> AppResult<UpsertedEntity> {
+        // 1. Lookup by canonical_name OR alias.
+        let mut res = self
+            .db
+            .query(
+                "SELECT id, canonical_name, aliases FROM entity \
+                 WHERE canonical_name = $name OR $name IN aliases;",
+            )
+            .bind(("name", canonical_name.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("upsert lookup: {e}")))?;
+        let found: Vec<ExistingEntity> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("upsert take: {e}")))?;
+
+        if let Some(existing) = found.into_iter().next() {
+            // Merge new aliases (skipping the canonical_name itself and ones already present).
+            let new_aliases: Vec<String> = aliases
+                .into_iter()
+                .filter(|a| a != &existing.canonical_name && !existing.aliases.contains(a))
+                .collect();
+            if !new_aliases.is_empty() {
+                self.db
+                    .query("UPDATE $id SET aliases += $extra;")
+                    .bind(("id", existing.id.clone()))
+                    .bind(("extra", new_aliases))
+                    .await
+                    .map_err(|e| AppError::other(format!("upsert merge: {e}")))?
+                    .check()
+                    .map_err(|e| AppError::other(format!("upsert merge check: {e}")))?;
+            }
+            return Ok(UpsertedEntity {
+                id: record_id_to_string(&existing.id),
+                canonical_name: existing.canonical_name,
+                was_new: false,
+            });
+        }
+
+        // 2. No existing entity — pick a free slug.
+        let base_slug = slugify(canonical_name);
+        if base_slug.is_empty() {
+            return Err(AppError::other(format!(
+                "cannot slugify empty entity name: {canonical_name:?}"
+            )));
+        }
+        let final_slug = self.pick_available_slug(&base_slug).await?;
+        // CREATE with literal slug in the record id (binding doesn't work for ids in DDL position).
+        let sql = format!(
+            "CREATE entity:{final_slug} SET \
+             entity_type = $entity_type, \
+             canonical_name = $canonical_name, \
+             aliases = $aliases, \
+             canonical_name_history = [];"
+        );
+        self.db
+            .query(sql)
+            .bind(("entity_type", entity_type.to_string()))
+            .bind(("canonical_name", canonical_name.to_string()))
+            .bind(("aliases", aliases))
+            .await
+            .map_err(|e| AppError::other(format!("create entity: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("create entity check: {e}")))?;
+
+        Ok(UpsertedEntity {
+            id: format!("entity:{final_slug}"),
+            canonical_name: canonical_name.to_string(),
+            was_new: true,
+        })
+    }
+
+    /// Returns `base` if no row with that id exists, otherwise tries
+    /// `base_2`, `base_3`, ... up to 9 attempts before giving up.
+    async fn pick_available_slug(&self, base: &str) -> AppResult<String> {
+        for n in 1..10 {
+            let candidate = if n == 1 {
+                base.to_string()
+            } else {
+                format!("{base}_{n}")
+            };
+            let exists = self.entity_exists(&candidate).await?;
+            if !exists {
+                return Ok(candidate);
+            }
+        }
+        Err(AppError::other(format!(
+            "could not find free slug for base {base:?} after 9 attempts"
+        )))
+    }
+
+    async fn entity_exists(&self, slug: &str) -> AppResult<bool> {
+        let sql = format!("SELECT id FROM entity:{slug};");
+        let mut res = self
+            .db
+            .query(sql)
+            .await
+            .map_err(|e| AppError::other(format!("entity_exists: {e}")))?;
+        let rows: Vec<ExistingEntityIdOnly> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("entity_exists take: {e}")))?;
+        Ok(!rows.is_empty())
+    }
+
+    /// Write a bi-temporal fact edge from `subject_id` to `object_id`.
+    ///
+    /// Supersession algorithm (atomic, in one SurrealDB transaction):
+    /// 1. For any existing fact with the same `(subject, predicate)`,
+    ///    `valid_to IS NONE`, AND a different `object`, set its
+    ///    `valid_to = $valid_from`. History is preserved; the older edge
+    ///    is still queryable for point-in-time reads.
+    /// 2. RELATE the new edge with `valid_to = NONE`.
+    ///
+    /// Confidence threshold for silent supersession is enforced by the
+    /// caller: when both old and new have `confidence >= 0.9`, supersede
+    /// silently; otherwise the caller emits a `fact-warning` event for
+    /// the Phase 3 staging tray to surface.
+    ///
+    /// Returns the new fact's record id as a `"fact:..."` string.
+    pub async fn relate_fact(&self, fact: FactWriteInput) -> AppResult<String> {
+        // Strip "entity:" prefix if present — we splice the raw key into the
+        // RELATE statement to avoid binding-position limits.
+        let subject_key = fact
+            .subject_id
+            .strip_prefix("entity:")
+            .unwrap_or(&fact.subject_id);
+        let object_key = fact
+            .object_id
+            .strip_prefix("entity:")
+            .unwrap_or(&fact.object_id);
+
+        // Two-statement batch: supersede prior current facts with a different
+        // object, then RELATE the new edge. SurrealDB runs statements in a
+        // multi-statement query within an implicit transaction for the batch.
+        let sql = format!(
+            "UPDATE fact SET valid_to = $valid_from \
+               WHERE in = entity:{subject_key} \
+                 AND predicate = $predicate \
+                 AND out != entity:{object_key} \
+                 AND valid_to IS NONE; \
+             RELATE entity:{subject_key} -> fact -> entity:{object_key} \
+               SET predicate = $predicate, \
+                   valid_from = $valid_from, \
+                   valid_to = NONE, \
+                   source_chat_id = $source_chat_id, \
+                   confidence = $confidence;"
+        );
+        let mut res = self
+            .db
+            .query(sql)
+            .bind(("predicate", fact.predicate))
+            .bind(("valid_from", fact.valid_from))
+            .bind(("source_chat_id", fact.source_chat_id))
+            .bind(("confidence", fact.confidence))
+            .await
+            .map_err(|e| AppError::other(format!("relate_fact: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("relate_fact check: {e}")))?;
+
+        // Statement 0 = UPDATE supersession, statement 1 = RELATE the new edge.
+        let rows: Vec<NewFactRow> = res
+            .take(1)
+            .map_err(|e| AppError::other(format!("relate_fact take new: {e}")))?;
+        let fact_row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::other("RELATE returned no rows"))?;
+        Ok(record_id_to_string(&fact_row.id))
+    }
+
+    /// Current facts about an entity: edges where `valid_to IS NONE`.
+    pub async fn current_facts(&self, subject_id: &str) -> AppResult<Vec<FactRow>> {
+        let key = subject_id.strip_prefix("entity:").unwrap_or(subject_id);
+        let sql = format!(
+            "SELECT id, in AS subject, out AS object, predicate, valid_from, valid_to, \
+             source_chat_id, confidence \
+             FROM fact \
+             WHERE in = entity:{key} AND valid_to IS NONE;"
+        );
+        let mut res = self
+            .db
+            .query(sql)
+            .await
+            .map_err(|e| AppError::other(format!("current_facts: {e}")))?;
+        res.take(0)
+            .map_err(|e| AppError::other(format!("current_facts take: {e}")))
+    }
+
     /// Top-K similarity search over `note_chunk.embedding`. Uses the HNSW
     /// index defined in the schema (cosine distance).
     pub async fn search_chunks(&self, embedding: Vec<f32>, k: usize) -> AppResult<Vec<ChunkHit>> {
@@ -138,6 +339,93 @@ pub struct ChunkHit {
     pub distance: f32,
 }
 
+/// Surfaced to JS as a flat string id. The id stays stable across renames —
+/// the canonical_name field can change; the slug-derived record id doesn't.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpsertedEntity {
+    /// Full SurrealDB record id, e.g. `entity:bill_gates`.
+    pub id: String,
+    pub canonical_name: String,
+    /// `true` if this call created the row; `false` if it matched an existing row.
+    pub was_new: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+struct ExistingEntity {
+    pub id: RecordId,
+    pub canonical_name: String,
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+struct ExistingEntityIdOnly {
+    #[allow(dead_code)]
+    pub id: RecordId,
+}
+
+/// Caller-supplied data for a fact write. Strings instead of typed enums
+/// because the predicate vocabulary lives in `core::extraction` and may
+/// expand without recompiling the storage layer.
+#[derive(Debug, Clone)]
+pub struct FactWriteInput {
+    pub subject_id: String,
+    pub predicate: String,
+    pub object_id: String,
+    pub valid_from: chrono::DateTime<chrono::Utc>,
+    pub source_chat_id: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+struct NewFactRow {
+    pub id: RecordId,
+}
+
+/// Shape returned by `current_facts` and similar fact queries. The SQL aliases
+/// the relation table's implicit `in`/`out` columns to `subject`/`object` so
+/// we sidestep raw-identifier deserialisation in the SurrealValue derive.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, SurrealValue)]
+pub struct FactRow {
+    pub id: RecordId,
+    pub subject: RecordId,
+    pub object: RecordId,
+    pub predicate: String,
+    pub valid_from: chrono::DateTime<chrono::Utc>,
+    pub valid_to: Option<chrono::DateTime<chrono::Utc>>,
+    pub source_chat_id: String,
+    pub confidence: f64,
+}
+
+/// Format a SurrealDB RecordId as the `table:key` string we hand back to JS.
+/// We only ever produce string-keyed ids in this app, so the other RecordIdKey
+/// variants are best-effort fallbacks.
+fn record_id_to_string(rid: &RecordId) -> String {
+    let key = match &rid.key {
+        RecordIdKey::String(s) => s.clone(),
+        RecordIdKey::Number(n) => n.to_string(),
+        other => format!("{other:?}"),
+    };
+    format!("{}:{}", rid.table.as_str(), key)
+}
+
+/// Stable slug for use as the SurrealDB record id after `entity:`. Lowercases,
+/// collapses runs of non-alphanumerics into a single underscore, and trims.
+/// `"Bill Gates"` → `"bill_gates"`; `"J.P. Morgan & Co."` → `"j_p_morgan_co"`.
+pub fn slugify(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut last_was_sep = true; // suppress leading separator
+    for c in input.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            last_was_sep = false;
+        } else if !last_was_sep {
+            out.push('_');
+            last_was_sep = true;
+        }
+    }
+    out.trim_end_matches('_').to_string()
+}
+
 /// Apply once at startup. All DDL is `IF NOT EXISTS` so re-running is safe.
 /// Bumping the schema = additional `DEFINE ... IF NOT EXISTS` blocks below.
 const SCHEMA_SQL: &str = r#"
@@ -148,6 +436,7 @@ DEFINE FIELD IF NOT EXISTS entity_type    ON entity TYPE string
                       'task','topic','location','date','event'];
 DEFINE FIELD IF NOT EXISTS canonical_name ON entity TYPE string;
 DEFINE FIELD IF NOT EXISTS aliases        ON entity TYPE array<string> DEFAULT [];
+DEFINE FIELD IF NOT EXISTS canonical_name_history ON entity TYPE array<string> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS note_path      ON entity TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS embedding      ON entity TYPE option<array<float>>;
 DEFINE FIELD IF NOT EXISTS created_at     ON entity TYPE datetime VALUE time::now() READONLY;
@@ -338,5 +627,210 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// upsert_entity must be idempotent: same canonical_name → same id and
+    /// `was_new = false` on the second call. New aliases on a second call
+    /// must merge into the existing row.
+    #[tokio::test]
+    async fn entity_upsert_is_idempotent_and_merges_aliases() {
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        let first = store
+            .upsert_entity("Bill Gates", "person", vec!["Bill".into()])
+            .await
+            .expect("first upsert");
+        assert!(first.was_new, "first call should create");
+        assert_eq!(first.id, "entity:bill_gates");
+
+        // Same canonical_name again — should match, not create.
+        let second = store
+            .upsert_entity("Bill Gates", "person", vec!["William".into()])
+            .await
+            .expect("second upsert");
+        assert!(!second.was_new, "second call must reuse existing entity");
+        assert_eq!(second.id, first.id);
+
+        // Aliases merged: confirm William landed.
+        let mut res = store
+            .handle()
+            .query("SELECT aliases FROM entity:bill_gates;")
+            .await
+            .expect("query aliases");
+        let aliases: Vec<Vec<String>> = res.take("aliases").expect("take aliases");
+        let first_row = aliases.first().expect("one row").clone();
+        assert!(first_row.contains(&"Bill".to_string()));
+        assert!(first_row.contains(&"William".to_string()));
+
+        // Lookup by alias must resolve to the same id (third call uses alias only).
+        let by_alias = store
+            .upsert_entity("William", "person", vec![])
+            .await
+            .expect("alias upsert");
+        assert!(!by_alias.was_new, "alias lookup must reuse entity");
+        assert_eq!(by_alias.id, first.id);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// relate_fact must atomically supersede prior current facts with the
+    /// same (subject, predicate) and a different object. Both rows stay
+    /// queryable (history preserved); only the latest has valid_to = NONE.
+    #[tokio::test]
+    async fn relate_fact_supersedes_and_preserves_history() {
+        use chrono::TimeZone;
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        // Three entities to play with.
+        let john = store
+            .upsert_entity("John Smith", "person", vec![])
+            .await
+            .expect("john")
+            .id;
+        let acme = store
+            .upsert_entity("Acme Corp", "organization", vec![])
+            .await
+            .expect("acme")
+            .id;
+        let beta = store
+            .upsert_entity("Beta Corp", "organization", vec![])
+            .await
+            .expect("beta")
+            .id;
+
+        // John worked at Acme starting 2024-01-01.
+        let acme_from = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        store
+            .relate_fact(FactWriteInput {
+                subject_id: john.clone(),
+                predicate: "works_at".into(),
+                object_id: acme.clone(),
+                valid_from: acme_from,
+                source_chat_id: "msg_001".into(),
+                confidence: 0.95,
+            })
+            .await
+            .expect("write acme fact");
+
+        // Then moved to Beta on 2026-03-15.
+        let beta_from = chrono::Utc.with_ymd_and_hms(2026, 3, 15, 0, 0, 0).unwrap();
+        store
+            .relate_fact(FactWriteInput {
+                subject_id: john.clone(),
+                predicate: "works_at".into(),
+                object_id: beta.clone(),
+                valid_from: beta_from,
+                source_chat_id: "msg_017".into(),
+                confidence: 0.95,
+            })
+            .await
+            .expect("write beta fact");
+
+        // Current facts about John should be exactly one row: works_at -> Beta.
+        let current = store.current_facts(&john).await.expect("current");
+        assert_eq!(
+            current.len(),
+            1,
+            "expected exactly one current fact, got {current:?}"
+        );
+        assert_eq!(current[0].predicate, "works_at");
+        assert_eq!(record_id_to_string(&current[0].object), beta);
+
+        // Total fact-edges should still be 2 (history preserved).
+        let mut res = store
+            .handle()
+            .query("SELECT count() AS c FROM fact GROUP ALL;")
+            .await
+            .expect("count facts");
+        let counts: Vec<i64> = res.take("c").expect("take c");
+        assert_eq!(counts.first().copied(), Some(2), "history not preserved");
+
+        // The old Acme edge should now have valid_to set to beta_from. Use
+        // literal IDs since string binds don't compare equal to record refs.
+        let john_key = john.strip_prefix("entity:").unwrap();
+        let acme_key = acme.strip_prefix("entity:").unwrap();
+        let sql = format!(
+            "SELECT valid_to FROM fact \
+             WHERE in = entity:{john_key} AND out = entity:{acme_key};"
+        );
+        let mut res = store.handle().query(sql).await.expect("query old fact");
+        let valid_tos: Vec<Option<chrono::DateTime<chrono::Utc>>> =
+            res.take("valid_to").expect("take valid_to");
+        assert_eq!(
+            valid_tos.first().and_then(|v| *v),
+            Some(beta_from),
+            "old Acme edge should have valid_to backfilled"
+        );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A second write of the same (subject, predicate, object) should NOT
+    /// supersede the existing one — same object means no contradiction.
+    /// Currently relate_fact still creates a new edge (history of the same
+    /// fact restated) — verify the supersession only fires for object changes.
+    #[tokio::test]
+    async fn relate_fact_does_not_supersede_same_object() {
+        use chrono::TimeZone;
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        let john = store
+            .upsert_entity("John", "person", vec![])
+            .await
+            .expect("john")
+            .id;
+        let acme = store
+            .upsert_entity("Acme", "organization", vec![])
+            .await
+            .expect("acme")
+            .id;
+
+        let t1 = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let t2 = chrono::Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+        store
+            .relate_fact(FactWriteInput {
+                subject_id: john.clone(),
+                predicate: "works_at".into(),
+                object_id: acme.clone(),
+                valid_from: t1,
+                source_chat_id: "msg_001".into(),
+                confidence: 0.95,
+            })
+            .await
+            .expect("first");
+        store
+            .relate_fact(FactWriteInput {
+                subject_id: john.clone(),
+                predicate: "works_at".into(),
+                object_id: acme.clone(),
+                valid_from: t2,
+                source_chat_id: "msg_002".into(),
+                confidence: 0.95,
+            })
+            .await
+            .expect("second");
+
+        // The first edge should still be current (valid_to IS NONE) because the
+        // second is the same object; supersession SQL excludes same-object.
+        let current = store.current_facts(&john).await.expect("current");
+        assert_eq!(
+            current.len(),
+            2,
+            "both restatements of same fact remain current"
+        );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn slugify_handles_punctuation_and_spaces() {
+        assert_eq!(slugify("Bill Gates"), "bill_gates");
+        assert_eq!(slugify("J.P. Morgan & Co."), "j_p_morgan_co");
+        assert_eq!(slugify("Q2 Planning"), "q2_planning");
+        assert_eq!(slugify("  leading and trailing  "), "leading_and_trailing");
+        assert_eq!(slugify("---"), "");
     }
 }
