@@ -193,8 +193,8 @@ pub fn model_bootstrap_hint(paths: &ModelPaths) -> String {
         "GLiNER model files not found at {}.\n\
          Bootstrap once:\n  \
          mkdir -p {root}/onnx && cd {root} && \\\n  \
-         curl -L -o tokenizer.json https://huggingface.co/knowledgator/gliner-multitask-large-v0.5/resolve/main/tokenizer.json && \\\n  \
-         curl -L -o onnx/model.onnx https://huggingface.co/knowledgator/gliner-multitask-large-v0.5/resolve/main/onnx/model.onnx",
+         curl -L -o tokenizer.json https://huggingface.co/onnx-community/gliner-multitask-large-v0.5/resolve/main/tokenizer.json && \\\n  \
+         curl -L -o onnx/model.onnx https://huggingface.co/onnx-community/gliner-multitask-large-v0.5/resolve/main/onnx/model.onnx",
         paths.root.display(),
         root = paths.root.display()
     )

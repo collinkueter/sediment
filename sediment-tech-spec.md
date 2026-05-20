@@ -963,7 +963,7 @@ Things that need resolution during prototyping:
 - SurrealKV (embedded backend): https://github.com/surrealdb/surrealkv
 - gline-rs (fbilhaut): https://github.com/fbilhaut/gline-rs
 - GLiNER: https://github.com/urchade/GLiNER
-- Multitask GLiNER model (used here): https://huggingface.co/knowledgator/gliner-multitask-large-v0.5
+- Multitask GLiNER model (ONNX, used here): https://huggingface.co/onnx-community/gliner-multitask-large-v0.5
 - Ollama: https://ollama.com/
 - Tauri: https://tauri.app/
 - CodeMirror 6: https://codemirror.net/

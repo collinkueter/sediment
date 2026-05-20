@@ -37,14 +37,14 @@ ollama pull nomic-embed-text      # embedding model (M7)
 
 ## Optional: GLiNER extraction models (Phase 2)
 
-Deterministic entity + relation extraction uses [`gline-rs`](https://github.com/fbilhaut/gline-rs) loading the [multitask GLiNER ONNX model](https://huggingface.co/knowledgator/gliner-multitask-large-v0.5). Files are ~500MB and are not bundled. Open your formation, then:
+Deterministic entity + relation extraction uses [`gline-rs`](https://github.com/fbilhaut/gline-rs) loading the [multitask GLiNER ONNX model](https://huggingface.co/onnx-community/gliner-multitask-large-v0.5). Files are ~500MB and are not bundled. Open your formation, then:
 
 ```bash
 cd <formation>/.chat-notes/models
 mkdir -p gliner-multitask-large-v0.5/onnx
 cd gliner-multitask-large-v0.5
-curl -L -o tokenizer.json   https://huggingface.co/knowledgator/gliner-multitask-large-v0.5/resolve/main/tokenizer.json
-curl -L -o onnx/model.onnx  https://huggingface.co/knowledgator/gliner-multitask-large-v0.5/resolve/main/onnx/model.onnx
+curl -L -o tokenizer.json   https://huggingface.co/onnx-community/gliner-multitask-large-v0.5/resolve/main/tokenizer.json
+curl -L -o onnx/model.onnx  https://huggingface.co/onnx-community/gliner-multitask-large-v0.5/resolve/main/onnx/model.onnx
 ```
 
 Or use the helper script: `docs/scripts/download-gliner.sh <formation-path>`.

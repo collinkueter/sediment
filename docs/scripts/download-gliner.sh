@@ -23,8 +23,8 @@ fi
 MODEL_DIR="$FORMATION/.chat-notes/models/gliner-multitask-large-v0.5"
 mkdir -p "$MODEL_DIR/onnx"
 
-TOKENIZER_URL="https://huggingface.co/knowledgator/gliner-multitask-large-v0.5/resolve/main/tokenizer.json"
-ONNX_URL="https://huggingface.co/knowledgator/gliner-multitask-large-v0.5/resolve/main/onnx/model.onnx"
+TOKENIZER_URL="https://huggingface.co/onnx-community/gliner-multitask-large-v0.5/resolve/main/tokenizer.json"
+ONNX_URL="https://huggingface.co/onnx-community/gliner-multitask-large-v0.5/resolve/main/onnx/model.onnx"
 
 if [[ -f "$MODEL_DIR/tokenizer.json" ]]; then
   echo "tokenizer.json already present, skipping"
