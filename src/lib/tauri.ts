@@ -98,6 +98,16 @@ export interface ChatWriteResult {
   staged: StagingEntry | null;
 }
 
+export interface CommitResult {
+  staging_id: string;
+  /** Formation-relative paths of the notes written to disk. */
+  committed_notes: string[];
+  /** Record ids of the facts written to the graph (undo deletes exactly these). */
+  new_fact_ids: string[];
+  /** The still-staged entry when only some notes were kept, else null. */
+  remaining: StagingEntry | null;
+}
+
 export interface RetrievedSource {
   note_path: string;
   chunk_idx: number;
@@ -160,4 +170,10 @@ export const tauri = {
   listStaging: () => invoke<StagingEntry[]>("list_staging"),
   getStaging: (id: string) => invoke<StagingEntry>("get_staging", { id }),
   discardStaging: (id: string) => invoke<void>("discard_staging", { id }),
+  updateStaging: (entry: StagingEntry) => invoke<void>("update_staging", { entry }),
+  /** Commit a staging entry. Pass `notePaths` to keep only those notes. */
+  keepStaging: (id: string, notePaths?: string[]) =>
+    invoke<CommitResult>("keep_staging", { id, notePaths: notePaths ?? null }),
+  /** Revert a commit within the undo window: restores notes, deletes facts. */
+  undoCommit: (stagingId: string) => invoke<void>("undo_commit", { stagingId }),
 };

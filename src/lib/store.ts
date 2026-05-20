@@ -1,4 +1,4 @@
-import { type FormationNote, tauri } from "@/lib/tauri";
+import { type FormationNote, type StagingEntry, tauri } from "@/lib/tauri";
 import { create } from "zustand";
 
 export type ChatRole = "user" | "assistant" | "system";
@@ -54,6 +54,76 @@ export const useUiStore = create<UiState>((set) => ({
   stagingTrayOpen: false,
   toggleStagingTray: () => set((s) => ({ stagingTrayOpen: !s.stagingTrayOpen })),
   setStagingTrayOpen: (open) => set({ stagingTrayOpen: open }),
+}));
+
+interface StagingState {
+  /** Pending staging entries (one per chat_write batch), oldest first. */
+  entries: StagingEntry[];
+  /** Re-list staged entries from disk. */
+  refresh: () => Promise<void>;
+  /** Discard a whole entry — pure no-op on notes and graph. */
+  discardEntry: (id: string) => Promise<void>;
+  /** Drop one note change; discards the entry if it was the last change. */
+  discardChange: (entryId: string, notePath: string) => Promise<void>;
+  /** Commit a whole entry to notes + graph. */
+  keepEntry: (id: string) => Promise<void>;
+  /** Commit a single note change, leaving the rest of the entry staged. */
+  keepChange: (entryId: string, notePath: string) => Promise<void>;
+}
+
+export const useStagingStore = create<StagingState>((set, get) => ({
+  entries: [],
+
+  async refresh() {
+    try {
+      set({ entries: await tauri.listStaging() });
+    } catch (e) {
+      console.warn("staging refresh failed:", e);
+    }
+  },
+
+  async discardEntry(id) {
+    try {
+      await tauri.discardStaging(id);
+    } catch (e) {
+      console.warn("discard staging entry failed:", e);
+    }
+    await get().refresh();
+  },
+
+  async discardChange(entryId, notePath) {
+    const entry = get().entries.find((e) => e.id === entryId);
+    if (!entry) return;
+    const remaining = entry.changes.filter((c) => c.note_path !== notePath);
+    try {
+      if (remaining.length === 0) {
+        await tauri.discardStaging(entryId);
+      } else {
+        await tauri.updateStaging({ ...entry, changes: remaining });
+      }
+    } catch (e) {
+      console.warn("discard note change failed:", e);
+    }
+    await get().refresh();
+  },
+
+  async keepEntry(id) {
+    try {
+      await tauri.keepStaging(id);
+    } catch (e) {
+      console.warn("keep staging entry failed:", e);
+    }
+    await get().refresh();
+  },
+
+  async keepChange(entryId, notePath) {
+    try {
+      await tauri.keepStaging(entryId, [notePath]);
+    } catch (e) {
+      console.warn("keep note change failed:", e);
+    }
+    await get().refresh();
+  },
 }));
 
 interface FormationState {
@@ -134,7 +204,14 @@ export const useFormationStore = create<FormationState>((set, get) => ({
   },
 
   async openNote(relativePath) {
-    const content = await tauri.readNote(relativePath);
+    let content = "";
+    try {
+      content = await tauri.readNote(relativePath);
+    } catch {
+      // A staged "create" has no file on disk yet — show an empty original so
+      // the diff view (P3-M5) can render every line as an insertion.
+      content = "";
+    }
     set({
       currentNotePath: relativePath,
       currentNoteContent: content,

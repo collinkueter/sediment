@@ -36,3 +36,12 @@ pub fn discard_staging(id: String, formation: State<'_, FormationState>) -> AppR
     let root = formation.require()?;
     staging::remove(&staging_dir(&root), &id)
 }
+
+/// Overwrite a staging entry's JSON with `entry`. The tray uses this to drop an
+/// individual note change, persist a reviewer's diff edits, or record a
+/// conflict resolution. Still pre-commit — nothing touches the graph or notes.
+#[tauri::command]
+pub fn update_staging(entry: StagingEntry, formation: State<'_, FormationState>) -> AppResult<()> {
+    let root = formation.require()?;
+    staging::write(&staging_dir(&root), &entry)
+}

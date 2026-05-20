@@ -5,7 +5,7 @@ import { IndexProgress } from "@/components/IndexProgress";
 import { NoteViewer } from "@/components/NoteViewer";
 import { Onboarding } from "@/components/Onboarding";
 import { StagingTray } from "@/components/StagingTray";
-import { useFormationStore } from "@/lib/store";
+import { useFormationStore, useStagingStore, useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
@@ -21,6 +21,7 @@ export default function App() {
   const restore = useFormationStore((s) => s.restore);
   const handleExternalChange = useFormationStore((s) => s.handleExternalChange);
   const formationPath = useFormationStore((s) => s.formationPath);
+  const refreshStaging = useStagingStore((s) => s.refresh);
 
   useEffect(() => {
     tauri
@@ -49,6 +50,21 @@ export default function App() {
       unlistenP.then((unlisten) => unlisten()).catch(() => {});
     };
   }, [handleExternalChange]);
+
+  useEffect(() => {
+    // Load any pending staging entries for the open formation, and refresh +
+    // surface the tray whenever a new Write-mode batch is staged.
+    if (formationPath) {
+      refreshStaging().catch(() => {});
+    }
+    const unlistenP = listen("staging-created", () => {
+      refreshStaging().catch(() => {});
+      useUiStore.getState().setStagingTrayOpen(true);
+    });
+    return () => {
+      unlistenP.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [formationPath, refreshStaging]);
 
   // Show onboarding until the user finishes it. `null` = still loading state from disk.
   if (onboardingComplete === false) {

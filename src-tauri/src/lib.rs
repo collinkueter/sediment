@@ -96,6 +96,7 @@ pub fn run() {
             commands::staging::list_staging,
             commands::staging::get_staging,
             commands::staging::discard_staging,
+            commands::staging::update_staging,
             commands::ollama::ollama_status,
             commands::ollama::ollama_ensure_running,
             commands::ollama::ollama_list_models,
