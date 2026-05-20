@@ -156,6 +156,77 @@ pub fn remove(staging_dir: &Path, id: &str) -> AppResult<()> {
     }
 }
 
+// --- Commit snapshots + undo records (P3-M6) ---
+
+/// One note touched by a commit, recorded so the commit can be undone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UndoNote {
+    pub note_path: String,
+    /// True when the commit created this note — undo deletes it rather than
+    /// restoring a snapshot (there was no prior content).
+    pub was_create: bool,
+}
+
+/// Everything `undo_commit` needs to revert one Keep: the pre-commit note
+/// snapshots, the facts the commit wrote, and the staging entry as it stood
+/// before the commit (so undo can put the review back in the tray).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UndoRecord {
+    pub commit_id: String,
+    pub staging_id: String,
+    pub notes: Vec<UndoNote>,
+    /// Record ids of the facts written by the commit — undo deletes exactly these.
+    pub new_fact_ids: Vec<String>,
+    /// The staging entry as it was before this commit, restored by undo.
+    pub entry_snapshot: StagingEntry,
+}
+
+/// Copy a note into the commit's snapshot tree, preserving its relative path.
+/// Returns `Ok(false)` when the note does not exist yet (a staged "create" —
+/// undo deletes the file instead of restoring it).
+pub fn snapshot_note(
+    snapshot_dir: &Path,
+    formation_root: &Path,
+    note_path: &str,
+) -> AppResult<bool> {
+    let src = formation_root.join(note_path);
+    if !src.is_file() {
+        return Ok(false);
+    }
+    let dst = snapshot_dir.join(note_path);
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(&src, &dst).map_err(|e| AppError::other(format!("snapshot {note_path}: {e}")))?;
+    Ok(true)
+}
+
+/// Restore a snapshotted note back into the formation (atomic overwrite).
+pub fn restore_note(snapshot_dir: &Path, formation_root: &Path, note_path: &str) -> AppResult<()> {
+    let bytes = std::fs::read(snapshot_dir.join(note_path))
+        .map_err(|e| AppError::other(format!("read snapshot {note_path}: {e}")))?;
+    atomic_write(&formation_root.join(note_path), &bytes)
+}
+
+/// Persist an undo record at `<snapshot_dir>/undo.json`.
+pub fn write_undo(snapshot_dir: &Path, undo: &UndoRecord) -> AppResult<()> {
+    std::fs::create_dir_all(snapshot_dir)?;
+    let bytes = serde_json::to_vec_pretty(undo)?;
+    atomic_write(&snapshot_dir.join("undo.json"), &bytes)
+}
+
+/// Read the undo record for a commit.
+pub fn read_undo(snapshot_dir: &Path) -> AppResult<UndoRecord> {
+    let bytes = std::fs::read(snapshot_dir.join("undo.json"))
+        .map_err(|e| AppError::other(format!("read undo record: {e}")))?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// Delete a commit's snapshot tree once its undo window has closed or been used.
+pub fn remove_snapshot(snapshot_dir: &Path) {
+    std::fs::remove_dir_all(snapshot_dir).ok();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +323,67 @@ mod tests {
     fn read_all_missing_dir_is_empty() {
         let missing = tempdir_for_test().join("never-made");
         assert!(read_all(&missing).expect("read_all missing").is_empty());
+    }
+
+    /// A note can be snapshotted and restored byte-for-byte; a missing note
+    /// (a staged "create") reports `false` and writes no snapshot.
+    #[test]
+    fn snapshot_round_trip_restores_prior_content() {
+        let tmp = tempdir_for_test();
+        let formation = tmp.join("formation");
+        let note = "People/Bob.md";
+        let abs = formation.join(note);
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        std::fs::write(&abs, "original content\n").unwrap();
+
+        let snap_dir = tmp.join("snap");
+        assert!(
+            snapshot_note(&snap_dir, &formation, note).expect("snapshot"),
+            "an existing note is snapshotted"
+        );
+
+        std::fs::write(&abs, "MODIFIED\n").unwrap();
+        restore_note(&snap_dir, &formation, note).expect("restore");
+        assert_eq!(std::fs::read_to_string(&abs).unwrap(), "original content\n");
+
+        // A note that does not exist yet is a "create" — no snapshot taken.
+        assert!(
+            !snapshot_note(&snap_dir, &formation, "People/New.md").expect("create snapshot"),
+            "a missing note reports false"
+        );
+
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    /// An undo record survives write → read unchanged.
+    #[test]
+    fn undo_record_round_trip() {
+        let dir = tempdir_for_test();
+        let rec = UndoRecord {
+            commit_id: "commit_x".into(),
+            staging_id: "stage_x".into(),
+            notes: vec![
+                UndoNote {
+                    note_path: "People/Bob.md".into(),
+                    was_create: true,
+                },
+                UndoNote {
+                    note_path: "Organizations/Acme.md".into(),
+                    was_create: false,
+                },
+            ],
+            new_fact_ids: vec!["fact:abc".into(), "fact:def".into()],
+            entry_snapshot: sample_entry("stage_x"),
+        };
+        write_undo(&dir, &rec).expect("write_undo");
+
+        let read = read_undo(&dir).expect("read_undo");
+        assert_eq!(read.commit_id, "commit_x");
+        assert_eq!(read.notes.len(), 2);
+        assert!(read.notes[0].was_create);
+        assert_eq!(read.new_fact_ids, vec!["fact:abc", "fact:def"]);
+        assert_eq!(read.entry_snapshot.id, "stage_x");
+
+        std::fs::remove_dir_all(dir).ok();
     }
 }

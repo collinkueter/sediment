@@ -99,6 +99,8 @@ export interface ChatWriteResult {
 }
 
 export interface CommitResult {
+  /** Id of this commit; pass to undoCommit to revert it. */
+  commit_id: string;
   staging_id: string;
   /** Formation-relative paths of the notes written to disk. */
   committed_notes: string[];
@@ -175,5 +177,5 @@ export const tauri = {
   keepStaging: (id: string, notePaths?: string[]) =>
     invoke<CommitResult>("keep_staging", { id, notePaths: notePaths ?? null }),
   /** Revert a commit within the undo window: restores notes, deletes facts. */
-  undoCommit: (stagingId: string) => invoke<void>("undo_commit", { stagingId }),
+  undoCommit: (commitId: string) => invoke<void>("undo_commit", { commitId }),
 };

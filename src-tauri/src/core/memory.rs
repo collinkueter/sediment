@@ -196,22 +196,32 @@ impl MemoryStore {
         Ok(!rows.is_empty())
     }
 
-    /// Write a bi-temporal fact edge from `subject_id` to `object_id`.
+    /// Write a bi-temporal fact edge from `subject_id` to `object_id`,
+    /// superseding any contradicting current fact. Thin wrapper over
+    /// `relate_fact_with` with supersession on.
+    pub async fn relate_fact(&self, fact: FactWriteInput) -> AppResult<String> {
+        self.relate_fact_with(fact, true).await
+    }
+
+    /// Write a bi-temporal fact edge, controlling supersession.
     ///
-    /// Supersession algorithm (atomic, in one SurrealDB transaction):
-    /// 1. For any existing fact with the same `(subject, predicate)`,
-    ///    `valid_to IS NONE`, AND a different `object`, set its
+    /// With `supersede = true` (atomic, in one SurrealDB query):
+    /// 1. Any existing fact with the same `(subject, predicate)`,
+    ///    `valid_to IS NONE`, AND a different `object` gets its
     ///    `valid_to = $valid_from`. History is preserved; the older edge
-    ///    is still queryable for point-in-time reads.
-    /// 2. RELATE the new edge with `valid_to = NONE`.
+    ///    stays queryable for point-in-time reads.
+    /// 2. The new edge is RELATEd with `valid_to = NONE`.
     ///
-    /// Confidence threshold for silent supersession is enforced by the
-    /// caller: when both old and new have `confidence >= 0.9`, supersede
-    /// silently; otherwise the caller emits a `fact-warning` event for
-    /// the Phase 3 staging tray to surface.
+    /// With `supersede = false`, step 1 is skipped — the new fact coexists
+    /// with the contradicting current fact. This backs the "Keep both"
+    /// conflict resolution (concurrent employment; ADR-0004 refinement R3).
     ///
     /// Returns the new fact's record id as a `"fact:..."` string.
-    pub async fn relate_fact(&self, fact: FactWriteInput) -> AppResult<String> {
+    pub async fn relate_fact_with(
+        &self,
+        fact: FactWriteInput,
+        supersede: bool,
+    ) -> AppResult<String> {
         // Strip "entity:" prefix if present — we splice the raw key into the
         // RELATE statement to avoid binding-position limits.
         let subject_key = fact
@@ -223,22 +233,32 @@ impl MemoryStore {
             .strip_prefix("entity:")
             .unwrap_or(&fact.object_id);
 
-        // Two-statement batch: supersede prior current facts with a different
-        // object, then RELATE the new edge. SurrealDB runs statements in a
-        // multi-statement query within an implicit transaction for the batch.
-        let sql = format!(
-            "UPDATE fact SET valid_to = $valid_from \
-               WHERE in = entity:{subject_key} \
-                 AND predicate = $predicate \
-                 AND out != entity:{object_key} \
-                 AND valid_to IS NONE; \
-             RELATE entity:{subject_key} -> fact -> entity:{object_key} \
+        let relate = format!(
+            "RELATE entity:{subject_key} -> fact -> entity:{object_key} \
                SET predicate = $predicate, \
                    valid_from = $valid_from, \
                    valid_to = NONE, \
                    source_chat_id = $source_chat_id, \
                    confidence = $confidence;"
         );
+        // With supersession the RELATE is the second statement; without it,
+        // the first — `take` must address whichever index the RELATE lands at.
+        let (sql, relate_idx) = if supersede {
+            (
+                format!(
+                    "UPDATE fact SET valid_to = $valid_from \
+                       WHERE in = entity:{subject_key} \
+                         AND predicate = $predicate \
+                         AND out != entity:{object_key} \
+                         AND valid_to IS NONE; \
+                     {relate}"
+                ),
+                1,
+            )
+        } else {
+            (relate, 0)
+        };
+
         let mut res = self
             .db
             .query(sql)
@@ -251,9 +271,8 @@ impl MemoryStore {
             .check()
             .map_err(|e| AppError::other(format!("relate_fact check: {e}")))?;
 
-        // Statement 0 = UPDATE supersession, statement 1 = RELATE the new edge.
         let rows: Vec<IdRow> = res
-            .take(1)
+            .take(relate_idx)
             .map_err(|e| AppError::other(format!("relate_fact take new: {e}")))?;
         let fact_row = rows
             .into_iter()
@@ -333,6 +352,36 @@ impl MemoryStore {
             canonical_name: r.canonical_name,
             note_path: r.note_path,
         }))
+    }
+
+    /// Link an entity to a note by setting its `note_path`. Called on commit so
+    /// a later fact about the same subject routes as an update of that note
+    /// rather than creating a duplicate (Phase 3 decision #2).
+    pub async fn set_entity_note_path(&self, entity_id: &str, note_path: &str) -> AppResult<()> {
+        let key = entity_id.strip_prefix("entity:").unwrap_or(entity_id);
+        self.db
+            .query("UPDATE type::record('entity', $key) SET note_path = $path;")
+            .bind(("key", key.to_string()))
+            .bind(("path", note_path.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("set_entity_note_path: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("set_entity_note_path check: {e}")))?;
+        Ok(())
+    }
+
+    /// Delete a fact edge by record id. `undo_commit` uses this to remove
+    /// exactly the facts a Keep wrote — the ids are tracked, never re-derived.
+    pub async fn delete_fact(&self, fact_id: &str) -> AppResult<()> {
+        let key = fact_id.strip_prefix("fact:").unwrap_or(fact_id);
+        self.db
+            .query("DELETE type::record('fact', $key);")
+            .bind(("key", key.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("delete_fact: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("delete_fact check: {e}")))?;
+        Ok(())
     }
 
     /// Top-K similarity search over `note_chunk.embedding`. Uses the HNSW
@@ -895,6 +944,61 @@ mod tests {
             .expect("by alias")
             .expect("found");
         assert_eq!(by_alias.id, by_name.id);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// set_entity_note_path links a note; delete_fact removes a single edge.
+    #[tokio::test]
+    async fn set_note_path_and_delete_fact() {
+        use chrono::Utc;
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        let john = store
+            .upsert_entity("John", "person", vec![])
+            .await
+            .expect("john")
+            .id;
+        let acme = store
+            .upsert_entity("Acme", "organization", vec![])
+            .await
+            .expect("acme")
+            .id;
+
+        store
+            .set_entity_note_path(&john, "People/John.md")
+            .await
+            .expect("set note_path");
+        let looked = store
+            .lookup_entity("John")
+            .await
+            .expect("lookup")
+            .expect("found");
+        assert_eq!(looked.note_path.as_deref(), Some("People/John.md"));
+
+        let fact_id = store
+            .relate_fact(FactWriteInput {
+                subject_id: john.clone(),
+                predicate: "works_at".into(),
+                object_id: acme.clone(),
+                valid_from: Utc::now(),
+                source_chat_id: "chat_message:x".into(),
+                confidence: 0.9,
+            })
+            .await
+            .expect("relate");
+        assert_eq!(store.current_facts(&john).await.expect("current").len(), 1);
+
+        store.delete_fact(&fact_id).await.expect("delete_fact");
+        assert!(
+            store
+                .current_facts(&john)
+                .await
+                .expect("current2")
+                .is_empty(),
+            "delete_fact removes exactly the written edge"
+        );
 
         std::fs::remove_dir_all(dir).ok();
     }

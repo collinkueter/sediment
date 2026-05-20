@@ -1,4 +1,4 @@
-import { type FormationNote, type StagingEntry, tauri } from "@/lib/tauri";
+import { type CommitResult, type FormationNote, type StagingEntry, tauri } from "@/lib/tauri";
 import { create } from "zustand";
 
 export type ChatRole = "user" | "assistant" | "system";
@@ -54,76 +54,6 @@ export const useUiStore = create<UiState>((set) => ({
   stagingTrayOpen: false,
   toggleStagingTray: () => set((s) => ({ stagingTrayOpen: !s.stagingTrayOpen })),
   setStagingTrayOpen: (open) => set({ stagingTrayOpen: open }),
-}));
-
-interface StagingState {
-  /** Pending staging entries (one per chat_write batch), oldest first. */
-  entries: StagingEntry[];
-  /** Re-list staged entries from disk. */
-  refresh: () => Promise<void>;
-  /** Discard a whole entry — pure no-op on notes and graph. */
-  discardEntry: (id: string) => Promise<void>;
-  /** Drop one note change; discards the entry if it was the last change. */
-  discardChange: (entryId: string, notePath: string) => Promise<void>;
-  /** Commit a whole entry to notes + graph. */
-  keepEntry: (id: string) => Promise<void>;
-  /** Commit a single note change, leaving the rest of the entry staged. */
-  keepChange: (entryId: string, notePath: string) => Promise<void>;
-}
-
-export const useStagingStore = create<StagingState>((set, get) => ({
-  entries: [],
-
-  async refresh() {
-    try {
-      set({ entries: await tauri.listStaging() });
-    } catch (e) {
-      console.warn("staging refresh failed:", e);
-    }
-  },
-
-  async discardEntry(id) {
-    try {
-      await tauri.discardStaging(id);
-    } catch (e) {
-      console.warn("discard staging entry failed:", e);
-    }
-    await get().refresh();
-  },
-
-  async discardChange(entryId, notePath) {
-    const entry = get().entries.find((e) => e.id === entryId);
-    if (!entry) return;
-    const remaining = entry.changes.filter((c) => c.note_path !== notePath);
-    try {
-      if (remaining.length === 0) {
-        await tauri.discardStaging(entryId);
-      } else {
-        await tauri.updateStaging({ ...entry, changes: remaining });
-      }
-    } catch (e) {
-      console.warn("discard note change failed:", e);
-    }
-    await get().refresh();
-  },
-
-  async keepEntry(id) {
-    try {
-      await tauri.keepStaging(id);
-    } catch (e) {
-      console.warn("keep staging entry failed:", e);
-    }
-    await get().refresh();
-  },
-
-  async keepChange(entryId, notePath) {
-    try {
-      await tauri.keepStaging(entryId, [notePath]);
-    } catch (e) {
-      console.warn("keep note change failed:", e);
-    }
-    await get().refresh();
-  },
 }));
 
 interface FormationState {
@@ -261,3 +191,130 @@ export const useFormationStore = create<FormationState>((set, get) => ({
     }
   },
 }));
+
+/** How long a committed change can be undone from the toast. */
+const UNDO_WINDOW_MS = 10_000;
+
+interface StagingState {
+  /** Pending staging entries (one per chat_write batch), oldest first. */
+  entries: StagingEntry[];
+  /** The most recent commit, undoable until the window closes; else null. */
+  undoable: CommitResult | null;
+  /** Re-list staged entries from disk. */
+  refresh: () => Promise<void>;
+  /** Discard a whole entry — pure no-op on notes and graph. */
+  discardEntry: (id: string) => Promise<void>;
+  /** Drop one note change; discards the entry if it was the last change. */
+  discardChange: (entryId: string, notePath: string) => Promise<void>;
+  /** Commit a whole entry to notes + graph. */
+  keepEntry: (id: string) => Promise<void>;
+  /** Commit a single note change, leaving the rest of the entry staged. */
+  keepChange: (entryId: string, notePath: string) => Promise<void>;
+  /** Revert the most recent commit while its undo window is open. */
+  undo: () => Promise<void>;
+  /** Dismiss the undo toast without reverting. */
+  dismissUndo: () => void;
+}
+
+export const useStagingStore = create<StagingState>((set, get) => {
+  let undoTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Show the commit as undoable, then auto-clear after the window closes.
+  function armUndo(result: CommitResult) {
+    if (undoTimer) clearTimeout(undoTimer);
+    set({ undoable: result });
+    undoTimer = setTimeout(() => {
+      undoTimer = null;
+      set({ undoable: null });
+    }, UNDO_WINDOW_MS);
+  }
+
+  function clearUndo() {
+    if (undoTimer) clearTimeout(undoTimer);
+    undoTimer = null;
+    set({ undoable: null });
+  }
+
+  // A commit changes notes on disk — refresh the file list and reload the
+  // active note so the editor leaves diff mode and shows committed content.
+  async function reloadFormation() {
+    const fs = useFormationStore.getState();
+    await fs.refreshNotes();
+    if (fs.currentNotePath) await fs.openNote(fs.currentNotePath);
+  }
+
+  return {
+    entries: [],
+    undoable: null,
+
+    async refresh() {
+      try {
+        set({ entries: await tauri.listStaging() });
+      } catch (e) {
+        console.warn("staging refresh failed:", e);
+      }
+    },
+
+    async discardEntry(id) {
+      try {
+        await tauri.discardStaging(id);
+      } catch (e) {
+        console.warn("discard staging entry failed:", e);
+      }
+      await get().refresh();
+    },
+
+    async discardChange(entryId, notePath) {
+      const entry = get().entries.find((e) => e.id === entryId);
+      if (!entry) return;
+      const remaining = entry.changes.filter((c) => c.note_path !== notePath);
+      try {
+        if (remaining.length === 0) {
+          await tauri.discardStaging(entryId);
+        } else {
+          await tauri.updateStaging({ ...entry, changes: remaining });
+        }
+      } catch (e) {
+        console.warn("discard note change failed:", e);
+      }
+      await get().refresh();
+    },
+
+    async keepEntry(id) {
+      try {
+        armUndo(await tauri.keepStaging(id));
+      } catch (e) {
+        console.warn("keep staging entry failed:", e);
+      }
+      await get().refresh();
+      await reloadFormation();
+    },
+
+    async keepChange(entryId, notePath) {
+      try {
+        armUndo(await tauri.keepStaging(entryId, [notePath]));
+      } catch (e) {
+        console.warn("keep note change failed:", e);
+      }
+      await get().refresh();
+      await reloadFormation();
+    },
+
+    async undo() {
+      const pending = get().undoable;
+      if (!pending) return;
+      clearUndo();
+      try {
+        await tauri.undoCommit(pending.commit_id);
+      } catch (e) {
+        console.warn("undo commit failed:", e);
+      }
+      await get().refresh();
+      await reloadFormation();
+    },
+
+    dismissUndo() {
+      clearUndo();
+    },
+  };
+});

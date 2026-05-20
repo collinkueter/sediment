@@ -5,6 +5,7 @@ import { IndexProgress } from "@/components/IndexProgress";
 import { NoteViewer } from "@/components/NoteViewer";
 import { Onboarding } from "@/components/Onboarding";
 import { StagingTray } from "@/components/StagingTray";
+import { UndoToast } from "@/components/UndoToast";
 import { useFormationStore, useStagingStore, useUiStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
@@ -92,6 +93,7 @@ export default function App() {
         </section>
       </main>
       <StagingTray />
+      <UndoToast />
     </div>
   );
 }
