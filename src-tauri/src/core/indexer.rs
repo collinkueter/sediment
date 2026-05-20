@@ -36,7 +36,7 @@ impl Indexer {
     /// Spawn the background debounce loop. Call once in `setup()`.
     pub fn start(app: AppHandle) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(run(rx, app));
+        tauri::async_runtime::spawn(run(rx, app));
         Self { tx }
     }
 
