@@ -1,17 +1,21 @@
-import { type ChatMessage, useChatStore } from "@/lib/store";
+import { type ChatMessage, useChatStore, useFormationStore } from "@/lib/store";
 import { type ChatWriteResult, tauri } from "@/lib/tauri";
 import { useEffect, useRef, useState } from "react";
+
+type Mode = "write" | "ask";
 
 export function ChatPane() {
   const sessionId = useChatStore((s) => s.sessionId);
   const messages = useChatStore((s) => s.messages);
   const appendMessage = useChatStore((s) => s.appendMessage);
+  const appendToken = useChatStore((s) => s.appendToken);
   const setMessageContent = useChatStore((s) => s.setMessageContent);
   const [draft, setDraft] = useState("");
+  const [mode, setMode] = useState<Mode>("write");
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to the latest message.
+  // Auto-scroll to the latest message / token.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   });
@@ -19,14 +23,30 @@ export function ChatPane() {
   async function handleSend() {
     const text = draft.trim();
     if (!text || busy) return;
+
+    // `/write` and `/ask` slash prefixes hard-override the mode for this turn.
+    let effectiveMode = mode;
+    let body = text;
+    if (text.startsWith("/write ")) {
+      effectiveMode = "write";
+      body = text.slice("/write ".length).trim();
+    } else if (text.startsWith("/ask ")) {
+      effectiveMode = "ask";
+      body = text.slice("/ask ".length).trim();
+    }
+    if (!body) return;
+
     appendMessage({ role: "user", content: text });
     setDraft("");
-
     const assistantId = appendMessage({ role: "assistant", content: "" });
     setBusy(true);
     try {
-      const result = await tauri.chatWrite(text, sessionId);
-      setMessageContent(assistantId, formatWriteResult(result));
+      if (effectiveMode === "write") {
+        const result = await tauri.chatWrite(body, sessionId);
+        setMessageContent(assistantId, formatWriteResult(result));
+      } else {
+        await tauri.chatAsk(body, sessionId, (token) => appendToken(assistantId, token));
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setMessageContent(assistantId, `⚠️ ${msg}`);
@@ -47,7 +67,7 @@ export function ChatPane() {
       <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
         <span className="text-sm font-medium text-zinc-500 dark:text-zinc-400">Chat</span>
         <span className="text-xs text-zinc-400 dark:text-zinc-500">
-          {busy ? "filing…" : `${messages.length} messages`}
+          {busy ? (mode === "write" ? "filing…" : "answering…") : `${messages.length} messages`}
         </span>
       </header>
 
@@ -64,15 +84,17 @@ export function ChatPane() {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Type a thought or fact. Cmd+Enter to send."
+          placeholder={
+            mode === "write"
+              ? "Type a thought or fact. Cmd+Enter to send."
+              : "Ask a question about your formation. Cmd+Enter to send."
+          }
           rows={3}
           disabled={busy}
           className="block w-full resize-none rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm placeholder:text-zinc-400 focus:border-zinc-400 focus:outline-none disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:placeholder:text-zinc-500"
         />
         <div className="mt-2 flex items-center justify-between">
-          <span className="text-xs text-zinc-400 dark:text-zinc-500">
-            Treating as: <span className="font-medium">Write</span>
-          </span>
+          <ModeToggle mode={mode} onChange={setMode} disabled={busy} />
           <button
             type="button"
             onClick={() => void handleSend()}
@@ -83,6 +105,36 @@ export function ChatPane() {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ModeToggle({
+  mode,
+  onChange,
+  disabled,
+}: {
+  mode: Mode;
+  onChange: (m: Mode) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1 rounded-md border border-zinc-200 p-0.5 text-xs dark:border-zinc-800">
+      {(["write", "ask"] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange(m)}
+          className={`rounded px-2 py-0.5 capitalize ${
+            mode === m
+              ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+              : "text-zinc-500 dark:text-zinc-400"
+          }`}
+        >
+          {m}
+        </button>
+      ))}
     </div>
   );
 }
@@ -117,8 +169,8 @@ function EmptyState() {
   return (
     <div className="flex h-full items-center justify-center text-center text-sm text-zinc-400 dark:text-zinc-500">
       <p>
-        Brain-dump thoughts and facts. <br />
-        Sediment extracts entities and relations into your formation.
+        <strong>Write</strong> mode files facts into your formation. <br />
+        <strong>Ask</strong> mode answers questions from it, with citations.
       </p>
     </div>
   );
@@ -136,8 +188,47 @@ function Bubble({ message }: { message: ChatMessage }) {
             : "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
         }`}
       >
-        {isEmpty ? <span className="opacity-50">…</span> : message.content}
+        {isEmpty ? (
+          <span className="opacity-50">…</span>
+        ) : isUser ? (
+          message.content
+        ) : (
+          <CitedText text={message.content} />
+        )}
       </div>
     </div>
+  );
+}
+
+/// Render assistant text, turning `[[note path]]` citations into clickable
+/// links that open the cited note in the left pane.
+function CitedText({ text }: { text: string }) {
+  const openNote = useFormationStore((s) => s.openNote);
+  // Split on [[...]] while keeping the delimiters.
+  const parts = text.split(/(\[\[[^\]]+\]\])/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        const match = part.match(/^\[\[([^\]]+)\]\]$/);
+        const notePath = match?.[1];
+        if (notePath) {
+          return (
+            <button
+              // biome-ignore lint/suspicious/noArrayIndexKey: parts are positional
+              key={i}
+              type="button"
+              onClick={() => {
+                openNote(notePath).catch((e) => console.error("open cited note failed:", e));
+              }}
+              className="rounded bg-zinc-200 px-1 font-medium text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600"
+            >
+              {notePath}
+            </button>
+          );
+        }
+        // biome-ignore lint/suspicious/noArrayIndexKey: parts are positional
+        return <span key={i}>{part}</span>;
+      })}
+    </>
   );
 }

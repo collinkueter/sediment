@@ -76,6 +76,19 @@ export interface ChatWriteResult {
   extraction: ExtractFactsResult;
 }
 
+export interface RetrievedSource {
+  note_path: string;
+  chunk_idx: number;
+  text: string;
+  distance: number;
+}
+
+export interface ChatAskResult {
+  source_chat_id: string;
+  sources: RetrievedSource[];
+  used_graph: boolean;
+}
+
 export const tauri = {
   appVersion: () => invoke<string>("app_version"),
 
@@ -108,4 +121,10 @@ export const tauri = {
   // Chat
   chatWrite: (message: string, sessionId: string) =>
     invoke<ChatWriteResult>("chat_write", { message, sessionId }),
+  /** Stream the cited answer through `onToken`; resolves with retrieved sources. */
+  chatAsk: (query: string, sessionId: string, onToken: (t: string) => void) => {
+    const channel = new Channel<string>();
+    channel.onmessage = onToken;
+    return invoke<ChatAskResult>("chat_ask", { query, sessionId, onToken: channel });
+  },
 };

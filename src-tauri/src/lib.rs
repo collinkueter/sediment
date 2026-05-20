@@ -91,6 +91,7 @@ pub fn run() {
             commands::extraction::extract_and_upsert,
             commands::extraction::extract_facts,
             commands::chat::chat_write,
+            commands::chat::chat_ask,
             commands::ollama::ollama_status,
             commands::ollama::ollama_ensure_running,
             commands::ollama::ollama_list_models,
