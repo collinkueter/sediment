@@ -138,7 +138,7 @@ fn init_chat_notes_skeleton(formation: &std::path::Path) -> AppResult<()> {
     Ok(())
 }
 
-fn walk_notes(root: &std::path::Path) -> AppResult<Vec<FormationNote>> {
+pub(crate) fn walk_notes(root: &std::path::Path) -> AppResult<Vec<FormationNote>> {
     let mut out = Vec::new();
     for entry in WalkDir::new(root)
         .into_iter()

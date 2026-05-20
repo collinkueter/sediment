@@ -117,6 +117,9 @@ export const useFormationStore = create<FormationState>((set, get) => ({
         isDirty: false,
       });
       await get().refreshNotes();
+      // Kick off a background formation re-index (skips unchanged files).
+      // Not awaited — progress arrives via `index-progress` events.
+      tauri.indexFormation(false).catch((e) => console.warn("background index failed:", e));
     } finally {
       set({ loading: false });
     }

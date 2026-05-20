@@ -1,6 +1,7 @@
 import { ChatPane } from "@/components/ChatPane";
 import { FileTree } from "@/components/FileTree";
 import { FormationPicker } from "@/components/FormationPicker";
+import { IndexProgress } from "@/components/IndexProgress";
 import { NoteViewer } from "@/components/NoteViewer";
 import { Onboarding } from "@/components/Onboarding";
 import { StagingTray } from "@/components/StagingTray";
@@ -95,6 +96,7 @@ function TitleBar({ version }: { version: string }) {
           · {formationPath}
         </span>
       )}
+      <IndexProgress />
     </header>
   );
 }

@@ -83,6 +83,7 @@ pub fn run() {
             commands::formation::write_note,
             commands::memory::memory_smoke_test,
             commands::memory::index_note,
+            commands::memory::index_formation,
             commands::memory::search_notes,
             commands::memory::relate_fact_command,
             commands::memory::current_facts,

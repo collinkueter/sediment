@@ -309,6 +309,38 @@ impl MemoryStore {
         Ok(hits)
     }
 
+    /// Record that `note_path` was indexed at file-mtime `mtime_secs`. Used to
+    /// skip unchanged files on a formation-wide re-index. Replaces any prior row.
+    pub async fn record_index_state(&self, note_path: &str, mtime_secs: i64) -> AppResult<()> {
+        self.db
+            .query(
+                "DELETE note_index_state WHERE note_path = $p; \
+                 CREATE note_index_state SET note_path = $p, indexed_mtime = $m;",
+            )
+            .bind(("p", note_path.to_string()))
+            .bind(("m", mtime_secs))
+            .await
+            .map_err(|e| AppError::other(format!("record index state: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("record index state check: {e}")))?;
+        Ok(())
+    }
+
+    /// The file mtime (unix seconds) at which `note_path` was last indexed,
+    /// or `None` if it has never been indexed.
+    pub async fn indexed_mtime(&self, note_path: &str) -> AppResult<Option<i64>> {
+        let mut res = self
+            .db
+            .query("SELECT indexed_mtime FROM note_index_state WHERE note_path = $p;")
+            .bind(("p", note_path.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("indexed_mtime: {e}")))?;
+        let rows: Vec<i64> = res
+            .take((0, "indexed_mtime"))
+            .map_err(|e| AppError::other(format!("indexed_mtime take: {e}")))?;
+        Ok(rows.into_iter().next())
+    }
+
     async fn apply_schema(&self) -> AppResult<()> {
         // SurrealDB DDL is idempotent under DEFINE ... IF NOT EXISTS.
         self.db
@@ -464,6 +496,13 @@ DEFINE FIELD IF NOT EXISTS text      ON note_chunk TYPE string;
 DEFINE FIELD IF NOT EXISTS embedding ON note_chunk TYPE array<float>;
 DEFINE INDEX IF NOT EXISTS chunk_embedding ON note_chunk FIELDS embedding
     HNSW DIMENSION 768 DIST COSINE;
+
+-- Per-note index state: lets a formation-wide re-index skip unchanged files.
+DEFINE TABLE IF NOT EXISTS note_index_state SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS note_path     ON note_index_state TYPE string;
+DEFINE FIELD IF NOT EXISTS indexed_mtime ON note_index_state TYPE int;
+DEFINE FIELD IF NOT EXISTS indexed_at    ON note_index_state TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS note_index_state_path ON note_index_state FIELDS note_path;
 
 -- Chat history; also the audit trail for fact provenance.
 DEFINE TABLE IF NOT EXISTS chat_message SCHEMAFULL;

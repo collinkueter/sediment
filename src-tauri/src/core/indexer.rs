@@ -96,7 +96,8 @@ async fn index_in_app(app: &AppHandle, relative_path: &str) -> AppResult<usize> 
 }
 
 /// Shared indexing core. Reads `relative_path` from `formation_root`, chunks
-/// it, embeds each chunk, and replaces the note's rows in SurrealDB.
+/// it, embeds each chunk, replaces the note's rows in SurrealDB, and records
+/// the file's mtime so a formation-wide re-index can skip it next time.
 /// Idempotent — calling twice produces the same stored state.
 pub async fn index_note_path(
     formation_root: &Path,
@@ -107,6 +108,7 @@ pub async fn index_note_path(
     let abs = formation_root.join(relative_path);
     let content = std::fs::read_to_string(&abs)
         .map_err(|e| AppError::other(format!("read {}: {e}", abs.display())))?;
+    let mtime = file_mtime_secs(&abs);
 
     let chunks = chunk_markdown(&content);
     let mut inputs = Vec::with_capacity(chunks.len());
@@ -121,7 +123,18 @@ pub async fn index_note_path(
     }
     let count = inputs.len();
     store.replace_note_chunks(relative_path, inputs).await?;
+    store.record_index_state(relative_path, mtime).await?;
     Ok(count)
+}
+
+/// File mtime as unix epoch seconds, or 0 if unavailable.
+pub fn file_mtime_secs(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Split markdown into chunks of `CHUNK_MAX_CHARS` or less, preferring

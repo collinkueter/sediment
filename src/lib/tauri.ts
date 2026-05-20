@@ -35,6 +35,19 @@ export interface OnboardingState {
   selected_tier: string | null;
 }
 
+export interface IndexFormationResult {
+  total: number;
+  indexed: number;
+  skipped: number;
+  failed: number;
+}
+
+export interface IndexProgress {
+  done: number;
+  total: number;
+  current_path: string;
+}
+
 export const tauri = {
   appVersion: () => invoke<string>("app_version"),
 
@@ -46,6 +59,7 @@ export const tauri = {
   readNote: (relativePath: string) => invoke<string>("read_note", { relativePath }),
   writeNote: (relativePath: string, content: string) =>
     invoke<void>("write_note", { relativePath, content }),
+  indexFormation: (force: boolean) => invoke<IndexFormationResult>("index_formation", { force }),
 
   // Hardware + onboarding
   detectHardware: () => invoke<HardwareInfo>("detect_hardware"),
