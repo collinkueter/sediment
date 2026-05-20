@@ -694,6 +694,86 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// End-to-end storage pipeline (P2-M8 integration check): persist a chat
+    /// message, upsert entities, relate a fact citing that message, then
+    /// supersede it. Verifies provenance and supersession chain together
+    /// without needing the GLiNER or embedding models.
+    #[tokio::test]
+    async fn full_storage_pipeline_chat_to_superseded_fact() {
+        use chrono::TimeZone;
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        // 1. Persist the originating chat message.
+        let chat_id = store
+            .insert_chat_message("user", "Sarah is the CTO at Acme.", "sess-1")
+            .await
+            .expect("insert chat message");
+        assert!(chat_id.starts_with("chat_message:"));
+
+        // 2. Upsert the entities the extractor would have found.
+        let sarah = store
+            .upsert_entity("Sarah", "person", vec![])
+            .await
+            .expect("sarah")
+            .id;
+        let acme = store
+            .upsert_entity("Acme", "organization", vec![])
+            .await
+            .expect("acme")
+            .id;
+
+        // 3. Relate the fact, citing the chat message as provenance.
+        let t0 = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        store
+            .relate_fact(FactWriteInput {
+                subject_id: sarah.clone(),
+                predicate: "works_at".into(),
+                object_id: acme.clone(),
+                valid_from: t0,
+                source_chat_id: chat_id.clone(),
+                confidence: 0.95,
+            })
+            .await
+            .expect("relate acme fact");
+
+        // The current fact must cite the stored chat message.
+        let current = store.current_facts(&sarah).await.expect("current");
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].source_chat_id, chat_id);
+
+        // 4. A later message supersedes it.
+        let chat_id2 = store
+            .insert_chat_message("user", "Sarah moved to Beta Corp.", "sess-1")
+            .await
+            .expect("insert chat message 2");
+        let beta = store
+            .upsert_entity("Beta Corp", "organization", vec![])
+            .await
+            .expect("beta")
+            .id;
+        let t1 = chrono::Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).unwrap();
+        store
+            .relate_fact(FactWriteInput {
+                subject_id: sarah.clone(),
+                predicate: "works_at".into(),
+                object_id: beta.clone(),
+                valid_from: t1,
+                source_chat_id: chat_id2.clone(),
+                confidence: 0.95,
+            })
+            .await
+            .expect("relate beta fact");
+
+        // Current fact is now Beta, citing the second message; history kept.
+        let current = store.current_facts(&sarah).await.expect("current 2");
+        assert_eq!(current.len(), 1);
+        assert_eq!(record_id_to_string(&current[0].object), beta);
+        assert_eq!(current[0].source_chat_id, chat_id2);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     /// upsert_entity must be idempotent: same canonical_name → same id and
     /// `was_new = false` on the second call. New aliases on a second call
     /// must merge into the existing row.

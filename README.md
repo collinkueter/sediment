@@ -6,7 +6,9 @@ See [sediment-tech-spec.md](sediment-tech-spec.md) (v0.2) for the full design.
 
 ## Status
 
-Phase 1 foundation complete. The desktop shell launches, opens a formation, watches it for external edits, talks to a local Ollama, and round-trips bi-temporal facts + HNSW-indexed embeddings through an embedded SurrealDB. The fact-extraction pipeline (gline-rs + LLM-driven routing) and staging tray UI land in Phase 2 / Phase 3.
+**Phase 1 + Phase 2 complete.** The desktop shell launches, opens a formation, watches it for external edits, and auto-indexes notes into an embedded SurrealDB. Chat is intent-classified: Write-mode messages run through the gline-rs extraction pipeline and land as bi-temporal facts with provenance; Ask-mode questions run hybrid retrieval (vector + graph) and stream a cited answer. The staging tray UI (review-before-commit) lands in Phase 3.
+
+See [docs/plans/phase-2.md](docs/plans/phase-2.md) for the milestone breakdown and [docs/adr/](docs/adr/) for the architecture decisions.
 
 ## Prerequisites
 
@@ -45,7 +47,21 @@ curl -L -o tokenizer.json   https://huggingface.co/knowledgator/gliner-multitask
 curl -L -o onnx/model.onnx  https://huggingface.co/knowledgator/gliner-multitask-large-v0.5/resolve/main/onnx/model.onnx
 ```
 
-Without these files, `extract_entities` returns `model_ready: false` with a bootstrap hint. The rest of the app still works.
+Or use the helper script: `docs/scripts/download-gliner.sh <formation-path>`.
+
+Without these files, Write-mode chat returns a bootstrap hint and Ask-mode falls back to vector-only retrieval. Everything else still works.
+
+## Phase 2 verification
+
+Once a formation is open and both Ollama models are pulled:
+
+1. **Background indexing.** Drop a few `.md` files into the formation folder. On the next launch (or open) the title bar shows an `indexing N/M` bar; when it clears, the notes are embedded into SurrealDB.
+2. **Write a fact.** With the GLiNER model installed, type a declarative sentence in chat — e.g. `Sarah is the CTO at Acme.` The classifier shows `auto` → Write; on send the assistant bubble reports the entities and facts filed.
+3. **Supersession.** Send `Sarah moved to Beta Corp.` The new `works_at` fact closes out the Acme one (history preserved — verify with a point-in-time query).
+4. **Ask with citation.** Type a question — `Where does Sarah work?` The classifier flips to Ask; the answer streams in with `[[note path]]` citations rendered as clickable buttons.
+5. **External edit.** Edit a formation file outside Sediment; the watcher re-indexes it within ~2s.
+
+The storage half of the pipeline is covered by `cargo test` (20 tests, no models needed). The model-dependent extraction path has `#[ignore]`d tests — run them with the model present via `cargo test -- --ignored`.
 
 ## Project layout
 
