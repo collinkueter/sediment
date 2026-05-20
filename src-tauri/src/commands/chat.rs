@@ -75,17 +75,35 @@ pub async fn chat_write(
     // Extract entities + relations. This makes no SurrealDB writes.
     let (entities, relations) = extract_facts_only(&message, &formation_root)?;
 
-    // Entities above the confidence floor, keyed by surface text.
+    // Entities above the confidence floor, keyed by surface text. Date spans
+    // are also collected to back the temporal-phrasing heuristic below.
     let mut entity_by_name: HashMap<String, EntitySpan> = HashMap::new();
+    let mut date_texts: Vec<String> = Vec::new();
     for span in entities {
         if span.probability < MIN_ENTITY_CONFIDENCE {
             continue;
         }
+        if span.class == "date" {
+            date_texts.push(span.text.clone());
+        }
         entity_by_name.entry(span.text.clone()).or_insert(span);
     }
 
+    // R2 — temporal `valid_from`. NER surfaces `date` entities; a single
+    // unambiguous date in the message stamps `valid_from` for its facts.
+    // Multiple dates are positionally ambiguous (spans carry no offsets), so
+    // we fall back to the message time. Year-granularity heuristic for V1.
+    let now = chrono::Utc::now();
+    let dated_from: Option<chrono::DateTime<chrono::Utc>> = match date_texts.as_slice() {
+        [single] => parse_year(single).map(year_start),
+        _ => None,
+    };
+    let (valid_from, valid_from_explicit) = match dated_from {
+        Some(dt) => (dt, true),
+        None => (now, false),
+    };
+
     // Resolve each relation into a StagedFact, grouped by its target note.
-    let valid_from = chrono::Utc::now();
     let mut by_note: Vec<(String, Vec<StagedFact>)> = Vec::new();
     for rel in relations {
         if rel.probability < MIN_RELATION_CONFIDENCE {
@@ -113,7 +131,7 @@ pub async fn chat_write(
             object_name: object.name,
             object_type: object.entity_type,
             valid_from,
-            valid_from_explicit: false,
+            valid_from_explicit,
             confidence: rel.probability as f64,
             explicit_coexist: false,
         };
@@ -200,6 +218,31 @@ fn excerpt(message: &str) -> String {
         let head: String = trimmed.chars().take(MAX).collect();
         format!("{head}…")
     }
+}
+
+/// Extract a 4-digit year (1000–9999) from a date entity's text. The first
+/// such run wins — enough for "1975", "joined in 2021", "since 2024".
+fn parse_year(text: &str) -> Option<i32> {
+    let chars: Vec<char> = text.chars().collect();
+    for window in chars.windows(4) {
+        if window.iter().all(char::is_ascii_digit) {
+            if let Ok(year) = window.iter().collect::<String>().parse::<i32>() {
+                if (1000..=9999).contains(&year) {
+                    return Some(year);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Midnight UTC on Jan 1 of `year` — the year-granularity `valid_from`.
+fn year_start(year: i32) -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone;
+    chrono::Utc
+        .with_ymd_and_hms(year, 1, 1, 0, 0, 0)
+        .single()
+        .unwrap_or_else(chrono::Utc::now)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -366,4 +409,34 @@ fn build_ask_prompt(query: &str, sources: &[RetrievedSource], graph_facts: &[Str
     p.push_str(query);
     p.push_str("\n\n=== ANSWER ===\n");
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_year_pulls_a_four_digit_year() {
+        assert_eq!(parse_year("1975"), Some(1975));
+        assert_eq!(parse_year("joined in 2021"), Some(2021));
+        assert_eq!(parse_year("since 2024"), Some(2024));
+        assert_eq!(parse_year("last March"), None);
+        assert_eq!(parse_year("42"), None);
+    }
+
+    #[test]
+    fn year_start_is_midnight_jan_first() {
+        let dt = year_start(2021);
+        assert_eq!(dt.to_rfc3339(), "2021-01-01T00:00:00+00:00");
+    }
+
+    #[test]
+    fn excerpt_truncates_long_messages() {
+        let short = "John founded Acme.";
+        assert_eq!(excerpt(short), short);
+        let long = "x".repeat(200);
+        let e = excerpt(&long);
+        assert!(e.ends_with('…'));
+        assert_eq!(e.chars().count(), 141);
+    }
 }

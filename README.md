@@ -6,9 +6,9 @@ See [sediment-tech-spec.md](sediment-tech-spec.md) (v0.2) for the full design.
 
 ## Status
 
-**Phase 1 + Phase 2 complete.** The desktop shell launches, opens a formation, watches it for external edits, and auto-indexes notes into an embedded SurrealDB. Chat is intent-classified: Write-mode messages run through the gline-rs extraction pipeline and land as bi-temporal facts with provenance; Ask-mode questions run hybrid retrieval (vector + graph) and stream a cited answer. The staging tray UI (review-before-commit) lands in Phase 3.
+**Phase 1 + 2 + 3 complete.** The desktop shell launches, opens a formation, watches it for external edits, and auto-indexes notes into an embedded SurrealDB. Chat is intent-classified. Write-mode messages run through the gline-rs extraction pipeline — but instead of writing straight to the graph, extracted facts are routed to their subject's note, rendered as deterministic markdown diffs, and parked in a **staging tray** for review (spec principle #3, "AI proposes, human disposes"). Keep commits a change — snapshotting the note, writing the markdown, upserting entities, and writing bi-temporal facts — with a 10-second undo. Facts that contradict an existing one surface a side-by-side conflict banner. Ask-mode questions run hybrid retrieval (vector + graph) and stream a cited answer.
 
-See [docs/plans/phase-2.md](docs/plans/phase-2.md) for the milestone breakdown and [docs/adr/](docs/adr/) for the architecture decisions.
+See [docs/plans/phase-3.md](docs/plans/phase-3.md) for the milestone breakdown and [docs/adr/](docs/adr/) for the architecture decisions.
 
 ## Prerequisites
 
@@ -61,7 +61,21 @@ Once a formation is open and both Ollama models are pulled:
 4. **Ask with citation.** Type a question — `Where does Sarah work?` The classifier flips to Ask; the answer streams in with `[[note path]]` citations rendered as clickable buttons.
 5. **External edit.** Edit a formation file outside Sediment; the watcher re-indexes it within ~2s.
 
-The storage half of the pipeline is covered by `cargo test` (20 tests, no models needed). The model-dependent extraction path has `#[ignore]`d tests — run them with the model present via `cargo test -- --ignored`.
+The storage half of the pipeline is covered by `cargo test` (46 tests, no models needed). The model-dependent extraction path has `#[ignore]`d tests — run them with the model present via `cargo test -- --ignored`.
+
+## Phase 3 verification: the staging tray
+
+Phase 3 inserts a review layer between extraction and the formation — no fact reaches a note or the graph without an explicit Keep. With a formation open and the GLiNER model installed:
+
+1. **Stage.** Send a Write-mode message — `Bill Gates founded Microsoft in 1975.` Nothing is written to disk yet; a JSON entry appears under `.chat-notes/staging/` and the **staging tray** at the bottom of the window expands, showing the affected note (`➕ People/Bill Gates.md · +1 fact`).
+2. **Review.** Click `view` on a staged row. The note opens in the left pane as a unified diff — green insertion gutter, per-chunk accept/reject controls. The `## Facts` section and `chat-notes` frontmatter are the only managed regions; user prose is never touched.
+3. **Keep.** Click `Keep` (whole entry) or `keep` (one note). The note file gains the `## Facts` bullet, SurrealDB gets the entity + bi-temporal fact, the staging entry clears, and an **Undo** toast shows for 10 seconds.
+4. **Undo.** Click Undo within the window — the note reverts to its pre-commit snapshot, the written facts are deleted, and the entry returns to the tray.
+5. **Discard.** `✗` on a row, or `Discard all` on an entry, removes it with zero effect on disk or graph.
+6. **Conflict.** Send a contradicting fact — `Bill Gates works at Berkshire.` after a prior `works_at` — and the row shows a ⚠ banner: `Update` (supersede), `Keep both` (concurrent — skips supersession), `Discard new`.
+7. **Temporal.** A single date in the message (`...in 1975`) stamps the fact's `valid_from` to that year instead of "now"; the bullet renders `- Founded Microsoft (1975)`.
+
+The staging, routing, diff-generation, commit, and conflict logic are all covered by `cargo test` with no models needed; the integration test in `commands/staging.rs` drives a hand-built `StagingEntry` through stage → keep → verify and stage → discard → no-op.
 
 ## Project layout
 
@@ -75,7 +89,9 @@ sediment/
 │   │   │   ├── formation.rs         # Open / list / read / write notes
 │   │   │   ├── memory.rs            # SurrealDB smoke + index + search
 │   │   │   ├── ollama.rs            # Status / list / generate streaming
-│   │   │   ├── extraction.rs        # GLiNER NER (when models present)
+│   │   │   ├── extraction.rs        # GLiNER NER/RE (when models present)
+│   │   │   ├── chat.rs              # Write (→ staging) / Ask / classify
+│   │   │   ├── staging.rs           # Tray: list / keep / undo / resolve
 │   │   │   └── hardware.rs          # Tier detection + onboarding state
 │   │   └── core/                    # Long-lived subsystems
 │   │       ├── formation_state.rs   # Active formation + AppConfig
@@ -83,6 +99,9 @@ sediment/
 │   │       ├── memory.rs            # Embedded SurrealDB store
 │   │       ├── ollama_sidecar.rs    # Daemon lifecycle + client
 │   │       ├── extraction.rs        # EntityExtractor trait + GlinerExtractor
+│   │       ├── staging.rs           # StagingEntry model + snapshots
+│   │       ├── router.rs            # Fact → note routing
+│   │       ├── diff_gen.rs          # Template markdown diff generation
 │   │       └── hardware.rs          # RAM / chip / tier scoring
 ├── src/                             # React + TS
 │   ├── App.tsx                      # Title bar + 3-pane layout

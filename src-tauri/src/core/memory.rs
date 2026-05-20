@@ -21,11 +21,14 @@ pub struct MemoryStore {
 impl MemoryStore {
     /// Open the embedded SurrealDB at `<formation>/.chat-notes/memory/` and apply the
     /// schema if not already present. Idempotent.
+    ///
+    /// The `SurrealKv` engine takes a filesystem path directly. An earlier
+    /// `surrealkv://<path>` URL form was mis-parsed by the endpoint layer and
+    /// left a stray `surrealkv:/` directory in the process cwd (refinement R5).
     pub async fn open(memory_dir: &Path) -> AppResult<Self> {
         std::fs::create_dir_all(memory_dir)?;
-        let path = format!("surrealkv://{}", memory_dir.display());
 
-        let db: Surreal<Db> = Surreal::new::<SurrealKv>(path.as_str())
+        let db: Surreal<Db> = Surreal::new::<SurrealKv>(memory_dir)
             .await
             .map_err(|e| AppError::other(format!("open SurrealKV: {e}")))?;
 

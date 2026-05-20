@@ -191,12 +191,8 @@ pub struct CommitResult {
 }
 
 /// Commit a staging entry. With `note_paths` set, only those note changes are
-/// committed and the rest stay staged (individual Keep). Each commit:
-///   1. snapshots the affected notes for undo,
-///   2. writes the new markdown content,
-///   3. upserts entities and writes the bi-temporal fact edges,
-///   4. re-indexes the changed notes,
-///   5. removes (or trims) the staging entry.
+/// committed and the rest stay staged (individual Keep). Thin wrapper over
+/// `commit_changes` that resolves Tauri state and emits the result.
 #[tauri::command]
 pub async fn keep_staging(
     id: String,
@@ -208,8 +204,33 @@ pub async fn keep_staging(
     app: tauri::AppHandle,
 ) -> AppResult<CommitResult> {
     let root = formation.require()?;
-    let sdir = staging_dir(&root);
-    let entry = staging::read_one(&sdir, &id)?;
+    let entry = staging::read_one(&staging_dir(&root), &id)?;
+    let store = memory
+        .get_or_init(&root.join(APP_DIR).join("memory"))
+        .await?;
+    let result = commit_changes(&root, store, &sidecar, &watcher, entry, note_paths).await?;
+    if let Err(e) = app.emit("staging-committed", &result) {
+        tracing::warn!("emit staging-committed failed: {e}");
+    }
+    Ok(result)
+}
+
+/// Core of a Keep, free of Tauri state so it is directly testable. Each commit:
+///   1. snapshots the affected notes for undo,
+///   2. writes the new markdown content,
+///   3. upserts entities and writes the bi-temporal fact edges,
+///   4. re-indexes the changed notes,
+///   5. removes (or trims) the staging entry, recording an undo record.
+pub(crate) async fn commit_changes(
+    root: &Path,
+    store: &MemoryStore,
+    sidecar: &OllamaSidecar,
+    watcher: &FormationWatcher,
+    entry: StagingEntry,
+    note_paths: Option<Vec<String>>,
+) -> AppResult<CommitResult> {
+    let sdir = staging_dir(root);
+    let id = entry.id.clone();
 
     // Split the entry's changes into the ones to commit now and the rest.
     let select: Option<HashSet<String>> = note_paths.map(|v| v.into_iter().collect());
@@ -222,16 +243,12 @@ pub async fn keep_staging(
         return Err(AppError::other("no matching note changes to keep"));
     }
 
-    let store = memory
-        .get_or_init(&root.join(APP_DIR).join("memory"))
-        .await?;
-
     let commit_id = format!(
         "commit_{}_{}",
         chrono::Utc::now().format("%Y%m%dT%H%M%S%3f"),
         &uuid::Uuid::new_v4().simple().to_string()[..6]
     );
-    let snap_dir = snapshot_dir(&root, &commit_id);
+    let snap_dir = snapshot_dir(root, &commit_id);
 
     let mut committed_notes = Vec::new();
     let mut undo_notes = Vec::new();
@@ -239,7 +256,7 @@ pub async fn keep_staging(
 
     for change in &to_commit {
         // 1. Snapshot the pre-commit note (a "create" has no prior content).
-        let was_create = !staging::snapshot_note(&snap_dir, &root, &change.note_path)?;
+        let was_create = !staging::snapshot_note(&snap_dir, root, &change.note_path)?;
 
         // 2. Write the new content. Mark the path first so the watcher's
         //    debounced event is dropped — step 4 re-indexes synchronously.
@@ -278,7 +295,7 @@ pub async fn keep_staging(
 
         // 4. Re-index the changed note. Best-effort — a down Ollama must not
         //    fail the commit; the note + facts are already persisted.
-        if let Err(e) = index_note_path(&root, store, &sidecar, &change.note_path).await {
+        if let Err(e) = index_note_path(root, store, sidecar, &change.note_path).await {
             tracing::warn!("re-index {} after commit failed: {e}", change.note_path);
         }
 
@@ -314,17 +331,13 @@ pub async fn keep_staging(
         Some(trimmed)
     };
 
-    let result = CommitResult {
+    Ok(CommitResult {
         commit_id,
         staging_id: id,
         committed_notes,
         new_fact_ids,
         remaining,
-    };
-    if let Err(e) = app.emit("staging-committed", &result) {
-        tracing::warn!("emit staging-committed failed: {e}");
-    }
-    Ok(result)
+    })
 }
 
 /// Revert a commit: restore the snapshotted notes, delete exactly the facts the
@@ -387,4 +400,109 @@ pub async fn undo_commit(
         tracing::warn!("emit staging-undone failed: {e}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::memory::MemoryStore;
+
+    fn tempdir() -> PathBuf {
+        let p = std::env::temp_dir()
+            .join("sediment-test-commit")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&p).expect("tempdir");
+        p
+    }
+
+    fn sample_entry() -> StagingEntry {
+        StagingEntry {
+            id: StagingEntry::new_id(),
+            created: chrono::Utc::now(),
+            chat_message_id: "chat_message:test".into(),
+            chat_excerpt: "Alice founded Acme.".into(),
+            status: "pending".into(),
+            changes: vec![NoteChange {
+                kind: staging::ChangeKind::Create,
+                note_path: "People/Alice.md".into(),
+                diff: "+- Founded Acme".into(),
+                new_content: "---\nchat-notes:\n  facts:\n    \"founded:acme\": \"chat_message:test\"\n---\n\n## Facts\n\n- Founded Acme\n".into(),
+                confidence: 0.95,
+                conflicts: vec![],
+                facts: vec![StagedFact {
+                    subject_id: "entity:alice".into(),
+                    subject_name: "Alice".into(),
+                    subject_type: "person".into(),
+                    predicate: "founded".into(),
+                    object_id: "entity:acme".into(),
+                    object_name: "Acme".into(),
+                    object_type: "organization".into(),
+                    valid_from: chrono::Utc::now(),
+                    valid_from_explicit: false,
+                    confidence: 0.95,
+                    explicit_coexist: false,
+                }],
+            }],
+        }
+    }
+
+    /// stage → keep: the note lands on disk, the fact lands in the graph, the
+    /// staging entry is consumed, and an undo record is left behind. Needs no
+    /// extraction model — the StagingEntry is hand-built.
+    #[tokio::test]
+    async fn stage_then_keep_writes_note_and_graph() {
+        let root = tempdir();
+        let sdir = staging_dir(&root);
+        let entry = sample_entry();
+        staging::write(&sdir, &entry).expect("write staging");
+
+        let store = MemoryStore::open(&root.join(APP_DIR).join("memory"))
+            .await
+            .expect("open store");
+        let sidecar = OllamaSidecar::default();
+        let watcher = FormationWatcher::default();
+
+        let result = commit_changes(&root, &store, &sidecar, &watcher, entry, None)
+            .await
+            .expect("commit");
+
+        // The note file exists on disk with the fact bullet.
+        let note = std::fs::read_to_string(root.join("People/Alice.md")).expect("note written");
+        assert!(note.contains("- Founded Acme"), "note has the fact bullet");
+
+        // The fact is a current edge about Alice in the graph.
+        let facts = store.current_facts("entity:alice").await.expect("facts");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].predicate, "founded");
+
+        // The staging entry is consumed; an undo record was recorded.
+        assert!(staging::read_all(&sdir).expect("read_all").is_empty());
+        assert_eq!(result.committed_notes, vec!["People/Alice.md".to_string()]);
+        assert_eq!(result.new_fact_ids.len(), 1);
+        let snap = root.join(APP_DIR).join("snapshots").join(&result.commit_id);
+        assert!(staging::read_undo(&snap).is_ok(), "undo record persisted");
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// stage → discard: removing the entry touches nothing else — no note file
+    /// is written, the graph is never opened.
+    #[tokio::test]
+    async fn stage_then_discard_is_a_noop() {
+        let root = tempdir();
+        let sdir = staging_dir(&root);
+        let entry = sample_entry();
+        staging::write(&sdir, &entry).expect("write staging");
+        assert_eq!(staging::read_all(&sdir).expect("read_all").len(), 1);
+
+        staging::remove(&sdir, &entry.id).expect("discard");
+
+        assert!(staging::read_all(&sdir).expect("read_all after").is_empty());
+        assert!(
+            !root.join("People/Alice.md").exists(),
+            "discard must not write the note"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
 }
