@@ -354,6 +354,51 @@ impl MemoryStore {
         }))
     }
 
+    /// Current facts a new `(subject, predicate, object)` would contradict:
+    /// same subject + predicate, a DIFFERENT object, still valid. These are the
+    /// facts `relate_fact` would silently supersede — the staging tray surfaces
+    /// them so the user picks Update / Keep both / Discard. A brand-new subject
+    /// entity (not yet stored) simply matches nothing.
+    pub async fn find_conflicts(
+        &self,
+        subject_id: &str,
+        predicate: &str,
+        new_object_id: &str,
+    ) -> AppResult<Vec<FactConflict>> {
+        let subject_key = subject_id.strip_prefix("entity:").unwrap_or(subject_id);
+        let object_key = new_object_id
+            .strip_prefix("entity:")
+            .unwrap_or(new_object_id);
+        let sql = format!(
+            "SELECT out AS object_id, out.canonical_name AS object_name, \
+             predicate, valid_from, source_chat_id \
+             FROM fact \
+             WHERE in = entity:{subject_key} \
+               AND predicate = $predicate \
+               AND out != entity:{object_key} \
+               AND valid_to IS NONE;"
+        );
+        let mut res = self
+            .db
+            .query(sql)
+            .bind(("predicate", predicate.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("find_conflicts: {e}")))?;
+        let rows: Vec<ConflictRow> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("find_conflicts take: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| FactConflict {
+                object_id: record_id_to_string(&r.object_id),
+                object_name: r.object_name,
+                predicate: r.predicate,
+                valid_from: r.valid_from,
+                source_chat_id: r.source_chat_id,
+            })
+            .collect())
+    }
+
     /// Link an entity to a note by setting its `note_path`. Called on commit so
     /// a later fact about the same subject routes as an update of that note
     /// rather than creating a duplicate (Phase 3 decision #2).
@@ -546,6 +591,28 @@ pub struct FactRow {
     pub valid_to: Option<chrono::DateTime<chrono::Utc>>,
     pub source_chat_id: String,
     pub confidence: f64,
+}
+
+/// Raw row shape for `find_conflicts`. `out.canonical_name` traverses the
+/// `out` record link to fetch the contradicting object's display name.
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+struct ConflictRow {
+    pub object_id: RecordId,
+    pub object_name: String,
+    pub predicate: String,
+    pub valid_from: chrono::DateTime<chrono::Utc>,
+    pub source_chat_id: String,
+}
+
+/// An existing current fact that a staged fact would contradict. Surfaced to
+/// the staging tray's conflict banner.
+#[derive(Debug, Clone)]
+pub struct FactConflict {
+    pub object_id: String,
+    pub object_name: String,
+    pub predicate: String,
+    pub valid_from: chrono::DateTime<chrono::Utc>,
+    pub source_chat_id: String,
 }
 
 /// Format a SurrealDB RecordId as the `table:key` string we hand back to JS.
@@ -999,6 +1066,66 @@ mod tests {
                 .is_empty(),
             "delete_fact removes exactly the written edge"
         );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// find_conflicts flags a contradicting current fact, ignoring same-object
+    /// restatements and unrelated predicates.
+    #[tokio::test]
+    async fn find_conflicts_flags_contradicting_current_facts() {
+        use chrono::Utc;
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        let john = store
+            .upsert_entity("John", "person", vec![])
+            .await
+            .expect("john")
+            .id;
+        let acme = store
+            .upsert_entity("Acme", "organization", vec![])
+            .await
+            .expect("acme")
+            .id;
+        let beta = store
+            .upsert_entity("Beta", "organization", vec![])
+            .await
+            .expect("beta")
+            .id;
+
+        store
+            .relate_fact(FactWriteInput {
+                subject_id: john.clone(),
+                predicate: "works_at".into(),
+                object_id: acme.clone(),
+                valid_from: Utc::now(),
+                source_chat_id: "chat_message:1".into(),
+                confidence: 0.9,
+            })
+            .await
+            .expect("relate");
+
+        // A new works_at -> Beta contradicts the current works_at -> Acme.
+        let conflicts = store
+            .find_conflicts(&john, "works_at", &beta)
+            .await
+            .expect("find");
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].object_name, "Acme");
+
+        // Same object is a restatement, not a conflict.
+        assert!(store
+            .find_conflicts(&john, "works_at", &acme)
+            .await
+            .expect("same object")
+            .is_empty());
+        // A different predicate is not a conflict.
+        assert!(store
+            .find_conflicts(&john, "advises", &beta)
+            .await
+            .expect("other predicate")
+            .is_empty());
 
         std::fs::remove_dir_all(dir).ok();
     }

@@ -1,5 +1,5 @@
 import { useFormationStore, useStagingStore, useUiStore } from "@/lib/store";
-import type { NoteChange, StagingEntry } from "@/lib/tauri";
+import type { Conflict, ConflictResolution, NoteChange, StagingEntry } from "@/lib/tauri";
 
 /// Bottom tray: extracted facts wait here for review before they touch the
 /// formation. Collapsed it is a one-line summary; expanded it lists each
@@ -86,48 +86,107 @@ function ChangeRow({ entryId, change }: { entryId: string; change: NoteChange })
   const conflictCount = change.conflicts.length;
 
   return (
-    <li className="flex items-center gap-2 text-xs">
-      <span aria-hidden title={change.kind === "create" ? "New note" : "Updated note"}>
-        {change.kind === "create" ? "➕" : "✎"}
-      </span>
-      <span className="truncate font-medium text-zinc-700 dark:text-zinc-300">
-        {change.note_path}
-      </span>
-      <span className="shrink-0 text-zinc-400 dark:text-zinc-500">
-        +{factCount} fact{factCount === 1 ? "" : "s"}
-      </span>
-      {conflictCount > 0 && (
-        <span
-          className="shrink-0 text-amber-600 dark:text-amber-500"
-          title={`${conflictCount} conflict${conflictCount === 1 ? "" : "s"}`}
-        >
-          ⚠ {conflictCount}
+    <li className="text-xs">
+      <div className="flex items-center gap-2">
+        <span aria-hidden title={change.kind === "create" ? "New note" : "Updated note"}>
+          {change.kind === "create" ? "➕" : "✎"}
         </span>
-      )}
-      <div className="ml-auto flex shrink-0 gap-1">
-        <button
-          type="button"
-          onClick={() => void openNote(change.note_path)}
-          className="rounded px-1.5 py-0.5 text-zinc-500 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
-        >
-          view
-        </button>
-        <button
-          type="button"
-          onClick={() => void keepChange(entryId, change.note_path)}
-          className="rounded px-1.5 py-0.5 text-zinc-500 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
-        >
-          keep
-        </button>
-        <button
-          type="button"
-          aria-label="Discard this note change"
-          onClick={() => void discardChange(entryId, change.note_path)}
-          className="rounded px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-200 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-        >
-          ✗
-        </button>
+        <span className="truncate font-medium text-zinc-700 dark:text-zinc-300">
+          {change.note_path}
+        </span>
+        <span className="shrink-0 text-zinc-400 dark:text-zinc-500">
+          +{factCount} fact{factCount === 1 ? "" : "s"}
+        </span>
+        {conflictCount > 0 && (
+          <span
+            className="shrink-0 text-amber-600 dark:text-amber-500"
+            title={`${conflictCount} conflict${conflictCount === 1 ? "" : "s"}`}
+          >
+            ⚠ {conflictCount}
+          </span>
+        )}
+        <div className="ml-auto flex shrink-0 gap-1">
+          <button
+            type="button"
+            onClick={() => void openNote(change.note_path)}
+            className="rounded px-1.5 py-0.5 text-zinc-500 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
+          >
+            view
+          </button>
+          <button
+            type="button"
+            onClick={() => void keepChange(entryId, change.note_path)}
+            className="rounded px-1.5 py-0.5 text-zinc-500 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
+          >
+            keep
+          </button>
+          <button
+            type="button"
+            aria-label="Discard this note change"
+            onClick={() => void discardChange(entryId, change.note_path)}
+            className="rounded px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-200 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+          >
+            ✗
+          </button>
+        </div>
       </div>
+      {change.conflicts.map((conflict) => (
+        <ConflictBanner
+          key={`${conflict.staged_fact_index}-${conflict.existing_object_id}`}
+          entryId={entryId}
+          change={change}
+          conflict={conflict}
+        />
+      ))}
     </li>
+  );
+}
+
+/// Side-by-side existing-vs-new banner for a contradicting fact, with the
+/// three resolution choices (spec §10). "Update" supersedes the old fact,
+/// "Keep both" lets them coexist, "Discard new" drops the staged fact.
+function ConflictBanner({
+  entryId,
+  change,
+  conflict,
+}: {
+  entryId: string;
+  change: NoteChange;
+  conflict: Conflict;
+}) {
+  const resolveConflict = useStagingStore((s) => s.resolveConflict);
+  const newObject = change.facts[conflict.staged_fact_index]?.object_name ?? "(unknown)";
+  const verb = conflict.predicate.replace(/_/g, " ");
+
+  function resolve(resolution: ConflictResolution) {
+    void resolveConflict(entryId, change.note_path, conflict.staged_fact_index, resolution);
+  }
+
+  return (
+    <div className="mt-1 ml-6 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-800/60 dark:bg-amber-950/40">
+      <p className="text-[11px] text-amber-800 dark:text-amber-300">
+        <span className="font-medium">{verb}</span> conflict — currently{" "}
+        <span className="font-medium">{conflict.existing_object_name}</span>, new value{" "}
+        <span className="font-medium">{newObject}</span>.
+      </p>
+      <div className="mt-1 flex gap-1">
+        {(
+          [
+            ["update", "Update"],
+            ["coexist", "Keep both"],
+            ["discard", "Discard new"],
+          ] as const
+        ).map(([resolution, label]) => (
+          <button
+            key={resolution}
+            type="button"
+            onClick={() => resolve(resolution)}
+            className="rounded border border-amber-300 bg-white px-1.5 py-0.5 text-[11px] text-amber-800 hover:bg-amber-100 dark:border-amber-800/60 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }

@@ -73,6 +73,9 @@ export interface Conflict {
   existing_source_chat_id: string;
 }
 
+/** How the user resolves a staged-fact conflict. */
+export type ConflictResolution = "update" | "coexist" | "discard";
+
 export interface NoteChange {
   kind: ChangeKind;
   note_path: string;
@@ -173,6 +176,13 @@ export const tauri = {
   getStaging: (id: string) => invoke<StagingEntry>("get_staging", { id }),
   discardStaging: (id: string) => invoke<void>("discard_staging", { id }),
   updateStaging: (entry: StagingEntry) => invoke<void>("update_staging", { entry }),
+  /** Resolve a staged-fact conflict (update / coexist / discard). */
+  resolveConflict: (
+    stagingId: string,
+    notePath: string,
+    stagedFactIndex: number,
+    resolution: ConflictResolution,
+  ) => invoke<void>("resolve_conflict", { stagingId, notePath, stagedFactIndex, resolution }),
   /** Commit a staging entry. Pass `notePaths` to keep only those notes. */
   keepStaging: (id: string, notePaths?: string[]) =>
     invoke<CommitResult>("keep_staging", { id, notePaths: notePaths ?? null }),

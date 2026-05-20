@@ -7,11 +7,14 @@
 //! needed to reverse it within the UI's 10-second window.
 
 use crate::commands::formation::APP_DIR;
+use crate::core::diff_gen::apply_facts_to_note;
 use crate::core::formation_state::{atomic_write, FormationState};
 use crate::core::indexer::index_note_path;
-use crate::core::memory::{FactWriteInput, MemoryHandle};
+use crate::core::memory::{FactWriteInput, MemoryHandle, MemoryStore};
 use crate::core::ollama_sidecar::OllamaSidecar;
-use crate::core::staging::{self, NoteChange, StagingEntry, UndoNote, UndoRecord};
+use crate::core::staging::{
+    self, Conflict, NoteChange, StagedFact, StagingEntry, UndoNote, UndoRecord,
+};
 use crate::core::watcher::FormationWatcher;
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
@@ -30,6 +33,46 @@ fn snapshot_dir(formation_root: &Path, commit_id: &str) -> PathBuf {
         .join(APP_DIR)
         .join("snapshots")
         .join(commit_id)
+}
+
+/// Build the `NoteChange` for `facts` targeting `note_path`: render the diff
+/// against the on-disk note, then flag every current fact a new fact would
+/// contradict (Phase 3 decision, P3-M7). Returns `None` when idempotence
+/// filtering leaves no fact to stage. Shared by `chat_write` and the
+/// conflict-resolution re-render so both produce identical changes.
+pub(crate) async fn assemble_note_change(
+    store: &MemoryStore,
+    formation_root: &Path,
+    note_path: &str,
+    facts: &[StagedFact],
+    source_chat_id: &str,
+) -> AppResult<Option<NoteChange>> {
+    let existing = std::fs::read_to_string(formation_root.join(note_path)).ok();
+    let mut change = apply_facts_to_note(note_path, existing.as_deref(), facts, source_chat_id);
+    if change.facts.is_empty() {
+        return Ok(None);
+    }
+    for idx in 0..change.facts.len() {
+        let fact = &change.facts[idx];
+        // A fact the user already resolved as "Keep both" needs no banner.
+        if fact.explicit_coexist {
+            continue;
+        }
+        for c in store
+            .find_conflicts(&fact.subject_id, &fact.predicate, &fact.object_id)
+            .await?
+        {
+            change.conflicts.push(Conflict {
+                staged_fact_index: idx,
+                predicate: c.predicate,
+                existing_object_id: c.object_id,
+                existing_object_name: c.object_name,
+                existing_valid_from: c.valid_from,
+                existing_source_chat_id: c.source_chat_id,
+            });
+        }
+    }
+    Ok(Some(change))
 }
 
 /// Every pending staging entry, oldest first.
@@ -61,6 +104,76 @@ pub fn discard_staging(id: String, formation: State<'_, FormationState>) -> AppR
 pub fn update_staging(entry: StagingEntry, formation: State<'_, FormationState>) -> AppResult<()> {
     let root = formation.require()?;
     staging::write(&staging_dir(&root), &entry)
+}
+
+/// Resolve a conflict on a staged fact (P3-M7). `resolution` is one of:
+///   - `"update"`  — keep the new fact; the commit supersedes the old one (the
+///                   default behaviour), so this just clears the banner.
+///   - `"coexist"` — set `explicit_coexist` so the commit keeps both facts
+///                   (the consultant / concurrent-employment case).
+///   - `"discard"` — drop the new fact entirely; the note diff is re-rendered
+///                   without it.
+/// Still pre-commit — the graph is untouched.
+#[tauri::command]
+pub async fn resolve_conflict(
+    staging_id: String,
+    note_path: String,
+    staged_fact_index: usize,
+    resolution: String,
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+) -> AppResult<()> {
+    let root = formation.require()?;
+    let sdir = staging_dir(&root);
+    let mut entry = staging::read_one(&sdir, &staging_id)?;
+    let store = memory
+        .get_or_init(&root.join(APP_DIR).join("memory"))
+        .await?;
+
+    let Some(pos) = entry.changes.iter().position(|c| c.note_path == note_path) else {
+        return Err(AppError::other(format!("no staged change for {note_path}")));
+    };
+
+    match resolution.as_str() {
+        "update" => {
+            entry.changes[pos]
+                .conflicts
+                .retain(|c| c.staged_fact_index != staged_fact_index);
+        }
+        "coexist" => {
+            let change = &mut entry.changes[pos];
+            if let Some(fact) = change.facts.get_mut(staged_fact_index) {
+                fact.explicit_coexist = true;
+            }
+            change
+                .conflicts
+                .retain(|c| c.staged_fact_index != staged_fact_index);
+        }
+        "discard" => {
+            let change = &entry.changes[pos];
+            if staged_fact_index >= change.facts.len() {
+                return Err(AppError::other("staged_fact_index out of range"));
+            }
+            let mut remaining = change.facts.clone();
+            remaining.remove(staged_fact_index);
+            match assemble_note_change(store, &root, &note_path, &remaining, &entry.chat_message_id)
+                .await?
+            {
+                Some(rebuilt) => entry.changes[pos] = rebuilt,
+                None => {
+                    entry.changes.remove(pos);
+                }
+            }
+        }
+        other => return Err(AppError::other(format!("unknown resolution: {other}"))),
+    }
+
+    if entry.changes.is_empty() {
+        staging::remove(&sdir, &staging_id)?;
+    } else {
+        staging::write(&sdir, &entry)?;
+    }
+    Ok(())
 }
 
 /// Outcome of a Keep — enough for the UI to show an undo toast and refresh.

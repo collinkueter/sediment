@@ -1,4 +1,10 @@
-import { type CommitResult, type FormationNote, type StagingEntry, tauri } from "@/lib/tauri";
+import {
+  type CommitResult,
+  type ConflictResolution,
+  type FormationNote,
+  type StagingEntry,
+  tauri,
+} from "@/lib/tauri";
 import { create } from "zustand";
 
 export type ChatRole = "user" | "assistant" | "system";
@@ -210,6 +216,13 @@ interface StagingState {
   keepEntry: (id: string) => Promise<void>;
   /** Commit a single note change, leaving the rest of the entry staged. */
   keepChange: (entryId: string, notePath: string) => Promise<void>;
+  /** Resolve a staged-fact conflict (update / coexist / discard). */
+  resolveConflict: (
+    entryId: string,
+    notePath: string,
+    factIndex: number,
+    resolution: ConflictResolution,
+  ) => Promise<void>;
   /** Revert the most recent commit while its undo window is open. */
   undo: () => Promise<void>;
   /** Dismiss the undo toast without reverting. */
@@ -298,6 +311,15 @@ export const useStagingStore = create<StagingState>((set, get) => {
       }
       await get().refresh();
       await reloadFormation();
+    },
+
+    async resolveConflict(entryId, notePath, factIndex, resolution) {
+      try {
+        await tauri.resolveConflict(entryId, notePath, factIndex, resolution);
+      } catch (e) {
+        console.warn("resolve conflict failed:", e);
+      }
+      await get().refresh();
     },
 
     async undo() {

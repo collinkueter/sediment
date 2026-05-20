@@ -11,7 +11,7 @@ use crate::commands::extraction::{
     extract_facts_only, MIN_ENTITY_CONFIDENCE, MIN_RELATION_CONFIDENCE,
 };
 use crate::commands::formation::APP_DIR;
-use crate::core::diff_gen::apply_facts_to_note;
+use crate::commands::staging::assemble_note_change;
 use crate::core::extraction::{
     default_relation_schema, extract_entities_and_relations, EntitySpan, GlinerExtractor,
     ModelPaths, ENTITY_LABELS,
@@ -123,13 +123,14 @@ pub async fn chat_write(
         }
     }
 
-    // Render the markdown diff for each affected note. `apply_facts_to_note`
-    // drops facts already filed, so a fully-idempotent message stages nothing.
+    // Render each affected note's diff and flag any contradicting current
+    // facts. A fully-idempotent message stages nothing.
     let mut changes = Vec::new();
     for (note_path, facts) in by_note {
-        let existing = std::fs::read_to_string(formation_root.join(&note_path)).ok();
-        let change = apply_facts_to_note(&note_path, existing.as_deref(), &facts, &source_chat_id);
-        if !change.facts.is_empty() {
+        if let Some(change) =
+            assemble_note_change(store, &formation_root, &note_path, &facts, &source_chat_id)
+                .await?
+        {
             changes.push(change);
         }
     }
