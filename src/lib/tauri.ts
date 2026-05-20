@@ -89,6 +89,11 @@ export interface ChatAskResult {
   used_graph: boolean;
 }
 
+export interface IntentResult {
+  mode: "write" | "ask";
+  confidence: number;
+}
+
 export const tauri = {
   appVersion: () => invoke<string>("app_version"),
 
@@ -127,4 +132,5 @@ export const tauri = {
     channel.onmessage = onToken;
     return invoke<ChatAskResult>("chat_ask", { query, sessionId, onToken: channel });
   },
+  classifyIntent: (message: string) => invoke<IntentResult>("classify_intent", { message }),
 };

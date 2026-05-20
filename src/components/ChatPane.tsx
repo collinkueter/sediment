@@ -12,6 +12,9 @@ export function ChatPane() {
   const setMessageContent = useChatStore((s) => s.setMessageContent);
   const [draft, setDraft] = useState("");
   const [mode, setMode] = useState<Mode>("write");
+  // When true, `mode` tracks the intent classifier; a manual toggle clears it.
+  const [autoMode, setAutoMode] = useState(true);
+  const [lowConfidence, setLowConfidence] = useState(false);
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -19,6 +22,26 @@ export function ChatPane() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   });
+
+  // Auto-classify the draft (debounced) and follow the result while autoMode.
+  useEffect(() => {
+    if (!autoMode) return;
+    const text = draft.trim();
+    if (!text || text.startsWith("/")) {
+      setLowConfidence(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      tauri
+        .classifyIntent(text)
+        .then((r) => {
+          setMode(r.mode);
+          setLowConfidence(r.confidence < 0.8);
+        })
+        .catch(() => {});
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [draft, autoMode]);
 
   async function handleSend() {
     const text = draft.trim();
@@ -52,6 +75,9 @@ export function ChatPane() {
       setMessageContent(assistantId, `⚠️ ${msg}`);
     } finally {
       setBusy(false);
+      // Resume auto-classification for the next message.
+      setAutoMode(true);
+      setLowConfidence(false);
     }
   }
 
@@ -94,7 +120,19 @@ export function ChatPane() {
           className="block w-full resize-none rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm placeholder:text-zinc-400 focus:border-zinc-400 focus:outline-none disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:placeholder:text-zinc-500"
         />
         <div className="mt-2 flex items-center justify-between">
-          <ModeToggle mode={mode} onChange={setMode} disabled={busy} />
+          <div className="flex items-center gap-2">
+            <ModeToggle
+              mode={mode}
+              onChange={(m) => {
+                setMode(m);
+                setAutoMode(false); // a manual pick stops auto-classification
+              }}
+              disabled={busy}
+            />
+            <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
+              {autoMode ? (lowConfidence ? "auto · unsure" : "auto") : "manual"}
+            </span>
+          </div>
           <button
             type="button"
             onClick={() => void handleSend()}

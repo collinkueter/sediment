@@ -28,6 +28,13 @@ const ANSWER_MODEL: &str = "llama3.2:3b";
 /// How many note chunks to pull into the answer context.
 const RETRIEVAL_K: usize = 5;
 
+/// Classify a draft message as Write or Ask. Pure heuristic — no formation or
+/// model needed, so it is safe to call on every keystroke.
+#[tauri::command]
+pub fn classify_intent(message: String) -> crate::core::intent::IntentResult {
+    crate::core::intent::classify(&message)
+}
+
 #[derive(Debug, Serialize)]
 pub struct ChatWriteResult {
     /// Record id of the persisted user message (provenance for the facts).
