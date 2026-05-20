@@ -177,30 +177,18 @@ function ModeToggle({
   );
 }
 
-/// Render a `chat_write` result as a readable assistant message.
+/// Render a `chat_write` result as a readable assistant message. Facts are
+/// staged for review, not committed — the message points at the tray.
 function formatWriteResult(result: ChatWriteResult): string {
-  const { entities, facts, skipped_low_confidence, skipped_unresolved_entity } = result.extraction;
-
-  if (entities.length === 0 && facts.length === 0) {
-    return "No entities or facts found in that message.";
+  if (!result.staged) {
+    return "No new facts found in that message.";
   }
-
-  const lines: string[] = [];
-  if (facts.length > 0) {
-    lines.push(`Filed ${facts.length} fact${facts.length === 1 ? "" : "s"}:`);
-    for (const f of facts) {
-      lines.push(`  • ${f.subject} —${f.predicate}→ ${f.object}`);
-    }
-  }
-  if (entities.length > 0) {
-    const names = entities.map((e) => `${e.text} (${e.class})`).join(", ");
-    lines.push(`Entities: ${names}`);
-  }
-  const skipped = skipped_low_confidence + skipped_unresolved_entity;
-  if (skipped > 0) {
-    lines.push(`(${skipped} low-confidence or unresolved item${skipped === 1 ? "" : "s"} skipped)`);
-  }
-  return lines.join("\n");
+  const { changes } = result.staged;
+  const factCount = changes.reduce((n, c) => n + c.facts.length, 0);
+  const noteCount = changes.length;
+  const facts = `${factCount} fact${factCount === 1 ? "" : "s"}`;
+  const notes = `${noteCount} note${noteCount === 1 ? "" : "s"}`;
+  return `Staged ${facts} across ${notes} — review them in the tray below before they're filed.`;
 }
 
 function EmptyState() {

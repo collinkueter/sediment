@@ -6,9 +6,6 @@
 //! section — and any user frontmatter keys outside the `chat-notes` block —
 //! is never touched. The LLM-polished natural-prose merge is a post-V1
 //! enhancement (see the Phase 3 plan).
-//!
-//! These are pure functions; `chat_write` wires them in at P3-M3.
-#![allow(dead_code)]
 
 use crate::core::memory::slugify;
 use crate::core::staging::{ChangeKind, NoteChange, StagedFact};

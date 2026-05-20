@@ -94,8 +94,6 @@ impl StagingEntry {
     /// Build a fresh entry id from the current time. Millisecond precision +
     /// a short random suffix keeps two same-second batches from colliding.
     /// The compact form avoids `:` so it is a safe filename on every platform.
-    // Wired into `chat_write` in P3-M3.
-    #[allow(dead_code)]
     pub fn new_id() -> String {
         format!(
             "stage_{}_{}",
@@ -110,8 +108,6 @@ fn entry_file(staging_dir: &Path, id: &str) -> PathBuf {
 }
 
 /// Persist `entry` to `<staging_dir>/<id>.json` (atomic temp-file + rename).
-// Wired into `chat_write` in P3-M3.
-#[allow(dead_code)]
 pub fn write(staging_dir: &Path, entry: &StagingEntry) -> AppResult<()> {
     std::fs::create_dir_all(staging_dir)?;
     let bytes = serde_json::to_vec_pretty(entry)?;

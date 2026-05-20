@@ -310,6 +310,31 @@ impl MemoryStore {
             .map_err(|e| AppError::other(format!("current_facts take: {e}")))
     }
 
+    /// Resolve an entity by canonical name or alias **without writing**.
+    /// Returns the stored record's id, type, canonical name, and `note_path`
+    /// (if linked to a note). Used by the staging pipeline to decide whether a
+    /// fact updates an existing note or creates a new one.
+    pub async fn lookup_entity(&self, name: &str) -> AppResult<Option<EntityLookup>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT id, entity_type, canonical_name, note_path FROM entity \
+                 WHERE canonical_name = $name OR $name IN aliases;",
+            )
+            .bind(("name", name.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("lookup_entity: {e}")))?;
+        let rows: Vec<EntityRow> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("lookup_entity take: {e}")))?;
+        Ok(rows.into_iter().next().map(|r| EntityLookup {
+            id: record_id_to_string(&r.id),
+            entity_type: r.entity_type,
+            canonical_name: r.canonical_name,
+            note_path: r.note_path,
+        }))
+    }
+
     /// Top-K similarity search over `note_chunk.embedding`. Uses the HNSW
     /// index defined in the schema (cosine distance).
     pub async fn search_chunks(&self, embedding: Vec<f32>, k: usize) -> AppResult<Vec<ChunkHit>> {
@@ -417,6 +442,26 @@ struct ExistingEntity {
     pub id: RecordId,
     pub canonical_name: String,
     pub aliases: Vec<String>,
+}
+
+/// Row shape for `lookup_entity` — the fields the staging pipeline needs.
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+struct EntityRow {
+    pub id: RecordId,
+    pub entity_type: String,
+    pub canonical_name: String,
+    pub note_path: Option<String>,
+}
+
+/// JS/staging-facing entity resolution result. The `id` is the flat
+/// `entity:<slug>` string; `note_path` is `Some` once the entity has been
+/// filed into a note.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EntityLookup {
+    pub id: String,
+    pub entity_type: String,
+    pub canonical_name: String,
+    pub note_path: Option<String>,
 }
 
 /// Caller-supplied data for a fact write. Strings instead of typed enums
@@ -815,6 +860,41 @@ mod tests {
             .expect("alias upsert");
         assert!(!by_alias.was_new, "alias lookup must reuse entity");
         assert_eq!(by_alias.id, first.id);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// lookup_entity resolves by canonical name or alias and reports note_path.
+    #[tokio::test]
+    async fn lookup_entity_resolves_by_name_and_alias() {
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        // Unknown entity → None.
+        assert!(store.lookup_entity("Nobody").await.expect("miss").is_none());
+
+        store
+            .upsert_entity("Bill Gates", "person", vec!["Bill".into()])
+            .await
+            .expect("upsert");
+
+        let by_name = store
+            .lookup_entity("Bill Gates")
+            .await
+            .expect("by name")
+            .expect("found");
+        assert_eq!(by_name.id, "entity:bill_gates");
+        assert_eq!(by_name.entity_type, "person");
+        assert_eq!(by_name.canonical_name, "Bill Gates");
+        assert!(by_name.note_path.is_none(), "fresh entity has no note yet");
+
+        // Alias resolves to the same record.
+        let by_alias = store
+            .lookup_entity("Bill")
+            .await
+            .expect("by alias")
+            .expect("found");
+        assert_eq!(by_alias.id, by_name.id);
 
         std::fs::remove_dir_all(dir).ok();
     }

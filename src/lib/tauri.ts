@@ -48,32 +48,54 @@ export interface IndexProgress {
   current_path: string;
 }
 
-export interface UpsertedSpan {
-  text: string;
-  class: string;
-  probability: number;
-  entity_id: string;
-  was_new: boolean;
-}
+export type ChangeKind = "create" | "update";
 
-export interface FactWritten {
-  fact_id: string;
-  subject: string;
+export interface StagedFact {
+  subject_id: string;
+  subject_name: string;
+  subject_type: string;
   predicate: string;
-  object: string;
+  object_id: string;
+  object_name: string;
+  object_type: string;
+  valid_from: string;
+  valid_from_explicit: boolean;
   confidence: number;
+  explicit_coexist: boolean;
 }
 
-export interface ExtractFactsResult {
-  entities: UpsertedSpan[];
-  facts: FactWritten[];
-  skipped_low_confidence: number;
-  skipped_unresolved_entity: number;
+export interface Conflict {
+  staged_fact_index: number;
+  predicate: string;
+  existing_object_id: string;
+  existing_object_name: string;
+  existing_valid_from: string;
+  existing_source_chat_id: string;
+}
+
+export interface NoteChange {
+  kind: ChangeKind;
+  note_path: string;
+  diff: string;
+  new_content: string;
+  facts: StagedFact[];
+  confidence: number;
+  conflicts: Conflict[];
+}
+
+export interface StagingEntry {
+  id: string;
+  created: string;
+  chat_message_id: string;
+  chat_excerpt: string;
+  status: string;
+  changes: NoteChange[];
 }
 
 export interface ChatWriteResult {
   source_chat_id: string;
-  extraction: ExtractFactsResult;
+  /** The staging entry created for review, or null when no facts were found. */
+  staged: StagingEntry | null;
 }
 
 export interface RetrievedSource {
@@ -133,4 +155,9 @@ export const tauri = {
     return invoke<ChatAskResult>("chat_ask", { query, sessionId, onToken: channel });
   },
   classifyIntent: (message: string) => invoke<IntentResult>("classify_intent", { message }),
+
+  // Staging tray
+  listStaging: () => invoke<StagingEntry[]>("list_staging"),
+  getStaging: (id: string) => invoke<StagingEntry>("get_staging", { id }),
+  discardStaging: (id: string) => invoke<void>("discard_staging", { id }),
 };

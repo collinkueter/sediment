@@ -68,10 +68,10 @@ pub struct UpsertedSpan {
 
 /// Minimum span confidence we'll accept into the store. Anything noisier
 /// creates entities you'd immediately want to discard from the staging tray.
-const MIN_ENTITY_CONFIDENCE: f32 = 0.5;
+pub const MIN_ENTITY_CONFIDENCE: f32 = 0.5;
 /// Same for relations — RE is generally noisier than NER, so we set the bar
 /// a touch higher. Tunable per-tier in Phase 2 follow-ups.
-const MIN_RELATION_CONFIDENCE: f32 = 0.6;
+pub const MIN_RELATION_CONFIDENCE: f32 = 0.6;
 
 /// Run NER over `text` (using the canonical Sediment entity-type set), then
 /// upsert each detected entity into SurrealDB. Idempotent — re-running on the
@@ -240,4 +240,24 @@ pub async fn run_extract_facts(
         skipped_low_confidence,
         skipped_unresolved_entity,
     })
+}
+
+/// NER + RE over `text` with **no SurrealDB writes** — the staging-pipeline
+/// entry point (Phase 3 decision #7). `chat_write` routes and diffs the
+/// returned spans into a `StagingEntry`; nothing is persisted to the graph
+/// until the user Keeps. Errors with the bootstrap hint when the GLiNER model
+/// files are absent, matching `run_extract_facts`.
+pub fn extract_facts_only(
+    text: &str,
+    formation_root: &std::path::Path,
+) -> AppResult<(Vec<EntitySpan>, Vec<RelationSpan>)> {
+    let paths = ModelPaths::under_app_dir(&formation_root.join(APP_DIR));
+    if !paths.exist() {
+        return Err(AppError::other(
+            crate::core::extraction::model_bootstrap_hint(&paths),
+        ));
+    }
+    let extractor = GlinerExtractor::new(paths);
+    let schema = default_relation_schema();
+    extract_entities_and_relations(&extractor, text, ENTITY_LABELS, &schema)
 }

@@ -4,9 +4,6 @@
 //! *subject* entity's note. If the subject already has a `note_path`, the fact
 //! updates that note; otherwise it creates `<Folder>/<Name>.md`, where the
 //! folder is derived from the entity type.
-//!
-//! These are pure functions; `chat_write` wires them in at P3-M3.
-#![allow(dead_code)]
 
 use crate::core::staging::ChangeKind;
 
