@@ -11,6 +11,8 @@ export interface ChatMessage {
 }
 
 interface ChatState {
+  /** Stable id for this app-launch chat session; provenance for stored facts. */
+  sessionId: string;
   messages: ChatMessage[];
   /** Adds a message and returns its id so callers can stream into it. */
   appendMessage: (msg: Omit<ChatMessage, "id" | "createdAt">) => string;
@@ -22,6 +24,7 @@ interface ChatState {
 }
 
 export const useChatStore = create<ChatState>((set) => ({
+  sessionId: crypto.randomUUID(),
   messages: [],
   appendMessage: (msg) => {
     const id = crypto.randomUUID();

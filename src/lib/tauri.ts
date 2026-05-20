@@ -48,6 +48,34 @@ export interface IndexProgress {
   current_path: string;
 }
 
+export interface UpsertedSpan {
+  text: string;
+  class: string;
+  probability: number;
+  entity_id: string;
+  was_new: boolean;
+}
+
+export interface FactWritten {
+  fact_id: string;
+  subject: string;
+  predicate: string;
+  object: string;
+  confidence: number;
+}
+
+export interface ExtractFactsResult {
+  entities: UpsertedSpan[];
+  facts: FactWritten[];
+  skipped_low_confidence: number;
+  skipped_unresolved_entity: number;
+}
+
+export interface ChatWriteResult {
+  source_chat_id: string;
+  extraction: ExtractFactsResult;
+}
+
 export const tauri = {
   appVersion: () => invoke<string>("app_version"),
 
@@ -76,4 +104,8 @@ export const tauri = {
     channel.onmessage = onToken;
     return invoke<void>("ollama_generate", { model, prompt, onToken: channel });
   },
+
+  // Chat
+  chatWrite: (message: string, sessionId: string) =>
+    invoke<ChatWriteResult>("chat_write", { message, sessionId }),
 };

@@ -190,7 +190,7 @@ impl MemoryStore {
             .query(sql)
             .await
             .map_err(|e| AppError::other(format!("entity_exists: {e}")))?;
-        let rows: Vec<ExistingEntityIdOnly> = res
+        let rows: Vec<IdRow> = res
             .take(0)
             .map_err(|e| AppError::other(format!("entity_exists take: {e}")))?;
         Ok(!rows.is_empty())
@@ -252,7 +252,7 @@ impl MemoryStore {
             .map_err(|e| AppError::other(format!("relate_fact check: {e}")))?;
 
         // Statement 0 = UPDATE supersession, statement 1 = RELATE the new edge.
-        let rows: Vec<NewFactRow> = res
+        let rows: Vec<IdRow> = res
             .take(1)
             .map_err(|e| AppError::other(format!("relate_fact take new: {e}")))?;
         let fact_row = rows
@@ -260,6 +260,36 @@ impl MemoryStore {
             .next()
             .ok_or_else(|| AppError::other("RELATE returned no rows"))?;
         Ok(record_id_to_string(&fact_row.id))
+    }
+
+    /// Persist a chat message and return its record id (e.g. `chat_message:abc`).
+    /// The id becomes the `source_chat_id` provenance pointer on extracted facts.
+    pub async fn insert_chat_message(
+        &self,
+        role: &str,
+        content: &str,
+        session_id: &str,
+    ) -> AppResult<String> {
+        let mut res = self
+            .db
+            .query(
+                "CREATE chat_message SET \
+                 role = $role, content = $content, session_id = $sid;",
+            )
+            .bind(("role", role.to_string()))
+            .bind(("content", content.to_string()))
+            .bind(("sid", session_id.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("insert chat_message: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("insert chat_message check: {e}")))?;
+        let rows: Vec<IdRow> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("insert chat_message take: {e}")))?;
+        rows.into_iter()
+            .next()
+            .map(|r| record_id_to_string(&r.id))
+            .ok_or_else(|| AppError::other("CREATE chat_message returned no row"))
     }
 
     /// Current facts about an entity: edges where `valid_to IS NONE`.
@@ -389,12 +419,6 @@ struct ExistingEntity {
     pub aliases: Vec<String>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
-struct ExistingEntityIdOnly {
-    #[allow(dead_code)]
-    pub id: RecordId,
-}
-
 /// Caller-supplied data for a fact write. Strings instead of typed enums
 /// because the predicate vocabulary lives in `core::extraction` and may
 /// expand without recompiling the storage layer.
@@ -408,8 +432,10 @@ pub struct FactWriteInput {
     pub confidence: f64,
 }
 
+/// Minimal row shape for queries that only need the record id back
+/// (CREATE/RELATE returns, existence checks).
 #[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
-struct NewFactRow {
+struct IdRow {
     pub id: RecordId,
 }
 

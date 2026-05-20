@@ -147,6 +147,19 @@ pub async fn extract_facts(
     memory: State<'_, MemoryHandle>,
 ) -> AppResult<ExtractFactsResult> {
     let formation_root = formation.require()?;
+    let memory_dir = formation_root.join(APP_DIR).join("memory");
+    let store = memory.get_or_init(&memory_dir).await?;
+    run_extract_facts(&text, &source_chat_id, &formation_root, store).await
+}
+
+/// Plain-function core of `extract_facts`, callable from other commands
+/// (notably `chat_write`) without going through Tauri's `State` injection.
+pub async fn run_extract_facts(
+    text: &str,
+    source_chat_id: &str,
+    formation_root: &std::path::Path,
+    store: &crate::core::memory::MemoryStore,
+) -> AppResult<ExtractFactsResult> {
     let app_dir = formation_root.join(APP_DIR);
     let paths = ModelPaths::under_app_dir(&app_dir);
     if !paths.exist() {
@@ -158,10 +171,7 @@ pub async fn extract_facts(
     let extractor = GlinerExtractor::new(paths);
     let schema = default_relation_schema();
     let (entities, relations): (Vec<EntitySpan>, Vec<RelationSpan>) =
-        extract_entities_and_relations(&extractor, &text, ENTITY_LABELS, &schema)?;
-
-    let memory_dir = app_dir.join("memory");
-    let store = memory.get_or_init(&memory_dir).await?;
+        extract_entities_and_relations(&extractor, text, ENTITY_LABELS, &schema)?;
 
     let mut skipped_low_confidence = 0usize;
     let mut skipped_unresolved_entity = 0usize;
@@ -211,7 +221,7 @@ pub async fn extract_facts(
                 predicate: rel.predicate.clone(),
                 object_id,
                 valid_from,
-                source_chat_id: source_chat_id.clone(),
+                source_chat_id: source_chat_id.to_string(),
                 confidence: rel.probability as f64,
             })
             .await?;
