@@ -12,7 +12,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Directory inside the formation root that holds app state — its contents are
 /// intentionally NOT surfaced as user-visible changes.
@@ -86,6 +86,15 @@ fn emit_changes(result: DebounceEventResult, root: &Path, app: &AppHandle) {
         }
     };
     for change in filter_events(events, root) {
+        // Queue created/modified notes for background re-indexing so external
+        // edits stay searchable. Deletions are left for a later cleanup pass.
+        if change.kind == "created" || change.kind == "modified" {
+            if let Some(indexer) = app.try_state::<crate::core::indexer::Indexer>() {
+                for path in &change.paths {
+                    indexer.request(path.clone());
+                }
+            }
+        }
         if let Err(e) = app.emit(EVENT_NAME, &change) {
             tracing::warn!("emit {EVENT_NAME} failed: {e}");
         }

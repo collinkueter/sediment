@@ -2,6 +2,7 @@
 pub mod extraction;
 pub mod formation_state;
 pub mod hardware;
+pub mod indexer;
 pub mod memory;
 pub mod ollama_sidecar;
 pub mod watcher;

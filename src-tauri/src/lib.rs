@@ -67,6 +67,9 @@ pub fn run() {
             // Logging guard is owned by the app so the appender keeps draining.
             let guard = init_logging(app.handle()).expect("init logging");
             app.manage(LoggingGuard(guard));
+            // The background indexer needs an AppHandle, only available here.
+            let indexer = core::indexer::Indexer::start(app.handle().clone());
+            app.manage(indexer);
             tracing::info!("Sediment starting up");
             Ok(())
         })

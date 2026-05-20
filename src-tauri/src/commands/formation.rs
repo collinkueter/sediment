@@ -1,4 +1,5 @@
 use crate::core::formation_state::{atomic_write, AppConfig, FormationNote, FormationState};
+use crate::core::indexer::Indexer;
 use crate::core::watcher::FormationWatcher;
 use crate::error::{AppError, AppResult};
 use std::path::PathBuf;
@@ -101,15 +102,22 @@ pub fn read_note(relative_path: String, state: State<'_, FormationState>) -> App
 }
 
 /// Write a note (atomic). Creates parent dirs if needed. Path stays formation-relative.
+/// After a successful write, queues the note for background re-indexing
+/// (debounced — rapid saves coalesce into one embed pass).
 #[tauri::command]
 pub fn write_note(
     relative_path: String,
     content: String,
     state: State<'_, FormationState>,
+    indexer: State<'_, Indexer>,
 ) -> AppResult<()> {
     let formation = state.require()?;
     let abs = resolve_in_formation(&formation, &relative_path)?;
-    atomic_write(&abs, content.as_bytes())
+    atomic_write(&abs, content.as_bytes())?;
+    if relative_path.ends_with(".md") {
+        indexer.request(relative_path);
+    }
+    Ok(())
 }
 
 #[derive(Debug, serde::Serialize)]

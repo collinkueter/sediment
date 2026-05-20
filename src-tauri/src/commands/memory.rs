@@ -5,15 +5,12 @@
 
 use crate::commands::formation::APP_DIR;
 use crate::core::formation_state::FormationState;
-use crate::core::memory::{ChunkHit, FactRow, FactWriteInput, MemoryHandle, NoteChunkInput};
+use crate::core::indexer::index_note_path;
+use crate::core::memory::{ChunkHit, FactRow, FactWriteInput, MemoryHandle};
 use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use tauri::State;
-
-/// Max chars per chunk before we split. nomic-embed-text caps near 8K but real
-/// recall on smaller windows is empirically better.
-const CHUNK_MAX_CHARS: usize = 1500;
 
 /// Smoke-test the embedded SurrealDB: write two entities, RELATE a fact
 /// edge with a closed validity window, RELATE a second fact starting where
@@ -152,8 +149,9 @@ pub struct SmokeTestResult {
 }
 
 /// Read a note from disk, chunk it, embed each chunk via Ollama, and replace
-/// the note's rows in SurrealDB. Idempotent — calling twice produces the same
-/// result.
+/// the note's rows in SurrealDB. Idempotent. Thin wrapper over the shared
+/// `core::indexer::index_note_path` so the on-demand command and the
+/// background auto-indexer share one code path.
 #[tauri::command]
 pub async fn index_note(
     relative_path: String,
@@ -164,27 +162,10 @@ pub async fn index_note(
     let formation_root = formation.require()?;
     let memory_dir = formation_root.join(APP_DIR).join("memory");
     let store = memory.get_or_init(&memory_dir).await?;
-
-    let abs = formation_root.join(&relative_path);
-    let content = std::fs::read_to_string(&abs)
-        .map_err(|e| AppError::other(format!("read {}: {e}", abs.display())))?;
-
-    let chunks = chunk_markdown(&content);
-    let mut inputs = Vec::with_capacity(chunks.len());
-    for (idx, text) in chunks.iter().enumerate() {
-        let embedding = sidecar.embed(DEFAULT_EMBED_MODEL, text).await?;
-        inputs.push(NoteChunkInput {
-            note_path: relative_path.clone(),
-            chunk_idx: idx as i64,
-            text: text.clone(),
-            embedding,
-        });
-    }
-    let count = inputs.len();
-    store.replace_note_chunks(&relative_path, inputs).await?;
+    let chunk_count = index_note_path(&formation_root, store, &sidecar, &relative_path).await?;
     Ok(IndexNoteResult {
         note_path: relative_path,
-        chunk_count: count,
+        chunk_count,
     })
 }
 
@@ -278,40 +259,4 @@ pub async fn current_facts(
     let memory_dir = formation_root.join(APP_DIR).join("memory");
     let store = memory.get_or_init(&memory_dir).await?;
     store.current_facts(&subject_id).await
-}
-
-/// Split markdown into chunks of `CHUNK_MAX_CHARS` or less, preferring
-/// paragraph breaks. Conservative for Phase 1 — Phase 2+ can swap in a
-/// markdown-aware splitter that respects headings + code fences.
-fn chunk_markdown(content: &str) -> Vec<String> {
-    let paragraphs: Vec<&str> = content
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .collect();
-    let mut out: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for para in paragraphs {
-        if !current.is_empty() && current.len() + para.len() + 2 > CHUNK_MAX_CHARS {
-            out.push(std::mem::take(&mut current));
-        }
-        if !current.is_empty() {
-            current.push_str("\n\n");
-        }
-        if para.len() > CHUNK_MAX_CHARS {
-            // Hard-split very long paragraphs at char boundaries.
-            for slice in para.as_bytes().chunks(CHUNK_MAX_CHARS) {
-                let s = std::str::from_utf8(slice).unwrap_or("");
-                if !s.is_empty() {
-                    out.push(s.to_string());
-                }
-            }
-        } else {
-            current.push_str(para);
-        }
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    out
 }
