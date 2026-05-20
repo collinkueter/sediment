@@ -6,6 +6,7 @@ pub mod indexer;
 pub mod intent;
 pub mod memory;
 pub mod ollama_sidecar;
+pub mod staging;
 pub mod watcher;
 
 // Stubs for later milestones:

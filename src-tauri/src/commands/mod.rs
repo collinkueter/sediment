@@ -5,3 +5,4 @@ pub mod formation;
 pub mod hardware;
 pub mod memory;
 pub mod ollama;
+pub mod staging;
