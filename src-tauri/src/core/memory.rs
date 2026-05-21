@@ -2,6 +2,7 @@
 //! launch, exposes typed helpers for the temporal-fact write/query patterns used
 //! by the extraction pipeline.
 
+use crate::core::similarity::trigram_similarity;
 use crate::error::{AppError, AppResult};
 use std::path::Path;
 use std::sync::Arc;
@@ -12,6 +13,11 @@ use tokio::sync::OnceCell;
 
 const NS: &str = "sediment";
 const DB: &str = "memory";
+
+/// Minimum trigram similarity for `similar_entities` to surface a candidate.
+/// 0.5 keeps the "did you mean" banner to genuine spelling variants rather
+/// than loosely-related names.
+const SIMILAR_NAME_THRESHOLD: f32 = 0.5;
 
 #[derive(Clone)]
 pub struct MemoryStore {
@@ -363,6 +369,63 @@ impl MemoryStore {
         }))
     }
 
+    /// Every entity in the graph as an `EntityLookup`. A personal formation
+    /// stays small enough that a full scan is the right tool for the trigram
+    /// disambiguation check.
+    pub async fn all_entities(&self) -> AppResult<Vec<EntityLookup>> {
+        let mut res = self
+            .db
+            .query("SELECT id, entity_type, canonical_name, note_path FROM entity;")
+            .await
+            .map_err(|e| AppError::other(format!("all_entities: {e}")))?;
+        let rows: Vec<EntityRow> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("all_entities take: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| EntityLookup {
+                id: record_id_to_string(&r.id),
+                entity_type: r.entity_type,
+                canonical_name: r.canonical_name,
+                note_path: r.note_path,
+            })
+            .collect())
+    }
+
+    /// Existing entities whose name is a near — not exact — match for `name`,
+    /// of the same `entity_type`, best match first. An exact case-insensitive
+    /// match is excluded: that resolves through `lookup_entity` and is not a
+    /// "did you mean". Drives the staging tray's disambiguation banner (R4).
+    pub async fn similar_entities(
+        &self,
+        name: &str,
+        entity_type: &str,
+    ) -> AppResult<Vec<EntityMatch>> {
+        let mut matches: Vec<EntityMatch> = self
+            .all_entities()
+            .await?
+            .into_iter()
+            .filter(|e| e.entity_type == entity_type)
+            .filter(|e| !e.canonical_name.eq_ignore_ascii_case(name))
+            .filter_map(|e| {
+                let score = trigram_similarity(name, &e.canonical_name);
+                (score >= SIMILAR_NAME_THRESHOLD).then_some(EntityMatch {
+                    id: e.id,
+                    entity_type: e.entity_type,
+                    canonical_name: e.canonical_name,
+                    note_path: e.note_path,
+                    score,
+                })
+            })
+            .collect();
+        matches.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(matches)
+    }
+
     /// Current facts a new `(subject, predicate, object)` would contradict:
     /// same subject + predicate, a DIFFERENT object, still valid. These are the
     /// facts `relate_fact` would silently supersede — the staging tray surfaces
@@ -565,6 +628,17 @@ pub struct EntityLookup {
     pub entity_type: String,
     pub canonical_name: String,
     pub note_path: Option<String>,
+}
+
+/// An existing entity that is a near name-match for a freshly-mentioned one.
+/// `score` is the trigram similarity in `[0,1]`; higher is closer.
+#[derive(Debug, Clone)]
+pub struct EntityMatch {
+    pub id: String,
+    pub entity_type: String,
+    pub canonical_name: String,
+    pub note_path: Option<String>,
+    pub score: f32,
 }
 
 /// Caller-supplied data for a fact write. Strings instead of typed enums
@@ -1308,5 +1382,48 @@ mod tests {
         assert_eq!(slugify("Q2 Planning"), "q2_planning");
         assert_eq!(slugify("  leading and trailing  "), "leading_and_trailing");
         assert_eq!(slugify("---"), "");
+    }
+
+    #[tokio::test]
+    async fn similar_entities_finds_near_name_matches_only() {
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+        store
+            .upsert_entity("John Smith", "person", vec![])
+            .await
+            .expect("e1");
+        store
+            .upsert_entity("Acme Corporation", "organization", vec![])
+            .await
+            .expect("e2");
+        store
+            .upsert_entity("Jane Doe", "person", vec![])
+            .await
+            .expect("e3");
+
+        // A near match of the same type is surfaced.
+        let near = store
+            .similar_entities("Jon Smith", "person")
+            .await
+            .expect("query");
+        assert_eq!(near.len(), 1, "only John Smith is close; got {near:?}");
+        assert_eq!(near[0].canonical_name, "John Smith");
+
+        // An exact (case-insensitive) match is excluded — that resolves via
+        // lookup_entity and is not a "did you mean".
+        let exact = store
+            .similar_entities("john smith", "person")
+            .await
+            .expect("query");
+        assert!(exact.is_empty(), "an exact name is not a 'did you mean'");
+
+        // A near match of a different type does not cross over.
+        let cross = store
+            .similar_entities("Jon Smith", "organization")
+            .await
+            .expect("query");
+        assert!(cross.is_empty(), "person near-matches stay within persons");
+
+        std::fs::remove_dir_all(dir).ok();
     }
 }

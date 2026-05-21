@@ -60,6 +60,27 @@ pub struct Conflict {
     pub existing_source_chat_id: String,
 }
 
+/// A freshly-mentioned entity that closely matches one already in the graph —
+/// surfaced in the tray as "did you mean [[X]]?" so the user can merge the two
+/// or confirm they are distinct (Phase 3 R4). The graph is untouched until the
+/// user resolves it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisambiguationSuggestion {
+    /// Index into the owning `NoteChange.facts`.
+    pub staged_fact_index: usize,
+    /// Which endpoint of that fact is the near-match: "subject" or "object".
+    pub endpoint: String,
+    /// The name as extracted from the message.
+    pub mention_name: String,
+    /// The existing entity it might really be.
+    pub candidate_id: String,
+    pub candidate_name: String,
+    pub candidate_type: String,
+    pub candidate_note_path: Option<String>,
+    /// Trigram name similarity in `[0,1]` — higher is a closer match.
+    pub score: f32,
+}
+
 /// One note's worth of pending change within a staging entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NoteChange {
@@ -77,6 +98,10 @@ pub struct NoteChange {
     /// Contradictions detected pre-commit (P3-M7). Empty when none.
     #[serde(default)]
     pub conflicts: Vec<Conflict>,
+    /// Near-match entity suggestions for this change's facts (R4). Empty when
+    /// every mentioned entity is exact-resolved or genuinely new.
+    #[serde(default)]
+    pub suggestions: Vec<DisambiguationSuggestion>,
 }
 
 /// One `chat_write` batch awaiting review.
@@ -257,6 +282,7 @@ mod tests {
                 new_content: "## Facts\n\n- Founded Microsoft\n".into(),
                 confidence: 0.91,
                 conflicts: vec![],
+                suggestions: vec![],
                 facts: vec![StagedFact {
                     subject_id: "entity:bill_gates".into(),
                     subject_name: "Bill Gates".into(),

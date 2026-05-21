@@ -1,5 +1,11 @@
 import { useFormationStore, useStagingStore, useUiStore } from "@/lib/store";
-import type { Conflict, ConflictResolution, NoteChange, StagingEntry } from "@/lib/tauri";
+import type {
+  Conflict,
+  ConflictResolution,
+  DisambiguationSuggestion,
+  NoteChange,
+  StagingEntry,
+} from "@/lib/tauri";
 
 /// Bottom tray: extracted facts wait here for review before they touch the
 /// formation. Collapsed it is a one-line summary; expanded it lists each
@@ -84,6 +90,7 @@ function ChangeRow({ entryId, change }: { entryId: string; change: NoteChange })
 
   const factCount = change.facts.length;
   const conflictCount = change.conflicts.length;
+  const suggestionCount = change.suggestions.length;
 
   return (
     <li className="text-xs">
@@ -103,6 +110,14 @@ function ChangeRow({ entryId, change }: { entryId: string; change: NoteChange })
             title={`${conflictCount} conflict${conflictCount === 1 ? "" : "s"}`}
           >
             ⚠ {conflictCount}
+          </span>
+        )}
+        {suggestionCount > 0 && (
+          <span
+            className="shrink-0 text-sky-600 dark:text-sky-400"
+            title={`${suggestionCount} possible duplicate${suggestionCount === 1 ? "" : "s"}`}
+          >
+            ≈ {suggestionCount}
           </span>
         )}
         <div className="ml-auto flex shrink-0 gap-1">
@@ -138,7 +153,65 @@ function ChangeRow({ entryId, change }: { entryId: string; change: NoteChange })
           conflict={conflict}
         />
       ))}
+      {change.suggestions.map((suggestion) => (
+        <DisambiguationBanner
+          key={`${suggestion.staged_fact_index}-${suggestion.endpoint}`}
+          entryId={entryId}
+          change={change}
+          suggestion={suggestion}
+        />
+      ))}
     </li>
+  );
+}
+
+/// "Did you mean [[X]]?" banner for a freshly-mentioned entity that closely
+/// matches one already in the formation (spec §10 disambiguation). "Use X"
+/// merges the staged fact onto the existing entity; "Keep separate" confirms
+/// it is genuinely new.
+function DisambiguationBanner({
+  entryId,
+  change,
+  suggestion,
+}: {
+  entryId: string;
+  change: NoteChange;
+  suggestion: DisambiguationSuggestion;
+}) {
+  const applyDisambiguation = useStagingStore((s) => s.applyDisambiguation);
+  const dismissDisambiguation = useStagingStore((s) => s.dismissDisambiguation);
+
+  const args = [
+    entryId,
+    change.note_path,
+    suggestion.staged_fact_index,
+    suggestion.endpoint,
+  ] as const;
+
+  return (
+    <div className="mt-1 ml-6 rounded border border-sky-300 bg-sky-50 px-2 py-1.5 dark:border-sky-800/60 dark:bg-sky-950/40">
+      <p className="text-[11px] text-sky-800 dark:text-sky-300">
+        <span className="font-medium">{suggestion.mention_name}</span> looks like the existing{" "}
+        <span className="font-medium">{suggestion.candidate_name}</span> — same{" "}
+        {suggestion.candidate_type}?
+      </p>
+      <div className="mt-1 flex gap-1">
+        <button
+          type="button"
+          onClick={() => void applyDisambiguation(...args)}
+          className="rounded border border-sky-300 bg-white px-1.5 py-0.5 text-[11px] text-sky-800 hover:bg-sky-100 dark:border-sky-800/60 dark:bg-sky-900/40 dark:text-sky-200 dark:hover:bg-sky-900"
+        >
+          Use {suggestion.candidate_name}
+        </button>
+        <button
+          type="button"
+          onClick={() => void dismissDisambiguation(...args)}
+          className="rounded border border-sky-300 bg-white px-1.5 py-0.5 text-[11px] text-sky-800 hover:bg-sky-100 dark:border-sky-800/60 dark:bg-sky-900/40 dark:text-sky-200 dark:hover:bg-sky-900"
+        >
+          Keep separate
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -100,6 +100,20 @@ export interface Conflict {
 /** How the user resolves a staged-fact conflict. */
 export type ConflictResolution = "update" | "coexist" | "discard";
 
+/** A freshly-mentioned entity that closely matches one already in the graph. */
+export interface DisambiguationSuggestion {
+  staged_fact_index: number;
+  /** Which endpoint of the fact is the near-match: "subject" or "object". */
+  endpoint: string;
+  mention_name: string;
+  candidate_id: string;
+  candidate_name: string;
+  candidate_type: string;
+  candidate_note_path: string | null;
+  /** Trigram name similarity in [0,1]. */
+  score: number;
+}
+
 export interface NoteChange {
   kind: ChangeKind;
   note_path: string;
@@ -108,6 +122,7 @@ export interface NoteChange {
   facts: StagedFact[];
   confidence: number;
   conflicts: Conflict[];
+  suggestions: DisambiguationSuggestion[];
 }
 
 export interface StagingEntry {
@@ -226,6 +241,20 @@ export const tauri = {
     stagedFactIndex: number,
     resolution: ConflictResolution,
   ) => invoke<void>("resolve_conflict", { stagingId, notePath, stagedFactIndex, resolution }),
+  /** Accept a "did you mean?" suggestion — merge into the matched entity. */
+  applyDisambiguation: (
+    stagingId: string,
+    notePath: string,
+    stagedFactIndex: number,
+    endpoint: string,
+  ) => invoke<void>("apply_disambiguation", { stagingId, notePath, stagedFactIndex, endpoint }),
+  /** Dismiss a "did you mean?" suggestion — keep the entity as genuinely new. */
+  dismissDisambiguation: (
+    stagingId: string,
+    notePath: string,
+    stagedFactIndex: number,
+    endpoint: string,
+  ) => invoke<void>("dismiss_disambiguation", { stagingId, notePath, stagedFactIndex, endpoint }),
   /** Commit a staging entry. Pass `notePaths` to keep only those notes. */
   keepStaging: (id: string, notePaths?: string[]) =>
     invoke<CommitResult>("keep_staging", { id, notePaths: notePaths ?? null }),

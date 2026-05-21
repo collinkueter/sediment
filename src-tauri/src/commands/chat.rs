@@ -37,7 +37,7 @@ const RETRIEVAL_K: usize = 5;
 /// The note every fact about the note-taker is filed into. One stable path
 /// means "I" / "we" / "my" statements across many messages accrete in a single
 /// place instead of scattering by pronoun.
-const SELF_NOTE_PATH: &str = "People/Me.md";
+pub(crate) const SELF_NOTE_PATH: &str = "People/Me.md";
 
 /// The Ollama chat model to generate with, resolved from the user's tier
 /// (spec §5). BYOK / an unset tier fall back to the Lite model.
@@ -1105,6 +1105,109 @@ mod e2e_extraction {
         assert!(
             content.contains("Dana gives great design feedback."),
             "the user's hand-edited prose is preserved\n--- Dana.md ---\n{content}"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Phase 3 R4: a freshly-mentioned entity whose name nearly matches an
+    /// existing one carries a disambiguation suggestion; accepting it re-points
+    /// the fact onto the existing entity and re-routes the change to its note.
+    #[tokio::test]
+    async fn a_near_name_match_offers_a_disambiguation_then_merges() {
+        use crate::commands::staging::{run_apply_disambiguation, staging_dir};
+        let root = tempdir();
+        let store = MemoryStore::open(&root.join(APP_DIR).join("memory"))
+            .await
+            .expect("open store");
+        let sidecar = OllamaSidecar::default();
+        let watcher = FormationWatcher::default();
+
+        // Seed an existing person, committed so they own a note in the graph.
+        let seed = run_chat_write(
+            "John Smith works at Acme.",
+            "sess",
+            &ScriptedExtractor {
+                extraction: Extraction {
+                    entities: vec![ent("John Smith", "person"), ent("Acme", "organization")],
+                    relations: vec![rel("John Smith", "works_at", "Acme")],
+                },
+            },
+            &root,
+            &store,
+        )
+        .await
+        .expect("seed write");
+        commit_changes(
+            &root,
+            &store,
+            &sidecar,
+            &watcher,
+            seed.staged.expect("seed staged"),
+            None,
+        )
+        .await
+        .expect("seed commit");
+
+        // A new message names "Jon Smith" — a near-match, resolved as new.
+        let w = run_chat_write(
+            "Jon Smith joined the chess club.",
+            "sess",
+            &ScriptedExtractor {
+                extraction: Extraction {
+                    entities: vec![
+                        ent("Jon Smith", "person"),
+                        ent("chess club", "organization"),
+                    ],
+                    relations: vec![rel("Jon Smith", "member_of", "chess club")],
+                },
+            },
+            &root,
+            &store,
+        )
+        .await
+        .expect("write");
+        let entry = w.staged.expect("staged");
+
+        // The new note carries a "did you mean John Smith?" suggestion.
+        let change = entry
+            .changes
+            .iter()
+            .find(|c| c.note_path == "People/Jon Smith.md")
+            .expect("a change for the new Jon Smith note");
+        let suggestion = change
+            .suggestions
+            .iter()
+            .find(|s| s.endpoint == "subject")
+            .expect("a subject disambiguation suggestion");
+        assert_eq!(suggestion.candidate_name, "John Smith");
+
+        // Accept it — the fact re-routes onto John Smith's existing note.
+        run_apply_disambiguation(
+            &root,
+            &store,
+            &entry.id,
+            "People/Jon Smith.md",
+            0,
+            "subject",
+        )
+        .await
+        .expect("apply disambiguation");
+
+        let merged = staging::read_one(&staging_dir(&root), &entry.id).expect("re-read entry");
+        assert!(
+            merged
+                .changes
+                .iter()
+                .any(|c| c.note_path == "People/John Smith.md"),
+            "the fact moved onto John Smith's existing note"
+        );
+        assert!(
+            !merged
+                .changes
+                .iter()
+                .any(|c| c.note_path == "People/Jon Smith.md"),
+            "the Jon Smith note is gone after the merge"
         );
 
         std::fs::remove_dir_all(root).ok();

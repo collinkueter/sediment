@@ -10,6 +10,7 @@ pub mod memory;
 pub mod models;
 pub mod ollama_sidecar;
 pub mod router;
+pub mod similarity;
 pub mod staging;
 pub mod watcher;
 

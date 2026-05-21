@@ -164,6 +164,7 @@ pub fn apply_facts_to_note(
             facts: Vec::new(),
             confidence: 1.0,
             conflicts: Vec::new(),
+            suggestions: Vec::new(),
         };
     }
 
@@ -182,6 +183,7 @@ pub fn apply_facts_to_note(
         facts: added,
         confidence,
         conflicts: Vec::new(),
+        suggestions: Vec::new(),
     }
 }
 

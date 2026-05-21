@@ -247,6 +247,20 @@ interface StagingState {
     factIndex: number,
     resolution: ConflictResolution,
   ) => Promise<void>;
+  /** Accept a "did you mean?" suggestion, merging into the matched entity. */
+  applyDisambiguation: (
+    entryId: string,
+    notePath: string,
+    factIndex: number,
+    endpoint: string,
+  ) => Promise<void>;
+  /** Dismiss a "did you mean?" suggestion, keeping the entity as new. */
+  dismissDisambiguation: (
+    entryId: string,
+    notePath: string,
+    factIndex: number,
+    endpoint: string,
+  ) => Promise<void>;
   /** Revert the most recent commit while its undo window is open. */
   undo: () => Promise<void>;
   /** Dismiss the undo toast without reverting. */
@@ -342,6 +356,24 @@ export const useStagingStore = create<StagingState>((set, get) => {
         await tauri.resolveConflict(entryId, notePath, factIndex, resolution);
       } catch (e) {
         console.warn("resolve conflict failed:", e);
+      }
+      await get().refresh();
+    },
+
+    async applyDisambiguation(entryId, notePath, factIndex, endpoint) {
+      try {
+        await tauri.applyDisambiguation(entryId, notePath, factIndex, endpoint);
+      } catch (e) {
+        console.warn("apply disambiguation failed:", e);
+      }
+      await get().refresh();
+    },
+
+    async dismissDisambiguation(entryId, notePath, factIndex, endpoint) {
+      try {
+        await tauri.dismissDisambiguation(entryId, notePath, factIndex, endpoint);
+      } catch (e) {
+        console.warn("dismiss disambiguation failed:", e);
       }
       await get().refresh();
     },

@@ -98,6 +98,8 @@ pub fn run() {
             commands::staging::discard_staging,
             commands::staging::update_staging,
             commands::staging::resolve_conflict,
+            commands::staging::apply_disambiguation,
+            commands::staging::dismiss_disambiguation,
             commands::staging::keep_staging,
             commands::staging::undo_commit,
             commands::ollama::ollama_status,

@@ -6,14 +6,17 @@
 //! bi-temporal fact edges, and re-indexes. An undo record captures everything
 //! needed to reverse it within the UI's 10-second window.
 
+use crate::commands::chat::SELF_NOTE_PATH;
 use crate::commands::formation::APP_DIR;
 use crate::core::diff_gen::apply_facts_to_note;
 use crate::core::formation_state::{atomic_write, FormationState};
 use crate::core::indexer::index_note_path;
 use crate::core::memory::{FactWriteInput, MemoryHandle, MemoryStore};
 use crate::core::ollama_sidecar::OllamaSidecar;
+use crate::core::router::route_fact_unique;
 use crate::core::staging::{
-    self, Conflict, NoteChange, StagedFact, StagingEntry, UndoNote, UndoRecord,
+    self, Conflict, DisambiguationSuggestion, NoteChange, StagedFact, StagingEntry, UndoNote,
+    UndoRecord,
 };
 use crate::core::watcher::FormationWatcher;
 use crate::error::{AppError, AppResult};
@@ -70,6 +73,45 @@ pub(crate) async fn assemble_note_change(
                 existing_valid_from: c.valid_from,
                 existing_source_chat_id: c.source_chat_id,
             });
+        }
+    }
+
+    // Disambiguation (R4): an endpoint that is a brand-new entity but closely
+    // matches an existing one of the same type gets a "did you mean?" banner.
+    // The note-taker is never a disambiguation candidate.
+    for idx in 0..change.facts.len() {
+        let (subject, object) = {
+            let f = &change.facts[idx];
+            (
+                (f.subject_name.clone(), f.subject_type.clone()),
+                (f.object_name.clone(), f.object_type.clone()),
+            )
+        };
+        for (endpoint, (name, etype)) in [("subject", subject), ("object", object)] {
+            if name == crate::core::extraction::SELF_NAME {
+                continue;
+            }
+            // An entity already in the graph is exact-resolved, not a guess.
+            if store.lookup_entity(&name).await?.is_some() {
+                continue;
+            }
+            if let Some(best) = store
+                .similar_entities(&name, &etype)
+                .await?
+                .into_iter()
+                .next()
+            {
+                change.suggestions.push(DisambiguationSuggestion {
+                    staged_fact_index: idx,
+                    endpoint: endpoint.to_string(),
+                    mention_name: name,
+                    candidate_id: best.id,
+                    candidate_name: best.canonical_name,
+                    candidate_type: best.entity_type,
+                    candidate_note_path: best.note_path,
+                    score: best.score,
+                });
+            }
         }
     }
     Ok(Some(change))
@@ -174,6 +216,166 @@ pub async fn resolve_conflict(
         staging::write(&sdir, &entry)?;
     }
     Ok(())
+}
+
+/// Re-point a fact endpoint to an existing entity and re-render the entry.
+/// The plain-fn core of `apply_disambiguation`, free of Tauri `State` so it is
+/// directly testable.
+pub(crate) async fn run_apply_disambiguation(
+    root: &Path,
+    store: &MemoryStore,
+    staging_id: &str,
+    note_path: &str,
+    staged_fact_index: usize,
+    endpoint: &str,
+) -> AppResult<()> {
+    let sdir = staging_dir(root);
+    let mut entry = staging::read_one(&sdir, staging_id)?;
+
+    let Some(pos) = entry.changes.iter().position(|c| c.note_path == note_path) else {
+        return Err(AppError::other(format!("no staged change for {note_path}")));
+    };
+    let suggestion = entry.changes[pos]
+        .suggestions
+        .iter()
+        .find(|s| s.staged_fact_index == staged_fact_index && s.endpoint == endpoint)
+        .cloned()
+        .ok_or_else(|| AppError::other("no matching disambiguation suggestion"))?;
+
+    // Re-point the targeted endpoint onto the existing entity.
+    {
+        let fact = entry.changes[pos]
+            .facts
+            .get_mut(staged_fact_index)
+            .ok_or_else(|| AppError::other("staged_fact_index out of range"))?;
+        match endpoint {
+            "subject" => {
+                fact.subject_id = suggestion.candidate_id;
+                fact.subject_name = suggestion.candidate_name;
+                fact.subject_type = suggestion.candidate_type;
+            }
+            "object" => {
+                fact.object_id = suggestion.candidate_id;
+                fact.object_name = suggestion.candidate_name;
+                fact.object_type = suggestion.candidate_type;
+            }
+            other => return Err(AppError::other(format!("unknown endpoint: {other}"))),
+        }
+    }
+
+    // A subject re-point can move the fact to a different note, so the whole
+    // entry is re-routed and re-rendered from its (now-edited) facts.
+    let facts: Vec<StagedFact> = entry.changes.iter().flat_map(|c| c.facts.clone()).collect();
+    let changes = reassemble_changes(store, root, facts, &entry.chat_message_id).await?;
+    if changes.is_empty() {
+        staging::remove(&sdir, staging_id)?;
+    } else {
+        entry.changes = changes;
+        staging::write(&sdir, &entry)?;
+    }
+    Ok(())
+}
+
+/// Accept a disambiguation suggestion: merge the freshly-mentioned entity into
+/// the existing one it matched, re-routing the staged change as needed. Still
+/// pre-commit — the graph is untouched.
+#[tauri::command]
+pub async fn apply_disambiguation(
+    staging_id: String,
+    note_path: String,
+    staged_fact_index: usize,
+    endpoint: String,
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+) -> AppResult<()> {
+    let root = formation.require()?;
+    let store = memory
+        .get_or_init(&root.join(APP_DIR).join("memory"))
+        .await?;
+    run_apply_disambiguation(
+        &root,
+        store,
+        &staging_id,
+        &note_path,
+        staged_fact_index,
+        &endpoint,
+    )
+    .await
+}
+
+/// Dismiss a disambiguation suggestion: the user confirms the entity is
+/// genuinely new. Drops only the banner — the staged fact is left unchanged.
+#[tauri::command]
+pub fn dismiss_disambiguation(
+    staging_id: String,
+    note_path: String,
+    staged_fact_index: usize,
+    endpoint: String,
+    formation: State<'_, FormationState>,
+) -> AppResult<()> {
+    let root = formation.require()?;
+    let sdir = staging_dir(&root);
+    let mut entry = staging::read_one(&sdir, &staging_id)?;
+    let Some(change) = entry.changes.iter_mut().find(|c| c.note_path == note_path) else {
+        return Err(AppError::other(format!("no staged change for {note_path}")));
+    };
+    change
+        .suggestions
+        .retain(|s| !(s.staged_fact_index == staged_fact_index && s.endpoint == endpoint));
+    staging::write(&sdir, &entry)?;
+    Ok(())
+}
+
+/// Group an entry's facts by their subject's note and re-render each into a
+/// fresh `NoteChange`. Used after a disambiguation re-point, which can move a
+/// fact onto a different entity's note.
+async fn reassemble_changes(
+    store: &MemoryStore,
+    formation_root: &Path,
+    facts: Vec<StagedFact>,
+    source_chat_id: &str,
+) -> AppResult<Vec<NoteChange>> {
+    let mut by_note: Vec<(String, Vec<StagedFact>)> = Vec::new();
+    for fact in facts {
+        let note_path = staged_fact_note_path(store, formation_root, &fact).await?;
+        match by_note.iter_mut().find(|(p, _)| p == &note_path) {
+            Some((_, fs)) => fs.push(fact),
+            None => by_note.push((note_path, vec![fact])),
+        }
+    }
+    let mut changes = Vec::new();
+    for (note_path, facts) in by_note {
+        if let Some(change) =
+            assemble_note_change(store, formation_root, &note_path, &facts, source_chat_id).await?
+        {
+            changes.push(change);
+        }
+    }
+    Ok(changes)
+}
+
+/// The note a staged fact's subject is filed in: the note-taker's facts
+/// co-locate on the canonical "Me" note; everyone else uses their linked note
+/// or a fresh, collision-suffixed one under their type's folder.
+async fn staged_fact_note_path(
+    store: &MemoryStore,
+    formation_root: &Path,
+    fact: &StagedFact,
+) -> AppResult<String> {
+    if fact.subject_name == crate::core::extraction::SELF_NAME {
+        return Ok(SELF_NOTE_PATH.to_string());
+    }
+    let existing = store
+        .lookup_entity(&fact.subject_name)
+        .await?
+        .and_then(|e| e.note_path);
+    let (path, _) = route_fact_unique(
+        &fact.subject_type,
+        &fact.subject_name,
+        existing.as_deref(),
+        formation_root,
+    );
+    Ok(path)
 }
 
 /// Outcome of a Keep — enough for the UI to show an undo toast and refresh.
@@ -430,6 +632,7 @@ mod tests {
                 new_content: "---\nchat-notes:\n  facts:\n    \"founded:acme\": \"chat_message:test\"\n---\n\n## Facts\n\n- Founded Acme\n".into(),
                 confidence: 0.95,
                 conflicts: vec![],
+                suggestions: vec![],
                 facts: vec![StagedFact {
                     subject_id: "entity:alice".into(),
                     subject_name: "Alice".into(),
