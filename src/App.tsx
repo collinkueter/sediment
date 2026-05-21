@@ -2,12 +2,13 @@ import { ChatPane } from "@/components/ChatPane";
 import { FileTree } from "@/components/FileTree";
 import { FormationPicker } from "@/components/FormationPicker";
 import { IndexProgress } from "@/components/IndexProgress";
+import { ModelSetup } from "@/components/ModelSetup";
 import { NoteViewer } from "@/components/NoteViewer";
 import { Onboarding } from "@/components/Onboarding";
 import { StagingTray } from "@/components/StagingTray";
 import { UndoToast } from "@/components/UndoToast";
 import { useFormationStore, useStagingStore, useUiStore } from "@/lib/store";
-import { tauri } from "@/lib/tauri";
+import { type ModelReadiness, tauri } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 
@@ -23,6 +24,8 @@ export default function App() {
   const handleExternalChange = useFormationStore((s) => s.handleExternalChange);
   const formationPath = useFormationStore((s) => s.formationPath);
   const refreshStaging = useStagingStore((s) => s.refresh);
+  const [modelReadiness, setModelReadiness] = useState<ModelReadiness | null>(null);
+  const [modelsChecked, setModelsChecked] = useState(false);
 
   useEffect(() => {
     tauri
@@ -67,9 +70,32 @@ export default function App() {
     };
   }, [formationPath, refreshStaging]);
 
+  useEffect(() => {
+    // On launch (and on formation switch) check the active tier has its
+    // models. The GLiNER model is per-formation, so this needs a formation.
+    if (onboardingComplete !== true || !formationPath) return;
+    setModelsChecked(false);
+    tauri
+      .checkModelReadiness()
+      .then(setModelReadiness)
+      .catch((e) => {
+        console.warn("model readiness check failed:", e);
+        setModelReadiness(null);
+      })
+      .finally(() => setModelsChecked(true));
+  }, [onboardingComplete, formationPath]);
+
   // Show onboarding until the user finishes it. `null` = still loading state from disk.
   if (onboardingComplete === false) {
     return <Onboarding onComplete={() => setOnboardingComplete(true)} />;
+  }
+
+  // With a formation open, hold the app behind the model check.
+  if (onboardingComplete === true && formationPath && !modelsChecked) {
+    return <CheckingModels />;
+  }
+  if (modelReadiness && !modelReadiness.all_present) {
+    return <ModelSetup readiness={modelReadiness} onComplete={() => setModelReadiness(null)} />;
   }
 
   return (
@@ -94,6 +120,14 @@ export default function App() {
       </main>
       <StagingTray />
       <UndoToast />
+    </div>
+  );
+}
+
+function CheckingModels() {
+  return (
+    <div className="flex h-full w-full items-center justify-center bg-zinc-50 text-sm text-zinc-400 dark:bg-zinc-950 dark:text-zinc-500">
+      Checking models…
     </div>
   );
 }

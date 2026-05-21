@@ -40,6 +40,7 @@ pub fn predicate_phrasing(predicate: &str) -> String {
         "visited" => "Visited",
         "expert_in" => "Expert in",
         "interested_in" => "Interested in",
+        "advocates_for" => "Advocates for",
         "attended" => "Attended",
         "organized" => "Organized",
         "presented_at" => "Presented at",
@@ -65,6 +66,30 @@ pub fn predicate_phrasing(predicate: &str) -> String {
     phrase.to_string()
 }
 
+/// Past-tense verb phrase for a predicate, used when a fact has a closed
+/// validity interval (a `valid_to`). Predicates that already read as past
+/// tense — or have no distinct past form worth special-casing — fall back to
+/// the present-tense phrasing.
+pub fn predicate_phrasing_past(predicate: &str) -> String {
+    let phrase = match predicate {
+        "works_at" => "Worked at",
+        "member_of" => "Was a member of",
+        "leads" => "Led",
+        "manages" => "Managed",
+        "advises" => "Advised",
+        "reports_to" => "Reported to",
+        "owns_task" => "Owned task",
+        "advocates_for" => "Advocated for",
+        "lives_in" => "Lived in",
+        "contributes_to" => "Contributed to",
+        "invests_in" => "Invested in",
+        "expert_in" => "Was an expert in",
+        "interested_in" => "Was interested in",
+        _ => return predicate_phrasing(predicate),
+    };
+    phrase.to_string()
+}
+
 /// `snake_case` → `Sentence case` fallback for unknown predicates.
 fn humanize(predicate: &str) -> String {
     let spaced = predicate.replace('_', " ");
@@ -81,14 +106,16 @@ pub fn fact_id(fact: &StagedFact) -> String {
     format!("{}:{}", fact.predicate, slugify(&fact.object_name))
 }
 
-/// Render one fact as a markdown bullet, e.g. `- Founded Microsoft`. When the
-/// fact carries an explicitly-extracted date, the year is appended.
+/// Render one fact as a markdown bullet, e.g. `- Founded Microsoft`. A fact
+/// with a closed validity interval (`valid_to` set) renders past-tense; one
+/// with an explicitly-extracted `valid_from` has its year appended.
 pub fn render_fact_bullet(fact: &StagedFact) -> String {
-    let base = format!(
-        "- {} {}",
-        predicate_phrasing(&fact.predicate),
-        fact.object_name.trim()
-    );
+    let phrasing = if fact.valid_to.is_some() {
+        predicate_phrasing_past(&fact.predicate)
+    } else {
+        predicate_phrasing(&fact.predicate)
+    };
+    let base = format!("- {} {}", phrasing, fact.object_name.trim());
     if fact.valid_from_explicit {
         format!("{base} ({})", fact.valid_from.format("%Y"))
     } else {
@@ -415,6 +442,7 @@ mod tests {
             object_type: "organization".into(),
             valid_from: chrono::Utc::now(),
             valid_from_explicit: false,
+            valid_to: None,
             confidence: 0.9,
             explicit_coexist: false,
         }

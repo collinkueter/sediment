@@ -324,6 +324,7 @@ pub async fn relate_fact_command(
             predicate: payload.predicate,
             object_id: payload.object_id,
             valid_from,
+            valid_to: None,
             source_chat_id: payload.source_chat_id,
             confidence: payload.confidence,
         })

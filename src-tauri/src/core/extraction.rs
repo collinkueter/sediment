@@ -84,7 +84,7 @@ pub fn default_relation_schema() -> RelationSchema {
     }
 
     // person → topic
-    for pred in &["expert_in", "interested_in"] {
+    for pred in &["expert_in", "interested_in", "advocates_for"] {
         s.push_with_allowed_labels(pred, &["person"], &["topic"]);
     }
 
@@ -158,6 +158,98 @@ pub struct RelationSpan {
 /// so the implementation can be swapped (e.g. LLM-based extraction) if needed.
 pub trait EntityExtractor: Send + Sync {
     fn extract(&self, sentences: &[&str], labels: &[&str]) -> AppResult<Vec<Vec<EntitySpan>>>;
+}
+
+// --- Structured extraction (Phase 4): the Write pipeline's input contract ---
+
+/// A fully-resolved extraction — the structured output `chat_write` consumes.
+/// Unlike the raw `(EntitySpan, RelationSpan)` pair this carries note-taker
+/// ("self") resolution and explicit temporal bounds, so an LLM extractor can
+/// express things GLiNER's zero-shot NER+RE cannot (see ADR-0006).
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+pub struct Extraction {
+    pub entities: Vec<ExtractedEntity>,
+    pub relations: Vec<ExtractedRelation>,
+}
+
+/// One entity an extractor surfaced, already resolved to a canonical name.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct ExtractedEntity {
+    /// Canonical display name. For the note-taker this is always `SELF_NAME`.
+    pub name: String,
+    /// One of `ENTITY_LABELS`.
+    pub entity_type: String,
+    /// True when this entity is the note-taker — i.e. the message referred to
+    /// them as "I" / "we" / "me" / "my". Facts about them route to one note.
+    #[serde(default)]
+    pub is_self: bool,
+    pub confidence: f32,
+}
+
+/// One relation between two extracted entities, with optional validity bounds.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct ExtractedRelation {
+    /// Subject entity — matches an `ExtractedEntity.name`.
+    pub subject: String,
+    pub predicate: String,
+    /// Object entity — matches an `ExtractedEntity.name`.
+    pub object: String,
+    /// Explicit start of validity, if the message stated one.
+    #[serde(default)]
+    pub valid_from: Option<chrono::DateTime<chrono::Utc>>,
+    /// Explicit end of validity. `Some(_)` marks the fact historical (a closed
+    /// interval) — e.g. a former employer — so it renders past-tense and is
+    /// not returned by `current_facts`.
+    #[serde(default)]
+    pub valid_to: Option<chrono::DateTime<chrono::Utc>>,
+    pub confidence: f32,
+}
+
+/// Canonical name for the note-taker entity. Facts whose subject `is_self`
+/// route to `People/Me.md` regardless of the pronoun the message used.
+pub const SELF_NAME: &str = "Me";
+
+/// Produces a structured `Extraction` from a raw chat message. Keeps the Write
+/// pipeline decoupled from any single extractor — GLiNER, an LLM, or a test
+/// fake all sit behind this trait (ADR-0003's planned extension point,
+/// realised in ADR-0006). Async because an LLM extractor is an HTTP call.
+#[async_trait::async_trait]
+pub trait FactExtractor: Send + Sync {
+    async fn extract_facts(&self, message: &str) -> AppResult<Extraction>;
+}
+
+/// A `FactExtractor` that replays a fixed `Extraction` regardless of input.
+/// Lets the Write pipeline be tested end-to-end deterministically, with no
+/// ONNX or LLM dependency.
+#[cfg(test)]
+pub struct ScriptedExtractor {
+    pub extraction: Extraction,
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl FactExtractor for ScriptedExtractor {
+    async fn extract_facts(&self, _message: &str) -> AppResult<Extraction> {
+        Ok(self.extraction.clone())
+    }
+}
+
+/// Extract a 4-digit year (1000–9999) from free text. The first such run wins —
+/// enough for "1975", "joined in 2021", "since 2024". Returns midnight UTC on
+/// Jan 1 of that year (the year-granularity `valid_from` heuristic).
+pub fn parse_year_start(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::TimeZone;
+    let chars: Vec<char> = text.chars().collect();
+    for window in chars.windows(4) {
+        if window.iter().all(char::is_ascii_digit) {
+            if let Ok(year) = window.iter().collect::<String>().parse::<i32>() {
+                if (1000..=9999).contains(&year) {
+                    return chrono::Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).single();
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Default model layout under `<formation>/.chat-notes/models/`. The multitask
@@ -316,6 +408,53 @@ pub fn extract_entities_and_relations(
     Ok((entities, relations))
 }
 
+#[async_trait::async_trait]
+impl FactExtractor for GlinerExtractor {
+    /// GLiNER fallback. Runs NER+RE over the message and maps the result into
+    /// an `Extraction`. GLiNER cannot resolve self-reference or tense, so
+    /// `is_self` is always false and relations carry no `valid_to`; the single
+    /// unambiguous-date heuristic from the original `chat_write` path is kept
+    /// as the only `valid_from` source.
+    async fn extract_facts(&self, message: &str) -> AppResult<Extraction> {
+        let schema = default_relation_schema();
+        let (entities, relations) =
+            extract_entities_and_relations(self, message, ENTITY_LABELS, &schema)?;
+
+        let date_texts: Vec<&str> = entities
+            .iter()
+            .filter(|e| e.class == "date")
+            .map(|e| e.text.as_str())
+            .collect();
+        let single_year = match date_texts.as_slice() {
+            [one] => parse_year_start(one),
+            _ => None,
+        };
+
+        Ok(Extraction {
+            entities: entities
+                .into_iter()
+                .map(|e| ExtractedEntity {
+                    name: e.text,
+                    entity_type: e.class,
+                    is_self: false,
+                    confidence: e.probability,
+                })
+                .collect(),
+            relations: relations
+                .into_iter()
+                .map(|r| ExtractedRelation {
+                    subject: r.subject,
+                    predicate: r.predicate,
+                    object: r.object,
+                    valid_from: single_year,
+                    valid_to: None,
+                    confidence: r.probability,
+                })
+                .collect(),
+        })
+    }
+}
+
 fn spans_to_entity_rows(output: SpanOutput) -> Vec<Vec<EntitySpan>> {
     let mut out = Vec::with_capacity(output.spans.len());
     for spans in output.spans {
@@ -433,5 +572,15 @@ mod tests {
         assert!(works_at.allows_subject("person"));
         assert!(works_at.allows_object("organization"));
         assert!(!works_at.allows_subject("organization"));
+        // The opinion/advocacy predicate added in Phase 4.
+        assert!(rels.contains_key("advocates_for"));
+    }
+
+    #[test]
+    fn parse_year_start_resolves_a_four_digit_year() {
+        let dt = parse_year_start("joined in 2021").expect("year parsed");
+        assert_eq!(dt.to_rfc3339(), "2021-01-01T00:00:00+00:00");
+        assert!(parse_year_start("last March").is_none());
+        assert!(parse_year_start("42").is_none(), "two digits is not a year");
     }
 }

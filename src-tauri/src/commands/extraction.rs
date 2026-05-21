@@ -221,6 +221,7 @@ pub async fn run_extract_facts(
                 predicate: rel.predicate.clone(),
                 object_id,
                 valid_from,
+                valid_to: None,
                 source_chat_id: source_chat_id.to_string(),
                 confidence: rel.probability as f64,
             })
@@ -240,24 +241,4 @@ pub async fn run_extract_facts(
         skipped_low_confidence,
         skipped_unresolved_entity,
     })
-}
-
-/// NER + RE over `text` with **no SurrealDB writes** — the staging-pipeline
-/// entry point (Phase 3 decision #7). `chat_write` routes and diffs the
-/// returned spans into a `StagingEntry`; nothing is persisted to the graph
-/// until the user Keeps. Errors with the bootstrap hint when the GLiNER model
-/// files are absent, matching `run_extract_facts`.
-pub fn extract_facts_only(
-    text: &str,
-    formation_root: &std::path::Path,
-) -> AppResult<(Vec<EntitySpan>, Vec<RelationSpan>)> {
-    let paths = ModelPaths::under_app_dir(&formation_root.join(APP_DIR));
-    if !paths.exist() {
-        return Err(AppError::other(
-            crate::core::extraction::model_bootstrap_hint(&paths),
-        ));
-    }
-    let extractor = GlinerExtractor::new(paths);
-    let schema = default_relation_schema();
-    extract_entities_and_relations(&extractor, text, ENTITY_LABELS, &schema)
 }

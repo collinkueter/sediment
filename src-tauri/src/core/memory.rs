@@ -236,11 +236,16 @@ impl MemoryStore {
             .strip_prefix("entity:")
             .unwrap_or(&fact.object_id);
 
+        // A historical fact (explicit valid_to) is never "current": it must not
+        // supersede the live fact, nor be superseded by a later write.
+        let new_valid_to = fact.valid_to;
+        let supersede = supersede && new_valid_to.is_none();
+
         let relate = format!(
             "RELATE entity:{subject_key} -> fact -> entity:{object_key} \
                SET predicate = $predicate, \
                    valid_from = $valid_from, \
-                   valid_to = NONE, \
+                   valid_to = $valid_to, \
                    source_chat_id = $source_chat_id, \
                    confidence = $confidence;"
         );
@@ -267,6 +272,7 @@ impl MemoryStore {
             .query(sql)
             .bind(("predicate", fact.predicate))
             .bind(("valid_from", fact.valid_from))
+            .bind(("valid_to", new_valid_to))
             .bind(("source_chat_id", fact.source_chat_id))
             .bind(("confidence", fact.confidence))
             .await
@@ -570,6 +576,9 @@ pub struct FactWriteInput {
     pub predicate: String,
     pub object_id: String,
     pub valid_from: chrono::DateTime<chrono::Utc>,
+    /// Explicit end of validity. `Some(_)` writes a historical (closed) edge —
+    /// it is not "current" and does not supersede the current fact.
+    pub valid_to: Option<chrono::DateTime<chrono::Utc>>,
     pub source_chat_id: String,
     pub confidence: f64,
 }
@@ -895,6 +904,7 @@ mod tests {
                 predicate: "works_at".into(),
                 object_id: acme.clone(),
                 valid_from: t0,
+                valid_to: None,
                 source_chat_id: chat_id.clone(),
                 confidence: 0.95,
             })
@@ -923,6 +933,7 @@ mod tests {
                 predicate: "works_at".into(),
                 object_id: beta.clone(),
                 valid_from: t1,
+                valid_to: None,
                 source_chat_id: chat_id2.clone(),
                 confidence: 0.95,
             })
@@ -1053,6 +1064,7 @@ mod tests {
                 predicate: "works_at".into(),
                 object_id: acme.clone(),
                 valid_from: Utc::now(),
+                valid_to: None,
                 source_chat_id: "chat_message:x".into(),
                 confidence: 0.9,
             })
@@ -1103,6 +1115,7 @@ mod tests {
                 predicate: "works_at".into(),
                 object_id: acme.clone(),
                 valid_from: Utc::now(),
+                valid_to: None,
                 source_chat_id: "chat_message:1".into(),
                 confidence: 0.9,
             })
@@ -1167,6 +1180,7 @@ mod tests {
                 predicate: "works_at".into(),
                 object_id: acme.clone(),
                 valid_from: acme_from,
+                valid_to: None,
                 source_chat_id: "msg_001".into(),
                 confidence: 0.95,
             })
@@ -1181,6 +1195,7 @@ mod tests {
                 predicate: "works_at".into(),
                 object_id: beta.clone(),
                 valid_from: beta_from,
+                valid_to: None,
                 source_chat_id: "msg_017".into(),
                 confidence: 0.95,
             })
@@ -1255,6 +1270,7 @@ mod tests {
                 predicate: "works_at".into(),
                 object_id: acme.clone(),
                 valid_from: t1,
+                valid_to: None,
                 source_chat_id: "msg_001".into(),
                 confidence: 0.95,
             })
@@ -1266,6 +1282,7 @@ mod tests {
                 predicate: "works_at".into(),
                 object_id: acme.clone(),
                 valid_from: t2,
+                valid_to: None,
                 source_chat_id: "msg_002".into(),
                 confidence: 0.95,
             })

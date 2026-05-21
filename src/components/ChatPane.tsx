@@ -1,8 +1,6 @@
-import { type ChatMessage, useChatStore, useFormationStore } from "@/lib/store";
+import { type ChatMessage, type ChatMode, useChatStore, useFormationStore } from "@/lib/store";
 import { type ChatWriteResult, tauri } from "@/lib/tauri";
 import { useEffect, useRef, useState } from "react";
-
-type Mode = "write" | "ask";
 
 export function ChatPane() {
   const sessionId = useChatStore((s) => s.sessionId);
@@ -10,8 +8,10 @@ export function ChatPane() {
   const appendMessage = useChatStore((s) => s.appendMessage);
   const appendToken = useChatStore((s) => s.appendToken);
   const setMessageContent = useChatStore((s) => s.setMessageContent);
+  const failMessage = useChatStore((s) => s.failMessage);
+  const clearFailure = useChatStore((s) => s.clearFailure);
   const [draft, setDraft] = useState("");
-  const [mode, setMode] = useState<Mode>("write");
+  const [mode, setMode] = useState<ChatMode>("write");
   // When true, `mode` tracks the intent classifier; a manual toggle clears it.
   const [autoMode, setAutoMode] = useState(true);
   const [lowConfidence, setLowConfidence] = useState(false);
@@ -43,6 +43,25 @@ export function ChatPane() {
     return () => clearTimeout(timer);
   }, [draft, autoMode]);
 
+  // Run a chat turn into the given assistant message. On failure, marks that
+  // message so the user can retry the turn from its bubble.
+  async function runRequest(assistantId: string, requestMode: ChatMode, body: string) {
+    setBusy(true);
+    try {
+      if (requestMode === "write") {
+        const result = await tauri.chatWrite(body, sessionId);
+        setMessageContent(assistantId, formatWriteResult(result));
+      } else {
+        await tauri.chatAsk(body, sessionId, (token) => appendToken(assistantId, token));
+      }
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      failMessage(assistantId, { error, mode: requestMode, body });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleSend() {
     const text = draft.trim();
     if (!text || busy) return;
@@ -62,23 +81,20 @@ export function ChatPane() {
     appendMessage({ role: "user", content: text });
     setDraft("");
     const assistantId = appendMessage({ role: "assistant", content: "" });
-    setBusy(true);
-    try {
-      if (effectiveMode === "write") {
-        const result = await tauri.chatWrite(body, sessionId);
-        setMessageContent(assistantId, formatWriteResult(result));
-      } else {
-        await tauri.chatAsk(body, sessionId, (token) => appendToken(assistantId, token));
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setMessageContent(assistantId, `⚠️ ${msg}`);
-    } finally {
-      setBusy(false);
-      // Resume auto-classification for the next message.
-      setAutoMode(true);
-      setLowConfidence(false);
-    }
+    await runRequest(assistantId, effectiveMode, body);
+    // Resume auto-classification for the next message.
+    setAutoMode(true);
+    setLowConfidence(false);
+  }
+
+  // Re-run a failed turn into its existing bubble, using the request captured
+  // when it failed — e.g. after the user installs or starts the model.
+  async function handleRetry(messageId: string) {
+    if (busy) return;
+    const failure = messages.find((m) => m.id === messageId)?.failure;
+    if (!failure) return;
+    clearFailure(messageId);
+    await runRequest(messageId, failure.mode, failure.body);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -101,7 +117,9 @@ export function ChatPane() {
         {messages.length === 0 ? (
           <EmptyState />
         ) : (
-          messages.map((m) => <Bubble key={m.id} message={m} />)
+          messages.map((m) => (
+            <Bubble key={m.id} message={m} busy={busy} onRetry={() => void handleRetry(m.id)} />
+          ))
         )}
       </div>
 
@@ -152,8 +170,8 @@ function ModeToggle({
   onChange,
   disabled,
 }: {
-  mode: Mode;
-  onChange: (m: Mode) => void;
+  mode: ChatMode;
+  onChange: (m: ChatMode) => void;
   disabled: boolean;
 }) {
   return (
@@ -180,15 +198,20 @@ function ModeToggle({
 /// Render a `chat_write` result as a readable assistant message. Facts are
 /// staged for review, not committed — the message points at the tray.
 function formatWriteResult(result: ChatWriteResult): string {
+  const skipped = result.skipped_low_confidence + result.skipped_unresolved;
+  const skippedNote =
+    skipped > 0
+      ? ` (${skipped} possible fact${skipped === 1 ? "" : "s"} were too unclear to file.)`
+      : "";
   if (!result.staged) {
-    return "No new facts found in that message.";
+    return `No new facts found in that message.${skippedNote}`;
   }
   const { changes } = result.staged;
   const factCount = changes.reduce((n, c) => n + c.facts.length, 0);
   const noteCount = changes.length;
   const facts = `${factCount} fact${factCount === 1 ? "" : "s"}`;
   const notes = `${noteCount} note${noteCount === 1 ? "" : "s"}`;
-  return `Staged ${facts} across ${notes} — review them in the tray below before they're filed.`;
+  return `Staged ${facts} across ${notes} — review them in the tray below before they're filed.${skippedNote}`;
 }
 
 function EmptyState() {
@@ -202,8 +225,38 @@ function EmptyState() {
   );
 }
 
-function Bubble({ message }: { message: ChatMessage }) {
+function Bubble({
+  message,
+  busy,
+  onRetry,
+}: {
+  message: ChatMessage;
+  busy: boolean;
+  onRetry: () => void;
+}) {
   const isUser = message.role === "user";
+
+  // A failed turn renders an error + Retry instead of a normal bubble.
+  if (message.failure) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-[80%] rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm dark:border-red-900/60 dark:bg-red-950/40">
+          <p className="whitespace-pre-wrap text-red-700 dark:text-red-300">
+            ⚠️ {message.failure.error}
+          </p>
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={busy}
+            className="mt-2 rounded-md border border-red-300 px-2 py-0.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-40 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/40"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const isEmpty = message.content.length === 0;
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>

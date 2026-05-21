@@ -36,6 +36,10 @@ pub struct StagedFact {
     /// rather than defaulting to the message time — drives bullet rendering.
     #[serde(default)]
     pub valid_from_explicit: bool,
+    /// Explicit end of validity. `Some(_)` marks the fact historical — it
+    /// renders past-tense and commits as a closed (non-current) edge.
+    #[serde(default)]
+    pub valid_to: Option<chrono::DateTime<chrono::Utc>>,
     pub confidence: f64,
     /// When set, the commit's `relate_fact` must NOT supersede a conflicting
     /// current fact — the user chose "Keep both" (concurrent-employment case,
@@ -263,6 +267,7 @@ mod tests {
                     object_type: "organization".into(),
                     valid_from: chrono::Utc::now(),
                     valid_from_explicit: false,
+                    valid_to: None,
                     confidence: 0.91,
                     explicit_coexist: false,
                 }],

@@ -8,12 +8,24 @@ import {
 import { create } from "zustand";
 
 export type ChatRole = "user" | "assistant" | "system";
+export type ChatMode = "write" | "ask";
+
+/** Why an assistant turn failed, plus what's needed to retry it. */
+export interface ChatFailure {
+  /** Human-readable error from the failed Tauri command. */
+  error: string;
+  mode: ChatMode;
+  /** The request body (slash prefix already stripped) to re-send on retry. */
+  body: string;
+}
 
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
   createdAt: number;
+  /** Set on an assistant message whose turn failed; drives the retry UI. */
+  failure?: ChatFailure;
 }
 
 interface ChatState {
@@ -26,6 +38,10 @@ interface ChatState {
   appendToken: (id: string, token: string) => void;
   /** Overwrite a message's content (used for errors or completion markers). */
   setMessageContent: (id: string, content: string) => void;
+  /** Mark an assistant message as failed, clearing any partial content. */
+  failMessage: (id: string, failure: ChatFailure) => void;
+  /** Clear a message's failure so its turn can be retried into the same bubble. */
+  clearFailure: (id: string) => void;
   clear: () => void;
 }
 
@@ -46,6 +62,14 @@ export const useChatStore = create<ChatState>((set) => ({
   setMessageContent: (id, content) =>
     set((state) => ({
       messages: state.messages.map((m) => (m.id === id ? { ...m, content } : m)),
+    })),
+  failMessage: (id, failure) =>
+    set((state) => ({
+      messages: state.messages.map((m) => (m.id === id ? { ...m, content: "", failure } : m)),
+    })),
+  clearFailure: (id) =>
+    set((state) => ({
+      messages: state.messages.map((m) => (m.id === id ? { ...m, failure: undefined } : m)),
     })),
   clear: () => set({ messages: [] }),
 }));

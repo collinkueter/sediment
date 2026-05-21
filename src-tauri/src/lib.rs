@@ -107,6 +107,9 @@ pub fn run() {
             commands::hardware::detect_hardware,
             commands::hardware::get_onboarding_state,
             commands::hardware::complete_onboarding,
+            commands::models::check_model_readiness,
+            commands::models::pull_ollama_model,
+            commands::models::download_gliner_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sediment");

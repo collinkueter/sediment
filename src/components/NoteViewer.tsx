@@ -139,8 +139,8 @@ function DiffViewer({ entry, change }: { entry: StagingEntry; change: NoteChange
   }, []);
 
   const extensions = useMemo(
-    () => (original === null ? markdownExtensions : diffExtensions(original)),
-    [original],
+    () => (original === null ? markdownExtensions : diffExtensions(original, prefersDark)),
+    [original, prefersDark],
   );
 
   function persistNow(content: string): Promise<void> {

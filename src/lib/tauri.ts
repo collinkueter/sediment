@@ -48,6 +48,30 @@ export interface IndexProgress {
   current_path: string;
 }
 
+export interface ModelRequirement {
+  kind: "chat" | "embed" | "gliner";
+  /** Ollama pull tag for chat/embed; "gliner" for the ONNX model. */
+  id: string;
+  label: string;
+  size_hint: string;
+  present: boolean;
+}
+
+export interface ModelReadiness {
+  tier: string;
+  ollama_installed: boolean;
+  requirements: ModelRequirement[];
+  all_present: boolean;
+}
+
+export interface ModelProgress {
+  model: string;
+  phase: string;
+  completed: number;
+  total: number;
+  done: boolean;
+}
+
 export type ChangeKind = "create" | "update";
 
 export interface StagedFact {
@@ -99,6 +123,10 @@ export interface ChatWriteResult {
   source_chat_id: string;
   /** The staging entry created for review, or null when no facts were found. */
   staged: StagingEntry | null;
+  /** Relations the extractor proposed but dropped below the confidence floor. */
+  skipped_low_confidence: number;
+  /** Relations whose subject or object entity was never surfaced. */
+  skipped_unresolved: number;
 }
 
 export interface CommitResult {
@@ -148,6 +176,21 @@ export const tauri = {
   detectHardware: () => invoke<HardwareInfo>("detect_hardware"),
   getOnboardingState: () => invoke<OnboardingState>("get_onboarding_state"),
   completeOnboarding: (tier: string) => invoke<void>("complete_onboarding", { tier }),
+
+  // Model provisioning
+  checkModelReadiness: () => invoke<ModelReadiness>("check_model_readiness"),
+  /** Pull an Ollama model, streaming progress through `onProgress`. */
+  pullOllamaModel: (model: string, onProgress: (p: ModelProgress) => void) => {
+    const channel = new Channel<ModelProgress>();
+    channel.onmessage = onProgress;
+    return invoke<void>("pull_ollama_model", { model, onProgress: channel });
+  },
+  /** Download the GLiNER model into the open formation, streaming progress. */
+  downloadGlinerModel: (onProgress: (p: ModelProgress) => void) => {
+    const channel = new Channel<ModelProgress>();
+    channel.onmessage = onProgress;
+    return invoke<void>("download_gliner_model", { onProgress: channel });
+  },
 
   // Ollama
   ollamaStatus: () => invoke<OllamaStatus>("ollama_status"),

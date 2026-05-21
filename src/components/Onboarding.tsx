@@ -225,11 +225,9 @@ function DoneStep({
     <div className="space-y-4">
       <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">You're set</h2>
       <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
-        Sediment will run with the <strong>{tier}</strong> tier defaults. The chat pane uses local
-        Ollama by default — make sure you've pulled a chat model (try{" "}
-        <code className="font-mono">ollama pull llama3.2:3b</code>) and an embedding model (
-        <code className="font-mono">ollama pull nomic-embed-text</code>) for full Phase-1
-        functionality.
+        Sediment will run with the <strong>{tier}</strong> tier defaults. Next, it checks that the
+        models this tier needs are installed and downloads anything missing — no manual setup
+        required.
       </p>
       <button
         type="button"

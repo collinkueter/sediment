@@ -13,6 +13,19 @@ pub enum Tier {
     Byok,
 }
 
+impl Tier {
+    /// Parse the serialized tier string stored in `AppConfig.selected_tier`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "Lite" => Some(Self::Lite),
+            "Standard" => Some(Self::Standard),
+            "Pro" => Some(Self::Pro),
+            "Byok" => Some(Self::Byok),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HardwareInfo {
     pub total_ram_gb: u32,
@@ -102,5 +115,14 @@ mod tests {
         assert_eq!(score_tier(32, "Intel Core i9"), Tier::Standard);
         assert_eq!(score_tier(16, "Apple M1"), Tier::Lite);
         assert_eq!(score_tier(8, "Apple M1"), Tier::Byok);
+    }
+
+    #[test]
+    fn tier_parse_round_trips_the_serialized_form() {
+        for tier in [Tier::Lite, Tier::Standard, Tier::Pro, Tier::Byok] {
+            let s = format!("{tier:?}");
+            assert_eq!(Tier::parse(&s), Some(tier));
+        }
+        assert_eq!(Tier::parse("nonsense"), None);
     }
 }

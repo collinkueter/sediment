@@ -6,7 +6,7 @@ See [sediment-tech-spec.md](sediment-tech-spec.md) (v0.2) for the full design.
 
 ## Status
 
-**Phase 1 + 2 + 3 complete.** The desktop shell launches, opens a formation, watches it for external edits, and auto-indexes notes into an embedded SurrealDB. Chat is intent-classified. Write-mode messages run through the gline-rs extraction pipeline — but instead of writing straight to the graph, extracted facts are routed to their subject's note, rendered as deterministic markdown diffs, and parked in a **staging tray** for review (spec principle #3, "AI proposes, human disposes"). Keep commits a change — snapshotting the note, writing the markdown, upserting entities, and writing bi-temporal facts — with a 10-second undo. Facts that contradict an existing one surface a side-by-side conflict banner. Ask-mode questions run hybrid retrieval (vector + graph) and stream a cited answer.
+**Phase 1–4 complete.** The desktop shell launches, opens a formation, watches it for external edits, and auto-indexes notes into an embedded SurrealDB. Chat is intent-classified. Write-mode messages run through an **LLM-backed extraction** pipeline (ADR-0006) — the active tier's local model resolves the note-taker ("I" / "we"), coreference, and tense into a structured `Extraction`, with the deterministic gline-rs NER+RE extractor kept as a zero-dependency fallback. Extracted facts are routed to their subject's note, rendered as deterministic markdown diffs, and parked in a **staging tray** for review (spec principle #3, "AI proposes, human disposes"). Keep commits a change — snapshotting the note, writing the markdown, upserting entities, and writing bi-temporal facts — with a 10-second undo. Facts that contradict an existing one surface a side-by-side conflict banner. Ask-mode questions run hybrid retrieval (vector + graph) and stream a cited answer. A launch-time setup screen downloads any models the active hardware tier is missing.
 
 See [docs/plans/phase-3.md](docs/plans/phase-3.md) for the milestone breakdown and [docs/adr/](docs/adr/) for the architecture decisions.
 
@@ -77,6 +77,16 @@ Phase 3 inserts a review layer between extraction and the formation — no fact 
 
 The staging, routing, diff-generation, commit, and conflict logic are all covered by `cargo test` with no models needed; the integration test in `commands/staging.rs` drives a hand-built `StagingEntry` through stage → keep → verify and stage → discard → no-op.
 
+## Phase 4 verification: LLM-backed extraction
+
+Phase 4 (ADR-0006) replaces the GLiNER NER+RE extractor with the tier's local chat model behind a `FactExtractor` trait — recovering first-person facts, coreference, tense, tasks, and opinions that a zero-shot NER model structurally cannot express. GLiNER stays as the fallback.
+
+1. **Model setup.** On launch the app checks the active tier's model manifest; if anything is missing a one-click setup screen streams the downloads (Ollama chat + embedding models, the GLiNER ONNX model).
+2. **Self + coreference.** Send a first-person Write message — `Standup with the platform team today. Josh mentioned he worked at Cloudflare back in 2019.` The note-taker resolves to `People/Me.md`, `he` binds to Josh, and the Cloudflare fact is filed **past-tense** as a closed interval.
+3. **Fallback.** With the chat model absent (or Ollama down) the pipeline drops to the GLiNER extractor instead of failing the turn.
+
+Extraction is split into two test layers (ADR-0006): the deterministic `ScriptedExtractor` pipeline tests in `commands/chat.rs` are the CI gate (`cargo test`, no models); the live `LlmExtractor` recall test is `#[ignore]`d and scores against the real model.
+
 ## Project layout
 
 ```
@@ -92,13 +102,16 @@ sediment/
 │   │   │   ├── extraction.rs        # GLiNER NER/RE (when models present)
 │   │   │   ├── chat.rs              # Write (→ staging) / Ask / classify
 │   │   │   ├── staging.rs           # Tray: list / keep / undo / resolve
-│   │   │   └── hardware.rs          # Tier detection + onboarding state
+│   │   │   ├── hardware.rs          # Tier detection + onboarding state
+│   │   │   └── models.rs            # Model readiness check + downloaders
 │   │   └── core/                    # Long-lived subsystems
 │   │       ├── formation_state.rs   # Active formation + AppConfig
 │   │       ├── watcher.rs           # Debounced notify watcher
 │   │       ├── memory.rs            # Embedded SurrealDB store
 │   │       ├── ollama_sidecar.rs    # Daemon lifecycle + client
-│   │       ├── extraction.rs        # EntityExtractor trait + GlinerExtractor
+│   │       ├── extraction.rs        # FactExtractor trait + GlinerExtractor
+│   │       ├── llm_extractor.rs     # LlmExtractor — LLM-backed extraction
+│   │       ├── models.rs            # Tier → local model manifest
 │   │       ├── staging.rs           # StagingEntry model + snapshots
 │   │       ├── router.rs            # Fact → note routing
 │   │       ├── diff_gen.rs          # Template markdown diff generation
