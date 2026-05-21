@@ -9,7 +9,7 @@
 
 use crate::commands::extraction::{MIN_ENTITY_CONFIDENCE, MIN_RELATION_CONFIDENCE};
 use crate::commands::formation::APP_DIR;
-use crate::commands::staging::assemble_note_change;
+use crate::commands::staging::{assemble_note_change, augment_embedding_suggestions};
 use crate::core::extraction::{
     default_relation_schema, extract_entities_and_relations, ExtractedEntity, FactExtractor,
     GlinerExtractor, ModelPaths, ENTITY_LABELS, SELF_NAME,
@@ -121,10 +121,18 @@ pub async fn chat_write(
         resolve_chat_model(&app),
         GlinerExtractor::new(ModelPaths::under_app_dir(&app_dir)),
     );
-    let result = run_chat_write(&message, &session_id, &extractor, &formation_root, store).await?;
+    let mut result =
+        run_chat_write(&message, &session_id, &extractor, &formation_root, store).await?;
 
-    if let Some(entry) = &result.staged {
-        if let Err(e) = app.emit("staging-created", entry) {
+    if let Some(entry) = result.staged.as_mut() {
+        // Add embedding-based disambiguation suggestions on top of the trigram
+        // ones run_chat_write already produced (best-effort), then persist the
+        // augmented entry over the one run_chat_write wrote.
+        augment_embedding_suggestions(entry, store, &sidecar).await;
+        if let Err(e) = staging::write(&app_dir.join("staging"), entry) {
+            tracing::warn!("persist embedding suggestions failed: {e}");
+        }
+        if let Err(e) = app.emit("staging-created", &*entry) {
             tracing::warn!("emit staging-created failed: {e}");
         }
     }

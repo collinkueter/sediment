@@ -19,6 +19,11 @@ const DB: &str = "memory";
 /// than loosely-related names.
 const SIMILAR_NAME_THRESHOLD: f32 = 0.5;
 
+/// Maximum cosine distance for `similar_entities_by_embedding` to surface a
+/// candidate. Embedding catches semantic name matches a trigram check misses
+/// (a nickname, an abbreviation); 0.35 keeps it to close ones. Tunable.
+const MAX_EMBEDDING_DISTANCE: f32 = 0.35;
+
 #[derive(Clone)]
 pub struct MemoryStore {
     db: Arc<Surreal<Db>>,
@@ -426,6 +431,75 @@ impl MemoryStore {
         Ok(matches)
     }
 
+    /// Store the embedding of an entity's canonical name, for the
+    /// embedding-based disambiguation search. Called best-effort on commit —
+    /// a missing embedding just means that entity is not an embedding-search
+    /// candidate; the trigram check still covers it.
+    pub async fn set_entity_embedding(
+        &self,
+        entity_id: &str,
+        embedding: Vec<f32>,
+    ) -> AppResult<()> {
+        let key = entity_id.strip_prefix("entity:").unwrap_or(entity_id);
+        self.db
+            .query("UPDATE type::record('entity', $key) SET embedding = $embedding;")
+            .bind(("key", key.to_string()))
+            .bind(("embedding", embedding))
+            .await
+            .map_err(|e| AppError::other(format!("set_entity_embedding: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("set_entity_embedding check: {e}")))?;
+        Ok(())
+    }
+
+    /// Entities semantically near `query` (an embedded name), of type
+    /// `entity_type`, within `MAX_EMBEDDING_DISTANCE` — best match first.
+    /// Cosine distance via the HNSW `entity_embedding` index; entities with no
+    /// stored embedding are simply absent from the index. The `score` is
+    /// `1 - distance`. This is the embedding half of disambiguation (R4): it
+    /// catches nicknames and abbreviations the trigram check cannot.
+    pub async fn similar_entities_by_embedding(
+        &self,
+        query: Vec<f32>,
+        entity_type: &str,
+        k: usize,
+    ) -> AppResult<Vec<EntityMatch>> {
+        let k_clamped = k.clamp(1, 50);
+        const EF: usize = 64;
+        let sql = format!(
+            "SELECT id, entity_type, canonical_name, note_path, \
+             vector::distance::knn() AS distance \
+             FROM entity \
+             WHERE embedding <|{k_clamped},{EF}|> $query;"
+        );
+        let mut res = self
+            .db
+            .query(sql)
+            .bind(("query", query))
+            .await
+            .map_err(|e| AppError::other(format!("entity vector search: {e}")))?;
+        let rows: Vec<EntityEmbeddingHit> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("entity vector search take: {e}")))?;
+        let mut matches: Vec<EntityMatch> = rows
+            .into_iter()
+            .filter(|r| r.entity_type == entity_type && r.distance <= MAX_EMBEDDING_DISTANCE)
+            .map(|r| EntityMatch {
+                id: record_id_to_string(&r.id),
+                entity_type: r.entity_type,
+                canonical_name: r.canonical_name,
+                note_path: r.note_path,
+                score: 1.0 - r.distance,
+            })
+            .collect();
+        matches.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(matches)
+    }
+
     /// Current facts a new `(subject, predicate, object)` would contradict:
     /// same subject + predicate, a DIFFERENT object, still valid. These are the
     /// facts `relate_fact` would silently supersede — the staging tray surfaces
@@ -589,6 +663,17 @@ pub struct ChunkHit {
     pub note_path: String,
     pub chunk_idx: i64,
     pub text: String,
+    pub distance: f32,
+}
+
+/// Raw row shape for `similar_entities_by_embedding` — an entity plus its
+/// cosine distance from the query vector.
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+struct EntityEmbeddingHit {
+    pub id: RecordId,
+    pub entity_type: String,
+    pub canonical_name: String,
+    pub note_path: Option<String>,
     pub distance: f32,
 }
 
@@ -1423,6 +1508,59 @@ mod tests {
             .await
             .expect("query");
         assert!(cross.is_empty(), "person near-matches stay within persons");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn similar_entities_by_embedding_filters_by_distance_and_type() {
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        // A 768-dim unit vector with one non-zero component — the HNSW index
+        // is fixed at dimension 768.
+        fn unit(component: usize) -> Vec<f32> {
+            let mut v = vec![0.0f32; 768];
+            v[component] = 1.0;
+            v
+        }
+
+        let robert = store
+            .upsert_entity("Robert Chen", "person", vec![])
+            .await
+            .expect("e1");
+        let bob = store
+            .upsert_entity("Bob Jones", "person", vec![])
+            .await
+            .expect("e2");
+        let acme = store
+            .upsert_entity("Acme", "organization", vec![])
+            .await
+            .expect("e3");
+
+        // Robert and Acme sit at the query point; Bob is orthogonal (far).
+        store
+            .set_entity_embedding(&robert.id, unit(0))
+            .await
+            .expect("emb1");
+        store
+            .set_entity_embedding(&bob.id, unit(7))
+            .await
+            .expect("emb2");
+        store
+            .set_entity_embedding(&acme.id, unit(0))
+            .await
+            .expect("emb3");
+
+        let hits = store
+            .similar_entities_by_embedding(unit(0), "person", 10)
+            .await
+            .expect("search");
+
+        // Acme is dropped on type, Bob on distance — only Robert survives.
+        assert_eq!(hits.len(), 1, "only the near, same-type entity: {hits:?}");
+        assert_eq!(hits[0].canonical_name, "Robert Chen");
+        assert!(hits[0].score > 0.99, "an exact-vector hit scores ~1.0");
 
         std::fs::remove_dir_all(dir).ok();
     }

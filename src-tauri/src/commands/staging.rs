@@ -12,7 +12,7 @@ use crate::core::diff_gen::apply_facts_to_note;
 use crate::core::formation_state::{atomic_write, FormationState};
 use crate::core::indexer::index_note_path;
 use crate::core::memory::{FactWriteInput, MemoryHandle, MemoryStore};
-use crate::core::ollama_sidecar::OllamaSidecar;
+use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
 use crate::core::router::route_fact_unique;
 use crate::core::staging::{
     self, Conflict, DisambiguationSuggestion, NoteChange, StagedFact, StagingEntry, UndoNote,
@@ -378,6 +378,87 @@ async fn staged_fact_note_path(
     Ok(path)
 }
 
+/// Best-effort: store the embedding of an entity's name so later
+/// disambiguation can find it by semantic similarity. A down Ollama is not
+/// fatal — the trigram check still works without an embedding.
+async fn embed_entity_name(
+    store: &MemoryStore,
+    sidecar: &OllamaSidecar,
+    entity_id: &str,
+    name: &str,
+) {
+    match sidecar.embed(DEFAULT_EMBED_MODEL, name).await {
+        Ok(embedding) => {
+            if let Err(e) = store.set_entity_embedding(entity_id, embedding).await {
+                tracing::warn!("store embedding for {entity_id} failed: {e}");
+            }
+        }
+        Err(e) => tracing::debug!("embed entity name {name:?} failed: {e}"),
+    }
+}
+
+/// Augment a freshly-staged entry with embedding-based disambiguation
+/// suggestions — a semantic name match (a nickname, an abbreviation) the
+/// trigram pass in `assemble_note_change` cannot catch. Best-effort: a down
+/// Ollama just leaves the trigram suggestions as they are. Runs only on the
+/// real `chat_write` path, so the deterministic test pipeline is unaffected.
+pub(crate) async fn augment_embedding_suggestions(
+    entry: &mut StagingEntry,
+    store: &MemoryStore,
+    sidecar: &OllamaSidecar,
+) {
+    for change in &mut entry.changes {
+        for idx in 0..change.facts.len() {
+            let endpoints = {
+                let f = &change.facts[idx];
+                [
+                    ("subject", f.subject_name.clone(), f.subject_type.clone()),
+                    ("object", f.object_name.clone(), f.object_type.clone()),
+                ]
+            };
+            for (endpoint, name, etype) in endpoints {
+                if name == crate::core::extraction::SELF_NAME {
+                    continue;
+                }
+                // Don't double up on an endpoint the trigram pass already flagged.
+                if change
+                    .suggestions
+                    .iter()
+                    .any(|s| s.staged_fact_index == idx && s.endpoint == endpoint)
+                {
+                    continue;
+                }
+                // Only a brand-new entity is a disambiguation candidate.
+                if !matches!(store.lookup_entity(&name).await, Ok(None)) {
+                    continue;
+                }
+                let Ok(query) = sidecar.embed(DEFAULT_EMBED_MODEL, &name).await else {
+                    continue;
+                };
+                let Ok(matches) = store.similar_entities_by_embedding(query, &etype, 1).await
+                else {
+                    continue;
+                };
+                if let Some(best) = matches
+                    .into_iter()
+                    .find(|m| !m.canonical_name.eq_ignore_ascii_case(&name))
+                {
+                    change.suggestions.push(DisambiguationSuggestion {
+                        staged_fact_index: idx,
+                        endpoint: endpoint.to_string(),
+                        mention_name: name,
+                        candidate_id: best.id,
+                        candidate_name: best.canonical_name,
+                        candidate_type: best.entity_type,
+                        candidate_note_path: best.note_path,
+                        score: best.score,
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// Outcome of a Keep — enough for the UI to show an undo toast and refresh.
 #[derive(Debug, Serialize)]
 pub struct CommitResult {
@@ -455,6 +536,8 @@ pub(crate) async fn commit_changes(
     let mut committed_notes = Vec::new();
     let mut undo_notes = Vec::new();
     let mut new_fact_ids = Vec::new();
+    // Entities embedded so far this commit — each name is embedded at most once.
+    let mut embedded_entities: HashSet<String> = HashSet::new();
 
     for change in &to_commit {
         // 1. Snapshot the pre-commit note (a "create" has no prior content).
@@ -477,6 +560,14 @@ pub(crate) async fn commit_changes(
             store
                 .set_entity_note_path(&subject.id, &change.note_path)
                 .await?;
+            // Embed each entity's name once per commit, for the embedding
+            // half of disambiguation (R4). Best-effort — see embed_entity_name.
+            if embedded_entities.insert(subject.id.clone()) {
+                embed_entity_name(store, sidecar, &subject.id, &fact.subject_name).await;
+            }
+            if embedded_entities.insert(object.id.clone()) {
+                embed_entity_name(store, sidecar, &object.id, &fact.object_name).await;
+            }
             // "Keep both" (explicit_coexist) skips supersession so a
             // contradicting current fact survives — see ADR-0004 / R3.
             let fact_id = store
