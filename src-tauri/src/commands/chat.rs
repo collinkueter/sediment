@@ -20,7 +20,7 @@ use crate::core::llm_extractor::LlmExtractor;
 use crate::core::memory::{slugify, ChunkHit, MemoryHandle, MemoryStore};
 use crate::core::models::chat_model_for_tier;
 use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
-use crate::core::router::route_fact;
+use crate::core::router::route_fact_unique;
 use crate::core::staging::{self, StagedFact, StagingEntry};
 use crate::error::{AppError, AppResult};
 use futures::StreamExt;
@@ -162,7 +162,7 @@ pub async fn run_chat_write(
         };
         let subject = resolve_entity(store, subj).await?;
         let object = resolve_entity(store, obj).await?;
-        let note_path = subject_note_path(&subject);
+        let note_path = subject_note_path(&subject, formation_root);
         let fact = StagedFact {
             subject_id: subject.id,
             subject_name: subject.name,
@@ -259,15 +259,17 @@ async fn resolve_entity(store: &MemoryStore, ext: &ExtractedEntity) -> AppResult
 
 /// The note a subject entity's facts are filed in. The note-taker always
 /// routes to `SELF_NOTE_PATH`; everyone else uses their linked note or a fresh
-/// one under their type's folder (`core::router`).
-fn subject_note_path(entity: &ResolvedEntity) -> String {
+/// one under their type's folder, collision-suffixed so two same-name entities
+/// never share a file (`core::router`).
+fn subject_note_path(entity: &ResolvedEntity, formation_root: &Path) -> String {
     if entity.is_self {
         return SELF_NOTE_PATH.to_string();
     }
-    let (path, _) = route_fact(
+    let (path, _) = route_fact_unique(
         &entity.entity_type,
         &entity.name,
         entity.note_path.as_deref(),
+        formation_root,
     );
     path
 }
