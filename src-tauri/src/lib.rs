@@ -112,6 +112,8 @@ pub fn run() {
             commands::models::check_model_readiness,
             commands::models::pull_ollama_model,
             commands::models::download_gliner_model,
+            commands::settings::get_byok_config,
+            commands::settings::set_byok_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sediment");

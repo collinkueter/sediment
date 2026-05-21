@@ -50,6 +50,25 @@ fn resolve_chat_model(app: &tauri::AppHandle) -> String {
     chat_model_for_tier(tier).to_string()
 }
 
+/// The BYOK cloud setup, if the user configured a provider and an API key in
+/// settings. `chat_ask` generates against the cloud when this is `Some`,
+/// otherwise it streams from the local model.
+fn byok_cloud_config(app: &tauri::AppHandle) -> Option<crate::core::cloud::CloudConfig> {
+    use crate::core::cloud::{CloudConfig, CloudProvider};
+    let cfg = AppConfig::load(app);
+    let provider = CloudProvider::parse(cfg.byok_provider.as_deref()?)?;
+    let api_key = cfg.byok_api_key.filter(|k| !k.trim().is_empty())?;
+    let model = cfg
+        .byok_model
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| provider.default_model().to_string());
+    Some(CloudConfig {
+        provider,
+        api_key,
+        model,
+    })
+}
+
 /// Classify a draft message as Write or Ask. Pure heuristic — no formation or
 /// model needed, so it is safe to call on every keystroke.
 #[tauri::command]
@@ -349,24 +368,39 @@ pub async fn chat_ask(
     // --- Assemble the prompt ---
     let prompt = build_ask_prompt(&query, &sources, &graph_facts);
 
-    // --- Stream the answer ---
-    let client = sidecar.client();
-    let mut stream = client
-        .generate_stream(GenerationRequest::new(resolve_chat_model(&app), prompt))
-        .await
-        .map_err(|e| AppError::other(format!("start answer generation: {e}")))?;
-    let mut answer = String::new();
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|e| AppError::other(format!("stream error: {e}")))?;
-        for response in chunk {
-            if !response.response.is_empty() {
-                answer.push_str(&response.response);
-                on_token
-                    .send(response.response)
-                    .map_err(|e| AppError::other(format!("channel send: {e}")))?;
-            }
+    // --- Generate the answer ---
+    // BYOK: when the user configured a cloud provider + key, generate there
+    // in one non-streaming request. Otherwise stream from the local model.
+    let answer = match byok_cloud_config(&app) {
+        Some(cloud) => {
+            let text = crate::core::cloud::generate(&cloud, &prompt).await?;
+            on_token
+                .send(text.clone())
+                .map_err(|e| AppError::other(format!("channel send: {e}")))?;
+            text
         }
-    }
+        None => {
+            let client = sidecar.client();
+            let mut stream = client
+                .generate_stream(GenerationRequest::new(resolve_chat_model(&app), prompt))
+                .await
+                .map_err(|e| AppError::other(format!("start answer generation: {e}")))?;
+            let mut answer = String::new();
+            while let Some(chunk_result) = stream.next().await {
+                let chunk =
+                    chunk_result.map_err(|e| AppError::other(format!("stream error: {e}")))?;
+                for response in chunk {
+                    if !response.response.is_empty() {
+                        answer.push_str(&response.response);
+                        on_token
+                            .send(response.response)
+                            .map_err(|e| AppError::other(format!("channel send: {e}")))?;
+                    }
+                }
+            }
+            answer
+        }
+    };
 
     // Persist the question and answer together now that generation has
     // succeeded — a failed turn leaves no orphan row and can be retried.

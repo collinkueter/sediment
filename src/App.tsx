@@ -5,6 +5,7 @@ import { IndexProgress } from "@/components/IndexProgress";
 import { ModelSetup } from "@/components/ModelSetup";
 import { NoteViewer } from "@/components/NoteViewer";
 import { Onboarding } from "@/components/Onboarding";
+import { SettingsModal } from "@/components/SettingsModal";
 import { StagingTray } from "@/components/StagingTray";
 import { UndoToast } from "@/components/UndoToast";
 import { useFormationStore, useStagingStore, useUiStore } from "@/lib/store";
@@ -26,6 +27,7 @@ export default function App() {
   const refreshStaging = useStagingStore((s) => s.refresh);
   const [modelReadiness, setModelReadiness] = useState<ModelReadiness | null>(null);
   const [modelsChecked, setModelsChecked] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     tauri
@@ -100,7 +102,7 @@ export default function App() {
 
   return (
     <div className="flex h-full w-full flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
-      <TitleBar version={version} />
+      <TitleBar version={version} onOpenSettings={() => setSettingsOpen(true)} />
       <main className="flex min-h-0 flex-1">
         <section className="flex basis-3/5 border-r border-zinc-200 dark:border-zinc-800">
           {formationPath ? (
@@ -120,6 +122,7 @@ export default function App() {
       </main>
       <StagingTray />
       <UndoToast />
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
@@ -132,7 +135,7 @@ function CheckingModels() {
   );
 }
 
-function TitleBar({ version }: { version: string }) {
+function TitleBar({ version, onOpenSettings }: { version: string; onOpenSettings: () => void }) {
   const formationPath = useFormationStore((s) => s.formationPath);
   return (
     <header
@@ -149,6 +152,14 @@ function TitleBar({ version }: { version: string }) {
         </span>
       )}
       <IndexProgress />
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        aria-label="Settings"
+        className="ml-auto mr-2 rounded px-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+      >
+        ⚙
+      </button>
     </header>
   );
 }

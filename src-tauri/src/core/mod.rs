@@ -1,4 +1,5 @@
 // Core module: long-lived state and subsystems.
+pub mod cloud;
 pub mod diff_gen;
 pub mod extraction;
 pub mod formation_state;

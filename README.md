@@ -6,7 +6,7 @@ See [sediment-tech-spec.md](sediment-tech-spec.md) (v0.2) for the full design.
 
 ## Status
 
-**Phase 1–5 complete.** The desktop shell launches, opens a formation, watches it for external edits, and auto-indexes notes into an embedded SurrealDB. Chat is intent-classified. Write-mode messages run through an **LLM-backed extraction** pipeline (ADR-0006) — the active tier's local model resolves the note-taker ("I" / "we"), coreference, and tense into a structured `Extraction`, with the deterministic gline-rs NER+RE extractor kept as a zero-dependency fallback. Extracted facts are routed to their subject's note, rendered as deterministic markdown diffs, and parked in a **staging tray** for review (spec principle #3, "AI proposes, human disposes"). Keep commits a change — snapshotting the note, writing the markdown, upserting entities, and writing bi-temporal facts — with a 10-second undo. Facts that contradict an existing one surface a side-by-side conflict banner. Ask-mode questions run hybrid retrieval (vector + graph) and stream a cited answer. A launch-time setup screen downloads any models the active hardware tier is missing. Phase 5 is a polish pass — extraction robustness (lenient JSON recovery, case-insensitive relation binding) and broader end-to-end test coverage.
+**Phase 1–5 complete.** The desktop shell launches, opens a formation, watches it for external edits, and auto-indexes notes into an embedded SurrealDB. Chat is intent-classified. Write-mode messages run through an **LLM-backed extraction** pipeline (ADR-0006) — the active tier's local model resolves the note-taker ("I" / "we"), coreference, and tense into a structured `Extraction`, with the deterministic gline-rs NER+RE extractor kept as a zero-dependency fallback. Extracted facts are routed to their subject's note, rendered as deterministic markdown diffs, and parked in a **staging tray** for review (spec principle #3, "AI proposes, human disposes"). Keep commits a change — snapshotting the note, writing the markdown, upserting entities, and writing bi-temporal facts — with a 10-second undo. Facts that contradict an existing one surface a side-by-side conflict banner. Ask-mode questions run hybrid retrieval (vector + graph) and stream a cited answer. A launch-time setup screen downloads any models the active hardware tier is missing. Phase 5 is a polish pass — extraction robustness (lenient JSON recovery, case-insensitive relation binding), note-path collision handling, "did you mean?" entity disambiguation in the staging tray, optional BYOK cloud answers (Anthropic / OpenAI, configured in Settings), and broader end-to-end test coverage.
 
 See [docs/plans/](docs/plans/) for the per-phase milestone breakdowns and [docs/adr/](docs/adr/) for the architecture decisions.
 
@@ -103,7 +103,8 @@ sediment/
 │   │   │   ├── chat.rs              # Write (→ staging) / Ask / classify
 │   │   │   ├── staging.rs           # Tray: list / keep / undo / resolve
 │   │   │   ├── hardware.rs          # Tier detection + onboarding state
-│   │   │   └── models.rs            # Model readiness check + downloaders
+│   │   │   ├── models.rs            # Model readiness check + downloaders
+│   │   │   └── settings.rs          # BYOK cloud-provider config
 │   │   └── core/                    # Long-lived subsystems
 │   │       ├── formation_state.rs   # Active formation + AppConfig
 │   │       ├── watcher.rs           # Debounced notify watcher
@@ -111,9 +112,11 @@ sediment/
 │   │       ├── ollama_sidecar.rs    # Daemon lifecycle + client
 │   │       ├── extraction.rs        # FactExtractor trait + GlinerExtractor
 │   │       ├── llm_extractor.rs     # LlmExtractor — LLM-backed extraction
+│   │       ├── cloud.rs             # BYOK cloud generation (Anthropic/OpenAI)
 │   │       ├── models.rs            # Tier → local model manifest
 │   │       ├── staging.rs           # StagingEntry model + snapshots
 │   │       ├── router.rs            # Fact → note routing
+│   │       ├── similarity.rs        # Trigram name similarity (disambiguation)
 │   │       ├── diff_gen.rs          # Template markdown diff generation
 │   │       └── hardware.rs          # RAM / chip / tier scoring
 ├── src/                             # React + TS

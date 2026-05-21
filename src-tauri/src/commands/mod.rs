@@ -6,4 +6,5 @@ pub mod hardware;
 pub mod memory;
 pub mod models;
 pub mod ollama;
+pub mod settings;
 pub mod staging;

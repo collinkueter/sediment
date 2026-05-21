@@ -30,8 +30,8 @@ impl FormationState {
     }
 }
 
-/// On-disk app config saved at `$APP_CONFIG_DIR/config.json`. Holds only the bits we need to
-/// restore on next launch; full settings live in a richer struct (added in M5+).
+/// On-disk app config saved at `$APP_CONFIG_DIR/config.json`. Holds what we
+/// need to restore on next launch plus the user's BYOK cloud-provider setup.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub last_formation_path: Option<PathBuf>,
@@ -39,6 +39,16 @@ pub struct AppConfig {
     pub onboarding_complete: bool,
     #[serde(default)]
     pub selected_tier: Option<String>,
+    /// BYOK cloud provider — "anthropic" | "openai". `None` = local generation.
+    #[serde(default)]
+    pub byok_provider: Option<String>,
+    /// The user's API key for `byok_provider`. Stays on disk; never returned
+    /// to the front end (see `commands::settings`).
+    #[serde(default)]
+    pub byok_api_key: Option<String>,
+    /// Optional explicit model override; falls back to the provider default.
+    #[serde(default)]
+    pub byok_model: Option<String>,
 }
 
 impl AppConfig {

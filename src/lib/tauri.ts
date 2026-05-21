@@ -174,6 +174,15 @@ export interface IntentResult {
   confidence: number;
 }
 
+/** BYOK cloud-provider config. The API key is never sent to the front end. */
+export interface ByokConfig {
+  /** "anthropic" | "openai", or null for local generation. */
+  provider: string | null;
+  model: string | null;
+  /** Whether an API key is stored for the provider. */
+  has_key: boolean;
+}
+
 export const tauri = {
   appVersion: () => invoke<string>("app_version"),
 
@@ -260,4 +269,13 @@ export const tauri = {
     invoke<CommitResult>("keep_staging", { id, notePaths: notePaths ?? null }),
   /** Revert a commit within the undo window: restores notes, deletes facts. */
   undoCommit: (commitId: string) => invoke<void>("undo_commit", { commitId }),
+
+  // Settings (BYOK)
+  getByokConfig: () => invoke<ByokConfig>("get_byok_config"),
+  /**
+   * Save the BYOK config. `provider` null clears BYOK. When `provider` is set,
+   * the stored key is replaced only if `apiKey` is a non-empty string.
+   */
+  setByokConfig: (provider: string | null, model: string | null, apiKey: string | null) =>
+    invoke<void>("set_byok_config", { provider, model, apiKey }),
 };
