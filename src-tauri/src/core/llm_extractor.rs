@@ -56,7 +56,7 @@ impl LlmExtractor {
             .generate(request)
             .await
             .map_err(|e| AppError::other(format!("LLM extraction request: {e}")))?;
-        let dto: LlmExtraction = serde_json::from_str(response.response.trim())
+        let dto: LlmExtraction = serde_json::from_str(extract_json_object(&response.response))
             .map_err(|e| AppError::other(format!("LLM extraction returned bad JSON: {e}")))?;
         Ok(dto.into_extraction())
     }
@@ -104,6 +104,20 @@ Now extract ONLY from this real note, ignoring the example's content entirely:\n
 \"{message}\"\n\
 JSON:"
     )
+}
+
+/// Pull the JSON object out of a raw model response. Even in JSON mode a small
+/// local model sometimes wraps its answer in a ```` ```json ```` fence or adds
+/// a sentence of preamble; slicing from the first `{` to the last `}` recovers
+/// the object in every such case (fence backticks and preamble sit outside the
+/// braces). Returns the trimmed input unchanged when it holds no object, so a
+/// genuinely empty or garbage response still fails the downstream parse loudly.
+fn extract_json_object(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    match (trimmed.find('{'), trimmed.rfind('}')) {
+        (Some(start), Some(end)) if end > start => &trimmed[start..=end],
+        _ => trimmed,
+    }
 }
 
 // --- Lenient JSON DTOs -------------------------------------------------------
@@ -170,7 +184,13 @@ impl LlmExtraction {
                     && !r.predicate.trim().is_empty()
                     && !r.object.trim().is_empty()
             })
-            .map(|r| {
+            .filter_map(|r| {
+                // A predicate of pure punctuation slugifies to "" — drop the
+                // relation rather than emit a verb-less "- " bullet.
+                let predicate = slugify(&r.predicate);
+                if predicate.is_empty() {
+                    return None;
+                }
                 let valid_from = r.valid_from.as_deref().and_then(parse_when);
                 let mut valid_to = r.valid_to.as_deref().and_then(parse_when);
                 // A fact flagged not-current must be a closed interval so it
@@ -179,14 +199,14 @@ impl LlmExtraction {
                 if !r.current && valid_to.is_none() {
                     valid_to = valid_from.or_else(|| Some(chrono::Utc::now()));
                 }
-                ExtractedRelation {
+                Some(ExtractedRelation {
                     subject: r.subject.trim().to_string(),
-                    predicate: slugify(&r.predicate),
+                    predicate,
                     object: r.object.trim().to_string(),
                     valid_from,
                     valid_to,
                     confidence: LLM_CONFIDENCE,
-                }
+                })
             })
             .collect();
 
@@ -291,5 +311,63 @@ mod tests {
         assert!(parse_when("today").is_some());
         assert!(parse_when("sometime soon").is_none());
         assert!(parse_when("").is_none());
+    }
+
+    /// A small model wraps JSON in a fence or adds preamble even in JSON mode;
+    /// `extract_json_object` must recover the object so a good extraction is
+    /// not needlessly dropped to the GLiNER fallback (gap G1).
+    #[test]
+    fn extract_json_object_unwraps_fences_and_preamble() {
+        let obj = r#"{"entities":[],"relations":[]}"#;
+        assert_eq!(extract_json_object(obj), obj, "a bare object is unchanged");
+        assert_eq!(
+            extract_json_object("```json\n{\"entities\":[],\"relations\":[]}\n```"),
+            obj,
+            "a fenced object is unwrapped",
+        );
+        assert_eq!(
+            extract_json_object("Here is the extraction:\n{\"entities\":[],\"relations\":[]}"),
+            obj,
+            "leading preamble is stripped",
+        );
+        assert_eq!(
+            extract_json_object("  \n{\"entities\":[],\"relations\":[]}\nThanks!  "),
+            obj,
+            "trailing prose is stripped",
+        );
+        // No object at all — returned trimmed so the downstream parse fails loudly.
+        assert_eq!(extract_json_object("  no json here  "), "no json here");
+    }
+
+    /// A fenced response must deserialize end-to-end, not just survive slicing.
+    #[test]
+    fn fenced_response_deserializes() {
+        let raw = "```json\n{\"entities\":[{\"name\":\"Acme\",\"type\":\"organization\",\
+                   \"is_self\":false}],\"relations\":[]}\n```";
+        let dto: LlmExtraction =
+            serde_json::from_str(extract_json_object(raw)).expect("fenced JSON parses");
+        let ex = dto.into_extraction();
+        assert_eq!(ex.entities.len(), 1);
+        assert_eq!(ex.entities[0].name, "Acme");
+    }
+
+    /// A predicate that slugifies to "" (pure punctuation) must drop the whole
+    /// relation rather than yield a verb-less "- " bullet (gap G3).
+    #[test]
+    fn relation_with_empty_predicate_is_dropped() {
+        let json = r#"{
+          "entities": [
+            {"name": "A", "type": "person", "is_self": false},
+            {"name": "B", "type": "person", "is_self": false}
+          ],
+          "relations": [
+            {"subject": "A", "predicate": "-->", "object": "B", "current": true},
+            {"subject": "A", "predicate": "knows", "object": "B", "current": true}
+          ]
+        }"#;
+        let ex: LlmExtraction = serde_json::from_str(json).expect("parse");
+        let ex = ex.into_extraction();
+        assert_eq!(ex.relations.len(), 1, "only the real predicate survives");
+        assert_eq!(ex.relations[0].predicate, "knows");
     }
 }

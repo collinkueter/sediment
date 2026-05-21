@@ -131,14 +131,15 @@ pub async fn run_chat_write(
         .insert_chat_message("user", message, session_id)
         .await?;
 
-    // Entities above the confidence floor, keyed by the surface name relations
-    // refer to them by. First mention of a name wins.
+    // Entities above the confidence floor, keyed by `match_key` so a relation
+    // endpoint resolves even when the model's case/spacing drifts from the
+    // entity it listed. First mention of a name wins.
     let mut entity_by_name: HashMap<String, ExtractedEntity> = HashMap::new();
     for ent in extraction.entities {
         if ent.confidence < MIN_ENTITY_CONFIDENCE {
             continue;
         }
-        entity_by_name.entry(ent.name.clone()).or_insert(ent);
+        entity_by_name.entry(match_key(&ent.name)).or_insert(ent);
     }
 
     let now = chrono::Utc::now();
@@ -153,8 +154,8 @@ pub async fn run_chat_write(
             continue;
         }
         let (Some(subj), Some(obj)) = (
-            entity_by_name.get(&rel.subject),
-            entity_by_name.get(&rel.object),
+            entity_by_name.get(&match_key(&rel.subject)),
+            entity_by_name.get(&match_key(&rel.object)),
         ) else {
             skipped_unresolved += 1; // an endpoint the extractor never surfaced
             continue;
@@ -281,6 +282,14 @@ fn excerpt(message: &str) -> String {
         let head: String = trimmed.chars().take(MAX).collect();
         format!("{head}…")
     }
+}
+
+/// Normalise a name for intra-extraction matching. A small model emits the
+/// same entity with drifting case and spacing across its entity list and the
+/// relation endpoints ("Josh" vs "josh" vs " Josh "), so matching a relation's
+/// endpoint to an extracted entity must be case-insensitive and trimmed.
+fn match_key(name: &str) -> String {
+    name.trim().to_lowercase()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -786,6 +795,46 @@ mod e2e_extraction {
         }
     }
 
+    /// An organization as the fact's subject — exercises routing to the
+    /// `Organizations/` folder, not just the `People/` path the other fixtures
+    /// take.
+    fn org_subject() -> Fixture {
+        Fixture {
+            scenario: "org-subject — a fact about an organization routes to Organizations/",
+            message: "Acme acquired Beta Corp this quarter.",
+            extraction: Extraction {
+                entities: vec![
+                    ent("Acme", "organization"),
+                    ent("Beta Corp", "organization"),
+                ],
+                relations: vec![rel("Acme", "acquired", "Beta Corp")],
+            },
+            expect_staged: true,
+            expect_notes: vec![("Organizations/Acme.md", vec!["- Acquired Beta Corp"])],
+            forbid: vec![],
+            expect_skipped: (0, 0),
+        }
+    }
+
+    /// The extractor lists the entity as "Priya" but writes the relation's
+    /// endpoint as "  PRIYA  " — the case/spacing drift a small model produces.
+    /// Resolution must still bind the two (gap G2); without the `match_key`
+    /// normalisation the fact would be dropped as unresolvable.
+    fn case_drift() -> Fixture {
+        Fixture {
+            scenario: "case-drift — a relation endpoint's case/spacing differs from the entity",
+            message: "Priya owns the Q3 budget now.",
+            extraction: Extraction {
+                entities: vec![ent("Priya", "person"), ent("Q3 budget", "topic")],
+                relations: vec![rel("  PRIYA  ", "manages", "q3 budget")],
+            },
+            expect_staged: true,
+            expect_notes: vec![("People/Priya.md", vec!["- Manages Q3 budget"])],
+            forbid: vec![],
+            expect_skipped: (0, 0),
+        }
+    }
+
     // --- One test per fixture (a failure names the scenario) -----------------
 
     #[tokio::test]
@@ -811,6 +860,16 @@ mod e2e_extraction {
     #[tokio::test]
     async fn fixture_low_confidence_and_unresolvable() {
         check(low_signal()).await;
+    }
+
+    #[tokio::test]
+    async fn fixture_organization_subject_routes_to_orgs_folder() {
+        check(org_subject()).await;
+    }
+
+    #[tokio::test]
+    async fn fixture_relation_endpoints_resolve_case_insensitively() {
+        check(case_drift()).await;
     }
 
     /// A complication a single-message fixture cannot express: a later message
@@ -895,6 +954,156 @@ mod e2e_extraction {
             "exactly one current employer after supersession; got {current:?}"
         );
         assert_eq!(current[0].predicate, "works_at");
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Whole-batch idempotence across turns: committing a message, then sending
+    /// the identical message again, stages nothing — every fact is already on
+    /// the note, so `assemble_note_change` filters the batch down to empty.
+    #[tokio::test]
+    async fn re_sending_the_same_message_stages_nothing() {
+        let root = tempdir();
+        let store = MemoryStore::open(&root.join(APP_DIR).join("memory"))
+            .await
+            .expect("open store");
+        let sidecar = OllamaSidecar::default();
+        let watcher = FormationWatcher::default();
+
+        let extraction = || Extraction {
+            entities: vec![me(), ent("Acme", "organization")],
+            relations: vec![rel(SELF_NAME, "works_at", "Acme")],
+        };
+        let message = "I work at Acme.";
+
+        let w1 = run_chat_write(
+            message,
+            "sess",
+            &ScriptedExtractor {
+                extraction: extraction(),
+            },
+            &root,
+            &store,
+        )
+        .await
+        .expect("turn 1 write");
+        commit_changes(
+            &root,
+            &store,
+            &sidecar,
+            &watcher,
+            w1.staged.expect("turn 1 staged"),
+            None,
+        )
+        .await
+        .expect("commit turn 1");
+
+        // Turn 2: the identical message — every fact is already filed.
+        let w2 = run_chat_write(
+            message,
+            "sess",
+            &ScriptedExtractor {
+                extraction: extraction(),
+            },
+            &root,
+            &store,
+        )
+        .await
+        .expect("turn 2 write");
+        assert!(
+            w2.staged.is_none(),
+            "a re-sent message must stage nothing; got {:?}",
+            w2.staged
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A second fact about an entity whose note already exists — and which the
+    /// user has hand-edited since — appends under `## Facts` without disturbing
+    /// the prose the user added outside the managed section.
+    #[tokio::test]
+    async fn an_update_preserves_hand_edited_prose() {
+        let root = tempdir();
+        let store = MemoryStore::open(&root.join(APP_DIR).join("memory"))
+            .await
+            .expect("open store");
+        let sidecar = OllamaSidecar::default();
+        let watcher = FormationWatcher::default();
+
+        // Turn 1: a fact about Dana creates People/Dana.md.
+        let w1 = run_chat_write(
+            "Dana works at Stripe.",
+            "sess",
+            &ScriptedExtractor {
+                extraction: Extraction {
+                    entities: vec![ent("Dana", "person"), ent("Stripe", "organization")],
+                    relations: vec![rel("Dana", "works_at", "Stripe")],
+                },
+            },
+            &root,
+            &store,
+        )
+        .await
+        .expect("turn 1 write");
+        commit_changes(
+            &root,
+            &store,
+            &sidecar,
+            &watcher,
+            w1.staged.expect("turn 1 staged"),
+            None,
+        )
+        .await
+        .expect("commit turn 1");
+
+        // The user hand-edits the note, adding a prose section of their own.
+        let dana = root.join("People/Dana.md");
+        let edited = format!(
+            "{}\n## Notes\n\nDana gives great design feedback.\n",
+            std::fs::read_to_string(&dana).expect("read Dana note"),
+        );
+        std::fs::write(&dana, &edited).expect("hand-edit Dana note");
+
+        // Turn 2: a second fact about Dana routes as an update to that note.
+        let w2 = run_chat_write(
+            "Dana is into Rust.",
+            "sess",
+            &ScriptedExtractor {
+                extraction: Extraction {
+                    entities: vec![ent("Dana", "person"), ent("Rust", "topic")],
+                    relations: vec![rel("Dana", "interested_in", "Rust")],
+                },
+            },
+            &root,
+            &store,
+        )
+        .await
+        .expect("turn 2 write");
+        commit_changes(
+            &root,
+            &store,
+            &sidecar,
+            &watcher,
+            w2.staged.expect("turn 2 staged"),
+            None,
+        )
+        .await
+        .expect("commit turn 2");
+
+        let content = std::fs::read_to_string(&dana).expect("read Dana note");
+        assert!(
+            content.contains("- Works at Stripe"),
+            "turn 1 fact survives"
+        );
+        assert!(
+            content.contains("- Interested in Rust"),
+            "turn 2 fact is appended"
+        );
+        assert!(
+            content.contains("Dana gives great design feedback."),
+            "the user's hand-edited prose is preserved\n--- Dana.md ---\n{content}"
+        );
 
         std::fs::remove_dir_all(root).ok();
     }
