@@ -1,8 +1,8 @@
 import { type ModelProgress, type ModelReadiness, type ModelRequirement, tauri } from "@/lib/tauri";
 import { useState } from "react";
 
-/// Launch-time setup screen, shown when the active tier is missing models.
-/// One click downloads everything needed; progress streams in per model.
+/// Launch-time setup screen, shown when the local embedding model is missing.
+/// One click downloads it; progress streams in.
 export function ModelSetup({
   readiness: initial,
   onComplete,
@@ -16,21 +16,17 @@ export function ModelSetup({
   const [error, setError] = useState<string | null>(null);
 
   const missing = readiness.requirements.filter((r) => !r.present);
-  // Ollama models can't be pulled until Ollama itself is installed.
-  const blockedOnOllama = !readiness.ollama_installed && missing.some((r) => r.kind !== "gliner");
+  // The embedding model can't be pulled until Ollama itself is installed.
+  const blockedOnOllama = !readiness.ollama_installed && missing.length > 0;
 
   async function downloadAll() {
     setRunning(true);
     setError(null);
     for (const req of missing) {
-      if (req.kind !== "gliner" && !readiness.ollama_installed) continue;
+      if (!readiness.ollama_installed) continue;
       const onProgress = (p: ModelProgress) => setProgress((s) => ({ ...s, [req.id]: p }));
       try {
-        if (req.kind === "gliner") {
-          await tauri.downloadGlinerModel(onProgress);
-        } else {
-          await tauri.pullOllamaModel(req.id, onProgress);
-        }
+        await tauri.pullOllamaModel(req.id, onProgress);
       } catch (e) {
         setError(`${req.label} — ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -53,16 +49,16 @@ export function ModelSetup({
             Set up your models
           </h1>
           <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-            The <strong>{readiness.tier}</strong> tier needs these local models. They run entirely
-            on your machine — Sediment downloads them once.
+            Sediment needs the local embedding model that powers note search. It runs entirely on
+            your machine — Sediment downloads it once.
           </p>
         </div>
 
         {blockedOnOllama && (
           <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-300">
             Ollama isn't installed — install it from{" "}
-            <span className="font-mono">ollama.com/download</span> and relaunch to download the chat
-            and embedding models.
+            <span className="font-mono">ollama.com/download</span> and relaunch to download the
+            embedding model.
           </p>
         )}
 
@@ -74,15 +70,21 @@ export function ModelSetup({
 
         {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
 
-        <div className="flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={onComplete}
-            disabled={running}
-            className="text-xs text-zinc-400 hover:text-zinc-600 disabled:opacity-40 dark:text-zinc-500 dark:hover:text-zinc-300"
-          >
-            Skip for now
-          </button>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              onClick={onComplete}
+              disabled={running}
+              className="text-left text-xs text-zinc-400 hover:text-zinc-600 disabled:opacity-40 dark:text-zinc-500 dark:hover:text-zinc-300"
+            >
+              Skip — note search disabled
+            </button>
+            <p className="max-w-xs text-[10px] leading-snug text-zinc-400 dark:text-zinc-600">
+              Without the embedding model, semantic search and the agent's note-search tool won't
+              work. You can install it later from Settings.
+            </p>
+          </div>
           {missing.length === 0 ? (
             <button
               type="button"
@@ -95,7 +97,7 @@ export function ModelSetup({
             <button
               type="button"
               onClick={() => void downloadAll()}
-              disabled={running || (blockedOnOllama && missing.every((r) => r.kind !== "gliner"))}
+              disabled={running || blockedOnOllama}
               className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
             >
               {running

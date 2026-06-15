@@ -29,3 +29,265 @@ body {
     color: var(--color-zinc-100);
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+   Note preview — Obsidian-style rendered markdown for the note viewer.
+   Scoped to `.note-prose` so it never leaks into other UI surfaces.
+   ────────────────────────────────────────────────────────────────────── */
+.note-prose {
+  font-size: 0.95rem;
+  line-height: 1.65;
+  max-width: 48rem;
+  margin: 0 auto;
+  color: var(--color-zinc-800);
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose {
+    color: var(--color-zinc-200);
+  }
+}
+
+.note-prose h1,
+.note-prose h2,
+.note-prose h3,
+.note-prose h4,
+.note-prose h5,
+.note-prose h6 {
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 1.6em;
+  margin-bottom: 0.5em;
+  color: var(--color-zinc-900);
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose h1,
+  .note-prose h2,
+  .note-prose h3,
+  .note-prose h4,
+  .note-prose h5,
+  .note-prose h6 {
+    color: var(--color-zinc-50);
+  }
+}
+.note-prose h1 {
+  font-size: 1.75rem;
+}
+.note-prose h2 {
+  font-size: 1.4rem;
+}
+.note-prose h3 {
+  font-size: 1.18rem;
+}
+.note-prose h4 {
+  font-size: 1.05rem;
+}
+.note-prose h5 {
+  font-size: 0.95rem;
+}
+.note-prose h6 {
+  font-size: 0.9rem;
+  color: var(--color-zinc-500);
+}
+
+.note-prose > :first-child {
+  margin-top: 0;
+}
+
+.note-prose p {
+  margin: 0.75em 0;
+}
+
+.note-prose ul,
+.note-prose ol {
+  margin: 0.5em 0;
+  padding-left: 1.6em;
+}
+.note-prose ul {
+  list-style: disc;
+}
+.note-prose ol {
+  list-style: decimal;
+}
+.note-prose li {
+  margin: 0.15em 0;
+}
+.note-prose li > ul,
+.note-prose li > ol {
+  margin: 0.15em 0;
+}
+
+/* GFM task list — checkboxes inside <li class="task-list-item"> */
+.note-prose li.task-list-item {
+  list-style: none;
+  margin-left: -1.4em;
+}
+.note-prose li.task-list-item > input[type="checkbox"] {
+  margin-right: 0.5em;
+  vertical-align: middle;
+  cursor: pointer;
+  accent-color: var(--color-zinc-700);
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose li.task-list-item > input[type="checkbox"] {
+    accent-color: var(--color-zinc-300);
+  }
+}
+
+.note-prose a {
+  color: var(--color-blue-600);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.note-prose a:hover {
+  text-decoration-thickness: 2px;
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose a {
+    color: var(--color-blue-400);
+  }
+}
+
+/* Wiki-links — slightly different shade so they stand apart from external.
+   Rendered as <button> for accessibility (it's a click-action, not nav), so
+   the rule resets button defaults to keep the link-like appearance. */
+.note-prose .wikilink,
+.note-prose .wikilink-broken {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.note-prose .wikilink {
+  color: var(--color-violet-600);
+  text-decoration: none;
+  border-bottom: 1px solid var(--color-violet-300);
+}
+.note-prose .wikilink:hover {
+  background-color: var(--color-violet-50);
+  border-bottom-color: var(--color-violet-500);
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose .wikilink {
+    color: var(--color-violet-400);
+    border-bottom-color: var(--color-violet-700);
+  }
+  .note-prose .wikilink:hover {
+    background-color: rgba(124, 58, 237, 0.12);
+    border-bottom-color: var(--color-violet-400);
+  }
+}
+.note-prose .wikilink-broken {
+  color: var(--color-red-500);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--color-red-400);
+  cursor: help;
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose .wikilink-broken {
+    color: var(--color-red-400);
+    border-bottom-color: var(--color-red-700);
+  }
+}
+
+.note-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background-color: var(--color-zinc-100);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose code {
+    background-color: var(--color-zinc-800);
+  }
+}
+.note-prose pre {
+  margin: 0.85em 0;
+  padding: 0.85em 1em;
+  background-color: var(--color-zinc-100);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.875em;
+  line-height: 1.5;
+}
+.note-prose pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 1em;
+  border-radius: 0;
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose pre {
+    background-color: var(--color-zinc-900);
+  }
+}
+
+.note-prose blockquote {
+  margin: 0.85em 0;
+  padding: 0.4em 1em;
+  border-left: 3px solid var(--color-zinc-300);
+  color: var(--color-zinc-600);
+  font-style: italic;
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose blockquote {
+    border-left-color: var(--color-zinc-600);
+    color: var(--color-zinc-400);
+  }
+}
+
+.note-prose hr {
+  margin: 1.6em 0;
+  border: 0;
+  border-top: 1px solid var(--color-zinc-200);
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose hr {
+    border-top-color: var(--color-zinc-800);
+  }
+}
+
+.note-prose table {
+  margin: 0.85em 0;
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9em;
+}
+.note-prose th,
+.note-prose td {
+  border: 1px solid var(--color-zinc-200);
+  padding: 0.4em 0.75em;
+  text-align: left;
+}
+.note-prose th {
+  background-color: var(--color-zinc-50);
+  font-weight: 600;
+}
+@media (prefers-color-scheme: dark) {
+  .note-prose th,
+  .note-prose td {
+    border-color: var(--color-zinc-800);
+  }
+  .note-prose th {
+    background-color: var(--color-zinc-900);
+  }
+}
+
+.note-prose strong {
+  font-weight: 600;
+}
+.note-prose em {
+  font-style: italic;
+}
+.note-prose del {
+  text-decoration: line-through;
+}
+
+.note-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}

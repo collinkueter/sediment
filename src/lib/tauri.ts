@@ -22,17 +22,8 @@ export interface ModelSummary {
   modified_at: string;
 }
 
-export type Tier = "Lite" | "Standard" | "Pro" | "Byok";
-
-export interface HardwareInfo {
-  total_ram_gb: number;
-  chip: string;
-  recommended_tier: Tier;
-}
-
 export interface OnboardingState {
   complete: boolean;
-  selected_tier: string | null;
 }
 
 export interface IndexFormationResult {
@@ -49,8 +40,9 @@ export interface IndexProgress {
 }
 
 export interface ModelRequirement {
-  kind: "chat" | "embed" | "gliner";
-  /** Ollama pull tag for chat/embed; "gliner" for the ONNX model. */
+  /** "embed" — the only local model class after ADR-0009. */
+  kind: "embed";
+  /** Ollama pull tag. */
   id: string;
   label: string;
   size_hint: string;
@@ -58,7 +50,6 @@ export interface ModelRequirement {
 }
 
 export interface ModelReadiness {
-  tier: string;
   ollama_installed: boolean;
   requirements: ModelRequirement[];
   all_present: boolean;
@@ -72,115 +63,163 @@ export interface ModelProgress {
   done: boolean;
 }
 
-export type ChangeKind = "create" | "update";
+/**
+ * A streamed event during one conversational turn (ADR-0009 §5). The Channel
+ * delivers an internally-tagged discriminated union keyed on `kind`.
+ */
+export type TurnEvent =
+  /** A chunk of the assistant's reply text to append to the in-progress bubble. */
+  | { kind: "textDelta"; text: string }
+  /** The agent used a tool — surfaced as a line in the inline activity trail. */
+  | { kind: "toolActivity"; tool: string; summary: string };
 
-export interface StagedFact {
-  subject_id: string;
-  subject_name: string;
-  subject_type: string;
-  predicate: string;
-  object_id: string;
-  object_name: string;
-  object_type: string;
-  valid_from: string;
-  valid_from_explicit: boolean;
-  confidence: number;
-  explicit_coexist: boolean;
+/** A note one `chat_turn` changed, learned by diffing the pre-turn snapshot. */
+export interface ChangedNote {
+  /** Formation-relative POSIX path of the note. */
+  path: string;
+  /** True when the turn created the note (it did not exist in the snapshot). */
+  wasCreate: boolean;
 }
 
-export interface Conflict {
-  staged_fact_index: number;
-  predicate: string;
-  existing_object_id: string;
-  existing_object_name: string;
-  existing_valid_from: string;
-  existing_source_chat_id: string;
+/** An entity currently "in play" (ADR-0011 §3). */
+export interface ActiveEntity {
+  name: string;
+  entityType: string;
+  notePath: string | null;
 }
 
-/** How the user resolves a staged-fact conflict. */
-export type ConflictResolution = "update" | "coexist" | "discard";
-
-/** A freshly-mentioned entity that closely matches one already in the graph. */
-export interface DisambiguationSuggestion {
-  staged_fact_index: number;
-  /** Which endpoint of the fact is the near-match: "subject" or "object". */
-  endpoint: string;
-  mention_name: string;
-  candidate_id: string;
-  candidate_name: string;
-  candidate_type: string;
-  candidate_note_path: string | null;
-  /** Trigram name similarity in [0,1]. */
-  score: number;
+/** An open task surfaced in the Working Set. */
+export interface OpenTask {
+  title: string;
+  /** Due date `YYYY-MM-DD`, or null. */
+  due: string | null;
 }
 
-export interface NoteChange {
-  kind: ChangeKind;
-  note_path: string;
-  diff: string;
-  new_content: string;
-  facts: StagedFact[];
-  confidence: number;
-  conflicts: Conflict[];
-  suggestions: DisambiguationSuggestion[];
-}
-
-export interface StagingEntry {
+/** An unresolved thread the agent noticed (ADR-0011 §5). */
+export interface OpenLoop {
+  /** `open_loop:<id>` — the handle `dismissOpenLoop` targets. */
   id: string;
+  title: string;
+  context: string | null;
+}
+
+/** What's currently in play — the derived Working Set (ADR-0011 §3). */
+export interface WorkingSet {
+  activeEntities: ActiveEntity[];
+  recentNotes: string[];
+  openTasks: OpenTask[];
+  openLoops: OpenLoop[];
+}
+
+/** What one `chat_turn` produced, returned when the turn completes. */
+export interface ChatTurnResult {
+  /** The audit-entry id for this turn — the handle used to revert it. */
+  turnId: string;
+  /** The full assistant reply (also streamed token-by-token over `onEvent`). */
+  reply: string;
+  /** Notes the turn changed. */
+  changedNotes: ChangedNote[];
+  /** How many graph Facts the turn recorded through the MCP server. */
+  recordedFactCount: number;
+  /** The Working Set as of this turn — drives the "what's in play" panel. */
+  workingSet: WorkingSet;
+}
+
+/** A chat-turn audit entry (ADR-0009 §6). */
+export interface ChatTurnAuditEntry {
+  kind: "chatTurn";
+  /** Stable id; the handle the audit panel uses to revert the turn. */
+  turnId: string;
+  /** RFC3339 timestamp the turn ran. */
   created: string;
-  chat_message_id: string;
-  chat_excerpt: string;
-  status: string;
-  changes: NoteChange[];
+  /** First chars of the user message. */
+  userExcerpt: string;
+  /** First chars of the assistant reply. */
+  replyExcerpt: string;
+  /** Formation-relative path of the pre-turn snapshot directory. */
+  snapshotDir: string;
+  /** Notes the turn changed. */
+  changedNotes: ChangedNote[];
+  /** Graph Fact record ids the turn recorded — per-Fact revert targets these. */
+  recordedFactIds: string[];
 }
 
-export interface ChatWriteResult {
-  source_chat_id: string;
-  /** The staging entry created for review, or null when no facts were found. */
-  staged: StagingEntry | null;
-  /** Relations the extractor proposed but dropped below the confidence floor. */
-  skipped_low_confidence: number;
-  /** Relations whose subject or object entity was never surfaced. */
-  skipped_unresolved: number;
+/** A task-completion audit entry — indexer-driven daily-note append (ADR-0010 §8). */
+export interface TaskCompletionAuditEntry {
+  kind: "taskCompletion";
+  /** Stable id; the handle used to revert this append. */
+  entryId: string;
+  /** RFC3339 timestamp the append ran. */
+  created: string;
+  /** The `task` record id whose open→done transition triggered this append. */
+  taskId: string;
+  /** Task title at the moment the box was checked. */
+  taskTitle: string;
+  /** Formation-relative POSIX path of the daily note that was appended. */
+  dailyNotePath: string;
+  /** The verbatim bullet line that was added, e.g. `- Called the dentist`. */
+  appendedBulletText: string;
 }
 
-export interface CommitResult {
-  /** Id of this commit; pass to undoCommit to revert it. */
-  commit_id: string;
-  staging_id: string;
-  /** Formation-relative paths of the notes written to disk. */
-  committed_notes: string[];
-  /** Record ids of the facts written to the graph (undo deletes exactly these). */
-  new_fact_ids: string[];
-  /** The still-staged entry when only some notes were kept, else null. */
-  remaining: StagingEntry | null;
+/** One audit-log entry — chat turn OR task completion (ADR-0009 §6, ADR-0010 §8). */
+export type AuditEntry = ChatTurnAuditEntry | TaskCompletionAuditEntry;
+
+/** Result of `undo_task_completion` — the toast uses this to handle the edited case. */
+export type UndoTaskCompletionResult = "removed" | "editedSinceAppended" | "fileMissing";
+
+/** Payload of the `daily-note-appended` Tauri event (ADR-0010 §8). */
+export interface DailyNoteAppendedPayload {
+  /** `task_completion` audit entry id — the handle the toast uses to undo. */
+  entryId: string;
+  /** The completed task's id. */
+  taskId: string;
+  /** Formation-relative POSIX path of the daily note that was appended. */
+  dailyNotePath: string;
+  /** The verbatim bullet line that was added. */
+  bulletText: string;
 }
 
-export interface RetrievedSource {
-  note_path: string;
-  chunk_idx: number;
-  text: string;
-  distance: number;
+/** Result of detect_claude_code — reflects the locally-installed Claude Code CLI. */
+export interface ClaudeCodeStatus {
+  installed: boolean;
+  binary_path: string | null;
+  logged_in: boolean;
+  /** "claude.ai" for a subscription login. */
+  auth_method: string | null;
+  /** "max" | "pro" | ... */
+  subscription_type: string | null;
+  email: string | null;
 }
 
-export interface ChatAskResult {
-  source_chat_id: string;
-  sources: RetrievedSource[];
-  used_graph: boolean;
+/** Result of detect_copilot — reflects the locally-installed GitHub Copilot CLI. */
+export interface CopilotStatus {
+  installed: boolean;
+  binary_path: string | null;
 }
 
-export interface IntentResult {
-  mode: "write" | "ask";
-  confidence: number;
+/** Persisted conversational-engine selection (ADR-0009 §5). */
+export interface ConversationEngineConfig {
+  /** "claude-code" (default) | "copilot" */
+  engine: string;
+  claude_code_model: string | null;
+  copilot_model: string | null;
 }
 
-/** BYOK cloud-provider config. The API key is never sent to the front end. */
-export interface ByokConfig {
-  /** "anthropic" | "openai", or null for local generation. */
-  provider: string | null;
-  model: string | null;
-  /** Whether an API key is stored for the provider. */
-  has_key: boolean;
+export type TaskStatus = "open" | "done";
+
+/** A reminder — the scheduling-side mirror of a Tasks.md checklist line. */
+export interface Task {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  /** RFC3339 due timestamp, or null. */
+  due: string | null;
+  /** RFC3339 — when the reminder fires. Null when the task has no reminder. */
+  remind_at: string | null;
+  notified: boolean;
+  created: string;
+  completed_at: string | null;
+  source_chat_id: string | null;
 }
 
 export const tauri = {
@@ -188,6 +227,8 @@ export const tauri = {
 
   // Formation
   pickFormationDir: () => invoke<string | null>("pick_formation_dir"),
+  /** Native folder picker for an arbitrary directory (e.g. the models dir). */
+  pickDirectory: () => invoke<string | null>("pick_directory"),
   openFormation: (path: string) => invoke<FormationSummary>("open_formation", { path }),
   restoreLastFormation: () => invoke<FormationSummary | null>("restore_last_formation"),
   listNotes: () => invoke<FormationNote[]>("list_notes"),
@@ -196,10 +237,9 @@ export const tauri = {
     invoke<void>("write_note", { relativePath, content }),
   indexFormation: (force: boolean) => invoke<IndexFormationResult>("index_formation", { force }),
 
-  // Hardware + onboarding
-  detectHardware: () => invoke<HardwareInfo>("detect_hardware"),
+  // Onboarding
   getOnboardingState: () => invoke<OnboardingState>("get_onboarding_state"),
-  completeOnboarding: (tier: string) => invoke<void>("complete_onboarding", { tier }),
+  completeOnboarding: () => invoke<void>("complete_onboarding"),
 
   // Model provisioning
   checkModelReadiness: () => invoke<ModelReadiness>("check_model_readiness"),
@@ -209,73 +249,53 @@ export const tauri = {
     channel.onmessage = onProgress;
     return invoke<void>("pull_ollama_model", { model, onProgress: channel });
   },
-  /** Download the GLiNER model into the open formation, streaming progress. */
-  downloadGlinerModel: (onProgress: (p: ModelProgress) => void) => {
-    const channel = new Channel<ModelProgress>();
-    channel.onmessage = onProgress;
-    return invoke<void>("download_gliner_model", { onProgress: channel });
-  },
 
   // Ollama
   ollamaStatus: () => invoke<OllamaStatus>("ollama_status"),
   ollamaEnsureRunning: () => invoke<OllamaStatus>("ollama_ensure_running"),
   ollamaListModels: () => invoke<ModelSummary[]>("ollama_list_models"),
-  /** Stream tokens through `onToken`; resolves when the stream ends. */
-  ollamaGenerate: (model: string, prompt: string, onToken: (t: string) => void) => {
-    const channel = new Channel<string>();
-    channel.onmessage = onToken;
-    return invoke<void>("ollama_generate", { model, prompt, onToken: channel });
-  },
 
-  // Chat
-  chatWrite: (message: string, sessionId: string) =>
-    invoke<ChatWriteResult>("chat_write", { message, sessionId }),
-  /** Stream the cited answer through `onToken`; resolves with retrieved sources. */
-  chatAsk: (query: string, sessionId: string, onToken: (t: string) => void) => {
-    const channel = new Channel<string>();
-    channel.onmessage = onToken;
-    return invoke<ChatAskResult>("chat_ask", { query, sessionId, onToken: channel });
-  },
-  classifyIntent: (message: string) => invoke<IntentResult>("classify_intent", { message }),
-
-  // Staging tray
-  listStaging: () => invoke<StagingEntry[]>("list_staging"),
-  getStaging: (id: string) => invoke<StagingEntry>("get_staging", { id }),
-  discardStaging: (id: string) => invoke<void>("discard_staging", { id }),
-  updateStaging: (entry: StagingEntry) => invoke<void>("update_staging", { entry }),
-  /** Resolve a staged-fact conflict (update / coexist / discard). */
-  resolveConflict: (
-    stagingId: string,
-    notePath: string,
-    stagedFactIndex: number,
-    resolution: ConflictResolution,
-  ) => invoke<void>("resolve_conflict", { stagingId, notePath, stagedFactIndex, resolution }),
-  /** Accept a "did you mean?" suggestion — merge into the matched entity. */
-  applyDisambiguation: (
-    stagingId: string,
-    notePath: string,
-    stagedFactIndex: number,
-    endpoint: string,
-  ) => invoke<void>("apply_disambiguation", { stagingId, notePath, stagedFactIndex, endpoint }),
-  /** Dismiss a "did you mean?" suggestion — keep the entity as genuinely new. */
-  dismissDisambiguation: (
-    stagingId: string,
-    notePath: string,
-    stagedFactIndex: number,
-    endpoint: string,
-  ) => invoke<void>("dismiss_disambiguation", { stagingId, notePath, stagedFactIndex, endpoint }),
-  /** Commit a staging entry. Pass `notePaths` to keep only those notes. */
-  keepStaging: (id: string, notePaths?: string[]) =>
-    invoke<CommitResult>("keep_staging", { id, notePaths: notePaths ?? null }),
-  /** Revert a commit within the undo window: restores notes, deletes facts. */
-  undoCommit: (commitId: string) => invoke<void>("undo_commit", { commitId }),
-
-  // Settings (BYOK)
-  getByokConfig: () => invoke<ByokConfig>("get_byok_config"),
+  // Chat — one conversational turn (ADR-0009)
   /**
-   * Save the BYOK config. `provider` null clears BYOK. When `provider` is set,
-   * the stored key is replaced only if `apiKey` is a non-empty string.
+   * Run one conversational turn. Streams `TurnEvent`s through `onEvent` —
+   * `textDelta` chunks of the reply and `toolActivity` lines — and resolves
+   * with the turn's authoritative outcome when it completes.
    */
-  setByokConfig: (provider: string | null, model: string | null, apiKey: string | null) =>
-    invoke<void>("set_byok_config", { provider, model, apiKey }),
+  chatTurn: (message: string, sessionId: string, onEvent: (e: TurnEvent) => void) => {
+    const channel = new Channel<TurnEvent>();
+    channel.onmessage = onEvent;
+    return invoke<ChatTurnResult>("chat_turn", { message, sessionId, onEvent: channel });
+  },
+  /** The current Working Set for the "what's in play" panel (ADR-0011 §3). */
+  getWorkingSet: () => invoke<WorkingSet>("get_working_set"),
+  /** Dismiss an open loop so it stops surfacing (ADR-0011 §5). */
+  dismissOpenLoop: (loopId: string) => invoke<void>("dismiss_open_loop", { loopId }),
+
+  // Audit log — the browsable, revertable backstop (ADR-0009 §6, ADR-0010 §8)
+  /** Every turn's audit entry, newest-first. */
+  listAudit: () => invoke<AuditEntry[]>("list_audit"),
+  /** Revert a whole turn: restore changed notes, delete recorded Facts. */
+  undoTurn: (turnId: string) => invoke<void>("undo_turn", { turnId }),
+  /** Revert one recorded Fact from a turn, leaving its notes and other Facts. */
+  undoFact: (turnId: string, factId: string) => invoke<void>("undo_fact", { turnId, factId }),
+  /** Revert one task-completion append from the daily note (ADR-0010 §8). */
+  undoTaskCompletion: (entryId: string) =>
+    invoke<UndoTaskCompletionResult>("undo_task_completion", { entryId }),
+
+  // Settings (the conversational-engine selector — ADR-0009 §5)
+  detectClaudeCode: () => invoke<ClaudeCodeStatus>("detect_claude_code"),
+  detectCopilot: () => invoke<CopilotStatus>("detect_copilot"),
+  getConversationEngine: () => invoke<ConversationEngineConfig>("get_conversation_engine"),
+  setConversationEngine: (engine: string, model: string | null) =>
+    invoke<void>("set_conversation_engine", { engine, model }),
+  /** The shared models directory, or null for Ollama's default. */
+  getModelsDir: () => invoke<string | null>("get_models_dir"),
+  /** Set the shared models directory; null/empty clears it back to default. */
+  setModelsDir: (dir: string | null) => invoke<void>("set_models_dir", { dir }),
+
+  // Tasks & reminders (ADR-0007)
+  listTasks: () => invoke<Task[]>("list_tasks"),
+  completeTask: (id: string) => invoke<void>("complete_task", { id }),
+  /** Push a task's reminder to `until` (an RFC3339 timestamp). */
+  snoozeTask: (id: string, until: string) => invoke<void>("snooze_task", { id, until }),
 };

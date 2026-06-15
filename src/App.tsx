@@ -1,3 +1,4 @@
+import { AuditLog } from "@/components/AuditLog";
 import { ChatPane } from "@/components/ChatPane";
 import { FileTree } from "@/components/FileTree";
 import { FormationPicker } from "@/components/FormationPicker";
@@ -5,13 +6,20 @@ import { IndexProgress } from "@/components/IndexProgress";
 import { ModelSetup } from "@/components/ModelSetup";
 import { NoteViewer } from "@/components/NoteViewer";
 import { Onboarding } from "@/components/Onboarding";
+import { ReminderToast } from "@/components/ReminderToast";
+import { RemindersPopover } from "@/components/RemindersPopover";
 import { SettingsModal } from "@/components/SettingsModal";
-import { StagingTray } from "@/components/StagingTray";
 import { UndoToast } from "@/components/UndoToast";
-import { useFormationStore, useStagingStore, useUiStore } from "@/lib/store";
-import { type ModelReadiness, tauri } from "@/lib/tauri";
+import { WorkingSetPanel } from "@/components/WorkingSetPanel";
+import {
+  useAuditStore,
+  useFormationStore,
+  useRemindersStore,
+  useWorkingSetStore,
+} from "@/lib/store";
+import { type ModelReadiness, type Task, tauri } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 interface FormationChangeEvent {
   kind: string;
@@ -24,10 +32,16 @@ export default function App() {
   const restore = useFormationStore((s) => s.restore);
   const handleExternalChange = useFormationStore((s) => s.handleExternalChange);
   const formationPath = useFormationStore((s) => s.formationPath);
-  const refreshStaging = useStagingStore((s) => s.refresh);
+  const refreshAudit = useAuditStore((s) => s.refresh);
+  const setupAudit = useAuditStore((s) => s.setup);
+  const setWorkingSet = useWorkingSetStore((s) => s.setWorkingSet);
   const [modelReadiness, setModelReadiness] = useState<ModelReadiness | null>(null);
   const [modelsChecked, setModelsChecked] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [remindersOpen, setRemindersOpen] = useState(false);
+  const refreshReminders = useRemindersStore((s) => s.refresh);
+  const showDueToast = useRemindersStore((s) => s.showDueToast);
+  const openTaskCount = useRemindersStore((s) => s.tasks.filter((t) => t.status === "open").length);
 
   useEffect(() => {
     tauri
@@ -58,23 +72,54 @@ export default function App() {
   }, [handleExternalChange]);
 
   useEffect(() => {
-    // Load any pending staging entries for the open formation, and refresh +
-    // surface the tray whenever a new Write-mode batch is staged.
+    // Load the audit log for the open formation. It is refreshed after each
+    // conversational turn and after any undo by the audit store itself.
     if (formationPath) {
-      refreshStaging().catch(() => {});
+      refreshAudit().catch(() => {});
     }
-    const unlistenP = listen("staging-created", () => {
-      refreshStaging().catch(() => {});
-      useUiStore.getState().setStagingTrayOpen(true);
+  }, [formationPath, refreshAudit]);
+
+  useEffect(() => {
+    // Load reminders for the open formation, and surface a toast + refresh
+    // whenever the scheduler fires one. (A turn that records a task refreshes
+    // the list directly — see ChatPane.) The listener is only active while a
+    // formation is open; without one there's nothing the scheduler could fire.
+    if (!formationPath) return;
+    refreshReminders().catch(() => {});
+    const dueP = listen<Task>("reminder-due", (event) => {
+      showDueToast(event.payload);
+      refreshReminders().catch(() => {});
     });
+    return () => {
+      dueP.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [formationPath, refreshReminders, showDueToast]);
+
+  useEffect(() => {
+    // Subscribe to daily-note-appended events from the indexer. The audit
+    // store's setup action wires the listener and arms the quiet undo toast.
+    // Only active while a formation is open — same pattern as reminder-due.
+    if (!formationPath) return;
+    const unlistenP = setupAudit();
     return () => {
       unlistenP.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [formationPath, refreshStaging]);
+  }, [formationPath, setupAudit]);
 
   useEffect(() => {
-    // On launch (and on formation switch) check the active tier has its
-    // models. The GLiNER model is per-formation, so this needs a formation.
+    // Populate the Working Set panel as soon as a formation is open.
+    // Refreshed after every chat turn by ChatPane. This initial load
+    // covers the launch/restore path.
+    if (!formationPath) return;
+    tauri
+      .getWorkingSet()
+      .then(setWorkingSet)
+      .catch(() => {});
+  }, [formationPath, setWorkingSet]);
+
+  const runModelCheck = useCallback(() => {
+    // Check the local embedding model is installed. Re-run on launch,
+    // formation switch, and a models-directory change in Settings.
     if (onboardingComplete !== true || !formationPath) return;
     setModelsChecked(false);
     tauri
@@ -86,6 +131,10 @@ export default function App() {
       })
       .finally(() => setModelsChecked(true));
   }, [onboardingComplete, formationPath]);
+
+  useEffect(() => {
+    runModelCheck();
+  }, [runModelCheck]);
 
   // Show onboarding until the user finishes it. `null` = still loading state from disk.
   if (onboardingComplete === false) {
@@ -101,8 +150,24 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-full w-full flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
-      <TitleBar version={version} onOpenSettings={() => setSettingsOpen(true)} />
+    <div className="relative flex h-full w-full flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+      <TitleBar
+        version={version}
+        reminderCount={openTaskCount}
+        onToggleReminders={() => setRemindersOpen((o) => !o)}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
+      {remindersOpen && (
+        <>
+          <button
+            type="button"
+            aria-label="Close reminders"
+            className="fixed inset-0 z-40 cursor-default"
+            onClick={() => setRemindersOpen(false)}
+          />
+          <RemindersPopover onClose={() => setRemindersOpen(false)} />
+        </>
+      )}
       <main className="flex min-h-0 flex-1">
         <section className="flex basis-3/5 border-r border-zinc-200 dark:border-zinc-800">
           {formationPath ? (
@@ -116,13 +181,22 @@ export default function App() {
             <FormationPicker />
           )}
         </section>
-        <section className="basis-2/5">
-          <ChatPane />
+        <section className="flex basis-2/5 flex-col">
+          <WorkingSetPanel />
+          <div className="min-h-0 flex-1">
+            <ChatPane />
+          </div>
         </section>
       </main>
-      <StagingTray />
+      <AuditLog />
       <UndoToast />
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      <ReminderToast />
+      {settingsOpen && (
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          onModelConfigChanged={runModelCheck}
+        />
+      )}
     </div>
   );
 }
@@ -135,7 +209,17 @@ function CheckingModels() {
   );
 }
 
-function TitleBar({ version, onOpenSettings }: { version: string; onOpenSettings: () => void }) {
+function TitleBar({
+  version,
+  reminderCount,
+  onToggleReminders,
+  onOpenSettings,
+}: {
+  version: string;
+  reminderCount: number;
+  onToggleReminders: () => void;
+  onOpenSettings: () => void;
+}) {
   const formationPath = useFormationStore((s) => s.formationPath);
   return (
     <header
@@ -154,9 +238,22 @@ function TitleBar({ version, onOpenSettings }: { version: string; onOpenSettings
       <IndexProgress />
       <button
         type="button"
+        onClick={onToggleReminders}
+        aria-label="Reminders"
+        className="relative ml-auto rounded px-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+      >
+        <span aria-hidden>🔔</span>
+        {reminderCount > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-medium text-white">
+            {reminderCount}
+          </span>
+        )}
+      </button>
+      <button
+        type="button"
         onClick={onOpenSettings}
         aria-label="Settings"
-        className="ml-auto mr-2 rounded px-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+        className="mr-2 ml-1 rounded px-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
       >
         ⚙
       </button>

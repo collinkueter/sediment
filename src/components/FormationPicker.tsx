@@ -27,8 +27,7 @@ export function FormationPicker() {
       </button>
       <p className="max-w-md text-xs text-zinc-400 dark:text-zinc-500">
         A <code className="font-mono">.chat-notes/</code> directory will be created inside the
-        folder to hold app state (graph, embeddings, staging). It does not modify your existing
-        notes.
+        folder to hold app state (graph and embeddings). It does not modify your existing notes.
       </p>
     </div>
   );
