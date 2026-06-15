@@ -1,8 +1,16 @@
 # Sediment — Technical Specification
 
-**Status:** Draft v0.2
+**Status:** Draft v0.2 — **§2–§8 superseded by [ADR-0009](docs/adr/0009-conversational-agent.md); a v0.3 rewrite is pending.**
 **Author:** Collin
 **Last updated:** 2026-05-19
+
+> ⚠️ **Out of date.** ADR-0009 reworked chat from a Write/Ask extraction
+> pipeline into a single conversational agent loop. It supersedes §2–§8 of this
+> spec (and amends design principles #1 and #2 — local-first and
+> formation-authoritative). Specifically: GLiNER extraction, intent
+> classification, the hardware-tier strategy, the staging tray, and the
+> multi-prompt extraction chain are all removed. Treat §2–§8 as historical until
+> the v0.3 rewrite lands; ADR-0009 is the current source of truth.
 
 > **v0.2 changes:** Architecture simplified — Graphiti, FalkorDB, and LanceDB
 > replaced by a single embedded SurrealDB instance (graph + vectors + documents).
