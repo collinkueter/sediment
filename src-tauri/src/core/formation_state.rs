@@ -31,24 +31,29 @@ impl FormationState {
 }
 
 /// On-disk app config saved at `$APP_CONFIG_DIR/config.json`. Holds what we
-/// need to restore on next launch plus the user's BYOK cloud-provider setup.
+/// need to restore on next launch plus the user's conversational-engine choice.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub last_formation_path: Option<PathBuf>,
     #[serde(default)]
     pub onboarding_complete: bool,
+    /// User-chosen directory for downloaded models. `None` keeps Ollama's own
+    /// storage location; when set a Sediment-spawned Ollama daemon stores
+    /// models under `<models_dir>/ollama` (shared across formations).
     #[serde(default)]
-    pub selected_tier: Option<String>,
-    /// BYOK cloud provider — "anthropic" | "openai". `None` = local generation.
+    pub models_dir: Option<PathBuf>,
+    /// The conversational-agent engine (ADR-0009 §5, ADR-0012): `"claude-code"`
+    /// (default) or `"copilot"`. `None` is treated as `"claude-code"`.
     #[serde(default)]
-    pub byok_provider: Option<String>,
-    /// The user's API key for `byok_provider`. Stays on disk; never returned
-    /// to the front end (see `commands::settings`).
+    pub conversation_engine: Option<String>,
+    /// Model alias for the Claude Code engine (`"sonnet"`, `"opus"`, …) or a
+    /// full model id. `None` falls back to `core::claude_code::DEFAULT_MODEL`.
     #[serde(default)]
-    pub byok_api_key: Option<String>,
-    /// Optional explicit model override; falls back to the provider default.
+    pub claude_code_model: Option<String>,
+    /// Model for the GitHub Copilot engine (`"claude-haiku-4.5"`, `"gpt-5-mini"`,
+    /// …). `None` falls back to `core::copilot::DEFAULT_MODEL` (ADR-0012).
     #[serde(default)]
-    pub byok_model: Option<String>,
+    pub copilot_model: Option<String>,
 }
 
 impl AppConfig {

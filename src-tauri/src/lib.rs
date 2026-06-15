@@ -53,16 +53,57 @@ mod anyhow_lite {
 
 use tauri::Manager;
 
+/// Hidden `--mcp-stdio` entry point — the graph-only stdio MCP server
+/// (ADR-0009 §5, plan M2). The app spawns *itself* with this flag so the
+/// Claude Code CLI can be pointed at it via `--mcp-config` (M3).
+///
+/// The formation root comes from `SEDIMENT_FORMATION`; the turn's provenance
+/// chat id from `SEDIMENT_SOURCE_CHAT_ID` (defaulting to `chat_message:mcp`).
+///
+/// CRITICAL: this path speaks JSON-RPC on stdout — diagnostics go to stderr
+/// only, and the Tauri builder is never reached.
+pub fn run_mcp_stdio() -> std::process::ExitCode {
+    let formation = match std::env::var("SEDIMENT_FORMATION") {
+        Ok(v) if !v.trim().is_empty() => std::path::PathBuf::from(v),
+        _ => {
+            eprintln!("sediment --mcp-stdio: SEDIMENT_FORMATION env var must be set");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let source_chat_id = std::env::var("SEDIMENT_SOURCE_CHAT_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "chat_message:mcp".to_string());
+
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("sediment --mcp-stdio: could not start async runtime: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    match runtime.block_on(core::formation_mcp::serve_stdio(formation, source_chat_id)) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("sediment --mcp-stdio: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(core::formation_state::FormationState::default())
         .manage(core::memory::MemoryHandle::default())
         .manage(core::watcher::FormationWatcher::default())
         .manage(core::ollama_sidecar::OllamaSidecar::default())
+        .manage(core::copilot::CopilotEngineHandle::default())
         .setup(|app| {
             // Logging guard is owned by the app so the appender keeps draining.
             let guard = init_logging(app.handle()).expect("init logging");
@@ -70,50 +111,44 @@ pub fn run() {
             // The background indexer needs an AppHandle, only available here.
             let indexer = core::indexer::Indexer::start(app.handle().clone());
             app.manage(indexer);
+            // The reminder scheduler (ADR-0007) likewise spawns from here.
+            core::reminders::spawn(app.handle().clone());
             tracing::info!("Sediment starting up");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::app_version,
             commands::formation::pick_formation_dir,
+            commands::formation::pick_directory,
             commands::formation::open_formation,
             commands::formation::restore_last_formation,
             commands::formation::list_notes,
             commands::formation::read_note,
             commands::formation::write_note,
-            commands::memory::memory_smoke_test,
-            commands::memory::index_note,
             commands::memory::index_formation,
-            commands::memory::search_notes,
-            commands::memory::relate_fact_command,
-            commands::memory::current_facts,
-            commands::extraction::extract_entities,
-            commands::extraction::extract_and_upsert,
-            commands::extraction::extract_facts,
-            commands::chat::chat_write,
-            commands::chat::chat_ask,
-            commands::chat::classify_intent,
-            commands::staging::list_staging,
-            commands::staging::get_staging,
-            commands::staging::discard_staging,
-            commands::staging::update_staging,
-            commands::staging::resolve_conflict,
-            commands::staging::apply_disambiguation,
-            commands::staging::dismiss_disambiguation,
-            commands::staging::keep_staging,
-            commands::staging::undo_commit,
+            commands::chat::chat_turn,
+            commands::chat::get_working_set,
+            commands::chat::dismiss_open_loop,
+            commands::audit::list_audit,
+            commands::audit::undo_turn,
+            commands::audit::undo_fact,
+            commands::audit::undo_task_completion,
+            commands::tasks::list_tasks,
+            commands::tasks::complete_task,
+            commands::tasks::snooze_task,
             commands::ollama::ollama_status,
             commands::ollama::ollama_ensure_running,
             commands::ollama::ollama_list_models,
-            commands::ollama::ollama_generate,
-            commands::hardware::detect_hardware,
             commands::hardware::get_onboarding_state,
             commands::hardware::complete_onboarding,
             commands::models::check_model_readiness,
             commands::models::pull_ollama_model,
-            commands::models::download_gliner_model,
-            commands::settings::get_byok_config,
-            commands::settings::set_byok_config,
+            commands::settings::get_models_dir,
+            commands::settings::set_models_dir,
+            commands::settings::detect_claude_code,
+            commands::settings::detect_copilot,
+            commands::settings::get_conversation_engine,
+            commands::settings::set_conversation_engine,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sediment");

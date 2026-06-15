@@ -1,0 +1,121 @@
+//! The `ConversationEngine` abstraction — ADR-0009 §5, plan M3.
+//!
+//! ADR-0009 collapses the old Write/Ask command bus into a single
+//! conversational **agent loop**. Each turn the agent grounds itself, records
+//! what it learns, and replies. *Who runs that loop* is abstracted behind the
+//! [`ConversationEngine`] trait so V1 can ship one engine — the Claude Code CLI
+//! ([`crate::core::claude_code::ClaudeCodeEngine`]) — while leaving room for the
+//! Gemini CLI (M6) and HTTP API engines later.
+//!
+//! The trait is deliberately **Tauri-agnostic**: streamed events flow through a
+//! plain [`TurnEventSink`] closure, not a `tauri::ipc::Channel`. M4's `chat_turn`
+//! command wraps a `Channel` in a `TurnEventSink` at the edge, so the engine
+//! layer never depends on Tauri's IPC types and stays unit-testable.
+//!
+//! Sediment owns the conversation transcript (it lives in `chat_message`, not in
+//! engine session files — ADR-0009 §5). A [`TurnRequest`] therefore carries a
+//! recent window of prior turns; the engine renders that window into whatever
+//! shape its CLI/API wants and feeds it alongside the new message.
+//!
+//! The production caller is the `chat_turn` command (`commands::chat`).
+
+use crate::error::AppResult;
+use async_trait::async_trait;
+use std::path::PathBuf;
+
+/// One prior turn of conversation.
+///
+/// Oldest-first history is a `Vec<TranscriptTurn>`. `role` is `"user"` or
+/// `"assistant"` — a plain `String` rather than an enum so the type stays
+/// trivially serializable and the engine layer imposes no schema beyond what
+/// `chat_message` already records.
+pub struct TranscriptTurn {
+    /// `"user"` or `"assistant"`.
+    pub role: String,
+    /// The verbatim message text for that turn.
+    pub content: String,
+}
+
+/// Everything an engine needs to run one conversational turn.
+pub struct TurnRequest {
+    /// The new user message that triggered this turn.
+    pub message: String,
+    /// Recent prior turns, oldest first — the conversational continuity window
+    /// (ADR-0009 §5: ≈ the last 10–20 turns). Older context is the agent's job
+    /// to pull with its own tools.
+    pub history: Vec<TranscriptTurn>,
+    /// The engine's working directory: the formation root. Claude Code's native
+    /// file tools operate here; the MCP server is pointed at it too.
+    pub formation_root: PathBuf,
+    /// The user message's `chat_message` id — stamped as provenance on every
+    /// graph Fact the turn records (passed to the MCP server via env var).
+    pub source_chat_id: String,
+    /// Deterministic grounding the orchestrator pushes into the turn *before* the
+    /// agent runs (ADR-0011): resolved entities + their current facts, the top
+    /// related notes, and the Working Set — pre-rendered as one Markdown block.
+    /// The engine splices it into the prompt; `None` means no pre-pass ran.
+    pub injected_context: Option<String>,
+}
+
+/// A streamed event during a turn.
+///
+/// Engines emit these through the [`TurnEventSink`] as the turn progresses, so
+/// the UI can render the reply token-by-token and show an inline trail of the
+/// agent's tool activity.
+///
+/// `TurnEvent` is `Serialize` so the `chat_turn` command can forward it
+/// straight onto a Tauri [`tauri::ipc::Channel`]. The serde shape is an
+/// **internally-tagged** object — a `kind` discriminator plus the variant's
+/// fields — so the frontend receives a plain discriminated union:
+///
+/// - text delta → `{ "kind": "textDelta", "text": "Sarah " }`
+/// - tool activity → `{ "kind": "toolActivity", "tool": "Edit", "summary": "Edit People/Josh.md" }`
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TurnEvent {
+    /// A chunk of the assistant's reply text.
+    TextDelta {
+        /// The token text to append to the streamed reply.
+        text: String,
+    },
+    /// The agent used a tool — surfaced as a human-readable line in the UI
+    /// activity trail (*"searched your notes"*, *"filed Josh → works_at → …"*).
+    ToolActivity {
+        /// The tool name (e.g. `Edit`, `mcp__sediment__record_fact`).
+        tool: String,
+        /// A short human phrase describing the call — the tool plus a key
+        /// argument.
+        summary: String,
+    },
+}
+
+/// Where streamed [`TurnEvent`]s go.
+///
+/// A boxed closure rather than a channel type: M4 wraps a Tauri `Channel` in
+/// one of these, and the deterministic tests wrap a `Vec`-collector. The engine
+/// only ever calls it — it never inspects the sink.
+pub type TurnEventSink = Box<dyn Fn(TurnEvent) + Send + Sync>;
+
+/// The result of a completed turn.
+pub struct TurnOutcome {
+    /// The full assistant reply text — the authoritative final answer, not the
+    /// concatenation of streamed deltas (which may be partial).
+    pub reply: String,
+}
+
+/// Runs the agent loop for one conversational turn.
+///
+/// V1's only implementor is [`crate::core::claude_code::ClaudeCodeEngine`].
+/// `run_turn` is `&self` so an engine can be shared across turns; per-turn
+/// state lives entirely in the [`TurnRequest`].
+#[async_trait]
+pub trait ConversationEngine: Send + Sync {
+    /// Run one turn: ground, record, reply. Streams [`TurnEvent`]s through
+    /// `on_event` as they happen and returns the [`TurnOutcome`] when the turn
+    /// completes.
+    async fn run_turn(
+        &self,
+        turn: &TurnRequest,
+        on_event: &TurnEventSink,
+    ) -> AppResult<TurnOutcome>;
+}

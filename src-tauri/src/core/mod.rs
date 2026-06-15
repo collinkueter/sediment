@@ -1,21 +1,18 @@
 // Core module: long-lived state and subsystems.
-pub mod cloud;
-pub mod diff_gen;
-pub mod extraction;
+pub mod audit;
+pub mod claude_code;
+pub mod conversation;
+pub mod copilot;
+pub mod daily_note;
+pub mod formation_mcp;
 pub mod formation_state;
-pub mod hardware;
+pub mod formation_tools;
 pub mod indexer;
-pub mod intent;
-pub mod llm_extractor;
 pub mod memory;
-pub mod models;
 pub mod ollama_sidecar;
-pub mod router;
-pub mod similarity;
-pub mod staging;
+pub mod pre_pass;
+pub mod reminders;
+pub mod task_note;
+pub mod tasks;
 pub mod watcher;
-
-// Stubs for later milestones:
-// pub mod watcher;         // M4
-// pub mod hardware;        // M5
-// pub mod ollama_sidecar;  // M6
+pub mod working_set;

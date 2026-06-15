@@ -1,8 +1,7 @@
 //! Embedded SurrealDB wrapper. Owns the connection, applies the schema on first
-//! launch, exposes typed helpers for the temporal-fact write/query patterns used
-//! by the extraction pipeline.
+//! launch, exposes typed helpers for the bi-temporal-fact write/query patterns
+//! the conversational agent's graph tools (`core::formation_tools`) use.
 
-use crate::core::similarity::trigram_similarity;
 use crate::error::{AppError, AppResult};
 use std::path::Path;
 use std::sync::Arc;
@@ -13,16 +12,6 @@ use tokio::sync::OnceCell;
 
 const NS: &str = "sediment";
 const DB: &str = "memory";
-
-/// Minimum trigram similarity for `similar_entities` to surface a candidate.
-/// 0.5 keeps the "did you mean" banner to genuine spelling variants rather
-/// than loosely-related names.
-const SIMILAR_NAME_THRESHOLD: f32 = 0.5;
-
-/// Maximum cosine distance for `similar_entities_by_embedding` to surface a
-/// candidate. Embedding catches semantic name matches a trigram check misses
-/// (a nickname, an abbreviation); 0.35 keeps it to close ones. Tunable.
-const MAX_EMBEDDING_DISTANCE: f32 = 0.35;
 
 #[derive(Clone)]
 pub struct MemoryStore {
@@ -214,28 +203,32 @@ impl MemoryStore {
     /// superseding any contradicting current fact. Thin wrapper over
     /// `relate_fact_with` with supersession on.
     pub async fn relate_fact(&self, fact: FactWriteInput) -> AppResult<String> {
-        self.relate_fact_with(fact, true).await
+        Ok(self.relate_fact_with(fact, true).await?.fact_id().to_string())
     }
 
     /// Write a bi-temporal fact edge, controlling supersession.
     ///
-    /// With `supersede = true` (atomic, in one SurrealDB query):
+    /// Same-object refinement (always, regardless of `supersede`): a closed
+    /// write (`valid_to` set) whose `(subject, predicate, object)` already
+    /// exists as a CURRENT edge closes that edge in place — it is the same
+    /// relationship gaining an end date (a tense correction). No new edge is
+    /// created; the result is `FactWrite::ClosedInPlace`.
+    ///
+    /// Otherwise, with `supersede = true` (atomic, in one SurrealDB query):
     /// 1. Any existing fact with the same `(subject, predicate)`,
     ///    `valid_to IS NONE`, AND a different `object` gets its
     ///    `valid_to = $valid_from`. History is preserved; the older edge
     ///    stays queryable for point-in-time reads.
-    /// 2. The new edge is RELATEd with `valid_to = NONE`.
+    /// 2. The new edge is RELATEd.
     ///
     /// With `supersede = false`, step 1 is skipped — the new fact coexists
     /// with the contradicting current fact. This backs the "Keep both"
     /// conflict resolution (concurrent employment; ADR-0004 refinement R3).
-    ///
-    /// Returns the new fact's record id as a `"fact:..."` string.
-    pub async fn relate_fact_with(
+    pub(crate) async fn relate_fact_with(
         &self,
         fact: FactWriteInput,
         supersede: bool,
-    ) -> AppResult<String> {
+    ) -> AppResult<FactWrite> {
         // Strip "entity:" prefix if present — we splice the raw key into the
         // RELATE statement to avoid binding-position limits.
         let subject_key = fact
@@ -247,9 +240,49 @@ impl MemoryStore {
             .strip_prefix("entity:")
             .unwrap_or(&fact.object_id);
 
-        // A historical fact (explicit valid_to) is never "current": it must not
-        // supersede the live fact, nor be superseded by a later write.
         let new_valid_to = fact.valid_to;
+
+        // A closed write whose (subject, predicate, object) already exists as
+        // a CURRENT edge is the same relationship gaining an end date — a
+        // tense correction ("works at" then "worked at" the same employer).
+        // Close that edge in place rather than leaving a stale current edge
+        // beside a new closed one. Independent of `supersede`, which governs
+        // only the different-object job-change case.
+        if let Some(valid_to) = new_valid_to {
+            let find = format!(
+                "SELECT id FROM fact \
+                   WHERE in = entity:{subject_key} \
+                     AND out = entity:{object_key} \
+                     AND predicate = $predicate \
+                     AND valid_to IS NONE \
+                   LIMIT 1;"
+            );
+            let mut res = self
+                .db
+                .query(find)
+                .bind(("predicate", fact.predicate.clone()))
+                .await
+                .map_err(|e| AppError::other(format!("relate_fact find current: {e}")))?;
+            let existing: Vec<IdRow> = res
+                .take(0)
+                .map_err(|e| AppError::other(format!("relate_fact find take: {e}")))?;
+            if let Some(row) = existing.into_iter().next() {
+                let id = record_id_to_string(&row.id);
+                let key = id.strip_prefix("fact:").unwrap_or(&id);
+                self.db
+                    .query("UPDATE type::record('fact', $key) SET valid_to = $valid_to;")
+                    .bind(("key", key.to_string()))
+                    .bind(("valid_to", valid_to))
+                    .await
+                    .map_err(|e| AppError::other(format!("relate_fact close: {e}")))?
+                    .check()
+                    .map_err(|e| AppError::other(format!("relate_fact close check: {e}")))?;
+                return Ok(FactWrite::ClosedInPlace(id));
+            }
+        }
+
+        // A historical fact (explicit valid_to) is never "current": it must
+        // not supersede the live fact, nor be superseded by a later write.
         let supersede = supersede && new_valid_to.is_none();
 
         let relate = format!(
@@ -298,7 +331,7 @@ impl MemoryStore {
             .into_iter()
             .next()
             .ok_or_else(|| AppError::other("RELATE returned no rows"))?;
-        Ok(record_id_to_string(&fact_row.id))
+        Ok(FactWrite::Created(record_id_to_string(&fact_row.id)))
     }
 
     /// Persist a chat message and return its record id (e.g. `chat_message:abc`).
@@ -331,6 +364,62 @@ impl MemoryStore {
             .ok_or_else(|| AppError::other("CREATE chat_message returned no row"))
     }
 
+    /// The last `limit` `chat_message` rows for `session_id`, **oldest-first**,
+    /// each as `(role, content)`.
+    ///
+    /// ADR-0009 §5: Sediment owns the conversation transcript. `chat_turn`
+    /// assembles its recent-window history from this — the rows are fetched
+    /// newest-first (so `LIMIT` keeps the *recent* tail) then reversed so the
+    /// engine reads them in chronological order.
+    pub async fn recent_messages(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> AppResult<Vec<(String, String)>> {
+        // `LIMIT` cannot be bound as a parameter — clamp and splice it.
+        // SurrealDB requires every `ORDER BY` idiom to appear in the
+        // projection, so `timestamp` and `id` are selected even though only
+        // `role` and `content` are returned to the caller.
+        let limit_clamped = limit.clamp(1, 500);
+        let sql = format!(
+            "SELECT role, content, timestamp, id FROM chat_message \
+             WHERE session_id = $sid \
+             ORDER BY timestamp DESC, id DESC \
+             LIMIT {limit_clamped};"
+        );
+        let mut res = self
+            .db
+            .query(sql)
+            .bind(("sid", session_id.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("recent_messages: {e}")))?;
+        let mut rows: Vec<ChatMessageRow> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("recent_messages take: {e}")))?;
+        rows.reverse(); // newest-first query → oldest-first result
+        Ok(rows.into_iter().map(|r| (r.role, r.content)).collect())
+    }
+
+    /// The `fact` record ids whose `source_chat_id` equals `source_chat_id` —
+    /// the graph Facts a single turn recorded.
+    ///
+    /// ADR-0009 §6: graph writes are discrete (they pass through the MCP
+    /// server, which stamps each Fact with the turn's user `chat_message` id),
+    /// so the per-turn audit entry learns its recorded Facts by querying this
+    /// rather than by diffing.
+    pub async fn facts_by_source(&self, source_chat_id: &str) -> AppResult<Vec<String>> {
+        let mut res = self
+            .db
+            .query("SELECT id FROM fact WHERE source_chat_id = $src;")
+            .bind(("src", source_chat_id.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("facts_by_source: {e}")))?;
+        let rows: Vec<IdRow> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("facts_by_source take: {e}")))?;
+        Ok(rows.iter().map(|r| record_id_to_string(&r.id)).collect())
+    }
+
     /// Current facts about an entity: edges where `valid_to IS NONE`.
     pub async fn current_facts(&self, subject_id: &str) -> AppResult<Vec<FactRow>> {
         let key = subject_id.strip_prefix("entity:").unwrap_or(subject_id);
@@ -351,8 +440,8 @@ impl MemoryStore {
 
     /// Resolve an entity by canonical name or alias **without writing**.
     /// Returns the stored record's id, type, canonical name, and `note_path`
-    /// (if linked to a note). Used by the staging pipeline to decide whether a
-    /// fact updates an existing note or creates a new one.
+    /// (if linked to a note). Used by the conversational agent to decide
+    /// whether a fact updates an existing note or creates a new one.
     pub async fn lookup_entity(&self, name: &str) -> AppResult<Option<EntityLookup>> {
         let mut res = self
             .db
@@ -374,18 +463,23 @@ impl MemoryStore {
         }))
     }
 
-    /// Every entity in the graph as an `EntityLookup`. A personal formation
-    /// stays small enough that a full scan is the right tool for the trigram
-    /// disambiguation check.
-    pub async fn all_entities(&self) -> AppResult<Vec<EntityLookup>> {
+    /// The most recently touched entities (by `updated_at`) — the people, orgs,
+    /// and projects currently "in play". Drives the Working Set (ADR-0011 §3).
+    /// `updated_at` is projected only to satisfy SurrealDB's ORDER-BY rule.
+    pub async fn recent_entities(&self, limit: usize) -> AppResult<Vec<EntityLookup>> {
+        let limit = limit.clamp(1, 100);
+        let sql = format!(
+            "SELECT id, entity_type, canonical_name, note_path, updated_at FROM entity \
+             ORDER BY updated_at DESC LIMIT {limit};"
+        );
         let mut res = self
             .db
-            .query("SELECT id, entity_type, canonical_name, note_path FROM entity;")
+            .query(sql)
             .await
-            .map_err(|e| AppError::other(format!("all_entities: {e}")))?;
+            .map_err(|e| AppError::other(format!("recent_entities: {e}")))?;
         let rows: Vec<EntityRow> = res
             .take(0)
-            .map_err(|e| AppError::other(format!("all_entities take: {e}")))?;
+            .map_err(|e| AppError::other(format!("recent_entities take: {e}")))?;
         Ok(rows
             .into_iter()
             .map(|r| EntityLookup {
@@ -397,114 +491,123 @@ impl MemoryStore {
             .collect())
     }
 
-    /// Existing entities whose name is a near — not exact — match for `name`,
-    /// of the same `entity_type`, best match first. An exact case-insensitive
-    /// match is excluded: that resolves through `lookup_entity` and is not a
-    /// "did you mean". Drives the staging tray's disambiguation banner (R4).
-    pub async fn similar_entities(
-        &self,
-        name: &str,
-        entity_type: &str,
-    ) -> AppResult<Vec<EntityMatch>> {
-        let mut matches: Vec<EntityMatch> = self
-            .all_entities()
-            .await?
-            .into_iter()
-            .filter(|e| e.entity_type == entity_type)
-            .filter(|e| !e.canonical_name.eq_ignore_ascii_case(name))
-            .filter_map(|e| {
-                let score = trigram_similarity(name, &e.canonical_name);
-                (score >= SIMILAR_NAME_THRESHOLD).then_some(EntityMatch {
-                    id: e.id,
-                    entity_type: e.entity_type,
-                    canonical_name: e.canonical_name,
-                    note_path: e.note_path,
-                    score,
-                })
-            })
-            .collect();
-        matches.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        Ok(matches)
-    }
-
-    /// Store the embedding of an entity's canonical name, for the
-    /// embedding-based disambiguation search. Called best-effort on commit —
-    /// a missing embedding just means that entity is not an embedding-search
-    /// candidate; the trigram check still covers it.
-    pub async fn set_entity_embedding(
-        &self,
-        entity_id: &str,
-        embedding: Vec<f32>,
-    ) -> AppResult<()> {
-        let key = entity_id.strip_prefix("entity:").unwrap_or(entity_id);
-        self.db
-            .query("UPDATE type::record('entity', $key) SET embedding = $embedding;")
-            .bind(("key", key.to_string()))
-            .bind(("embedding", embedding))
-            .await
-            .map_err(|e| AppError::other(format!("set_entity_embedding: {e}")))?
-            .check()
-            .map_err(|e| AppError::other(format!("set_entity_embedding check: {e}")))?;
-        Ok(())
-    }
-
-    /// Entities semantically near `query` (an embedded name), of type
-    /// `entity_type`, within `MAX_EMBEDDING_DISTANCE` — best match first.
-    /// Cosine distance via the HNSW `entity_embedding` index; entities with no
-    /// stored embedding are simply absent from the index. The `score` is
-    /// `1 - distance`. This is the embedding half of disambiguation (R4): it
-    /// catches nicknames and abbreviations the trigram check cannot.
-    pub async fn similar_entities_by_embedding(
-        &self,
-        query: Vec<f32>,
-        entity_type: &str,
-        k: usize,
-    ) -> AppResult<Vec<EntityMatch>> {
-        let k_clamped = k.clamp(1, 50);
-        const EF: usize = 64;
+    /// Formation-relative paths of the most recently (re)indexed notes (by
+    /// `indexed_at`) — a cheap proxy for "recently edited", since the indexer
+    /// re-indexes a note on every change. Drives the Working Set (ADR-0011 §3).
+    pub async fn recent_notes(&self, limit: usize) -> AppResult<Vec<String>> {
+        let limit = limit.clamp(1, 100);
         let sql = format!(
-            "SELECT id, entity_type, canonical_name, note_path, \
-             vector::distance::knn() AS distance \
-             FROM entity \
-             WHERE embedding <|{k_clamped},{EF}|> $query;"
+            "SELECT note_path, indexed_at FROM note_index_state \
+             ORDER BY indexed_at DESC LIMIT {limit};"
         );
         let mut res = self
             .db
             .query(sql)
-            .bind(("query", query))
             .await
-            .map_err(|e| AppError::other(format!("entity vector search: {e}")))?;
-        let rows: Vec<EntityEmbeddingHit> = res
+            .map_err(|e| AppError::other(format!("recent_notes: {e}")))?;
+        res.take((0, "note_path"))
+            .map_err(|e| AppError::other(format!("recent_notes take: {e}")))
+    }
+
+    /// Record a new Open Loop (ADR-0011 §5) — an unresolved question or
+    /// stated-but-unfulfilled intention the agent noticed. Returns its
+    /// `open_loop:<id>` record id.
+    pub async fn record_open_loop(
+        &self,
+        title: &str,
+        context: Option<&str>,
+        source_chat_id: &str,
+    ) -> AppResult<String> {
+        // A controlled, splice-safe id (slug + short random), like Task ids.
+        let slug = slugify(title);
+        let base = slug.chars().take(40).collect::<String>();
+        let base = base.trim_end_matches('_');
+        let base = if base.is_empty() { "loop" } else { base };
+        let key = format!("{base}_{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
+        self.db
+            .query(format!(
+                "CREATE open_loop:{key} SET title = $title, context = $context, \
+                 source_chat_id = $src, created = time::now();"
+            ))
+            .bind(("title", title.to_string()))
+            .bind(("context", context.map(str::to_string)))
+            .bind(("src", source_chat_id.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("record_open_loop: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("record_open_loop check: {e}")))?;
+        Ok(format!("open_loop:{key}"))
+    }
+
+    /// Resolve an Open Loop — set `archived_at` so it stops surfacing. Used by
+    /// the agent's `close_open_loop` tool and the UI dismiss command.
+    pub async fn close_open_loop(&self, loop_id: &str) -> AppResult<()> {
+        let key = open_loop_key(loop_id);
+        self.db
+            .query(format!(
+                "UPDATE open_loop:{key} SET archived_at = time::now();"
+            ))
+            .await
+            .map_err(|e| AppError::other(format!("close_open_loop: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("close_open_loop check: {e}")))?;
+        Ok(())
+    }
+
+    /// Mark an Open Loop as just surfaced in conversation — drives the rider's
+    /// per-loop cooldown (ADR-0011 §4) so the same loop doesn't repeat.
+    pub async fn mark_loop_surfaced(&self, loop_id: &str) -> AppResult<()> {
+        let key = open_loop_key(loop_id);
+        self.db
+            .query(format!(
+                "UPDATE open_loop:{key} SET last_surfaced_at = time::now();"
+            ))
+            .await
+            .map_err(|e| AppError::other(format!("mark_loop_surfaced: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("mark_loop_surfaced check: {e}")))?;
+        Ok(())
+    }
+
+    /// Active Open Loops to surface: not archived and created within
+    /// `decay_days`, least-recently-surfaced first so the rider rotates through
+    /// them rather than repeating one.
+    pub async fn list_active_open_loops(
+        &self,
+        limit: usize,
+        decay_days: i64,
+    ) -> AppResult<Vec<OpenLoop>> {
+        let limit = limit.clamp(1, 100);
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(decay_days.max(1));
+        let sql = format!(
+            "SELECT id, title, context, last_surfaced_at, created FROM open_loop \
+             WHERE archived_at IS NONE AND created > $cutoff \
+             ORDER BY last_surfaced_at ASC, created DESC LIMIT {limit};"
+        );
+        let mut res = self
+            .db
+            .query(sql)
+            .bind(("cutoff", cutoff))
+            .await
+            .map_err(|e| AppError::other(format!("list_active_open_loops: {e}")))?;
+        let rows: Vec<OpenLoopRow> = res
             .take(0)
-            .map_err(|e| AppError::other(format!("entity vector search take: {e}")))?;
-        let mut matches: Vec<EntityMatch> = rows
+            .map_err(|e| AppError::other(format!("list_active_open_loops take: {e}")))?;
+        Ok(rows
             .into_iter()
-            .filter(|r| r.entity_type == entity_type && r.distance <= MAX_EMBEDDING_DISTANCE)
-            .map(|r| EntityMatch {
+            .map(|r| OpenLoop {
                 id: record_id_to_string(&r.id),
-                entity_type: r.entity_type,
-                canonical_name: r.canonical_name,
-                note_path: r.note_path,
-                score: 1.0 - r.distance,
+                title: r.title,
+                context: r.context,
             })
-            .collect();
-        matches.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        Ok(matches)
+            .collect())
     }
 
     /// Current facts a new `(subject, predicate, object)` would contradict:
-    /// same subject + predicate, a DIFFERENT object, still valid. These are the
-    /// facts `relate_fact` would silently supersede — the staging tray surfaces
-    /// them so the user picks Update / Keep both / Discard. A brand-new subject
-    /// entity (not yet stored) simply matches nothing.
+    /// same subject + predicate, a DIFFERENT object, still valid. These are
+    /// the facts `relate_fact` would silently supersede — the agent surfaces
+    /// them in conversation so the user resolves Update / Keep both / Discard.
+    /// A brand-new subject entity (not yet stored) simply matches nothing.
     pub async fn find_conflicts(
         &self,
         subject_id: &str,
@@ -516,7 +619,7 @@ impl MemoryStore {
             .strip_prefix("entity:")
             .unwrap_or(new_object_id);
         let sql = format!(
-            "SELECT out AS object_id, out.canonical_name AS object_name, \
+            "SELECT out.canonical_name AS object_name, \
              predicate, valid_from, source_chat_id \
              FROM fact \
              WHERE in = entity:{subject_key} \
@@ -536,7 +639,6 @@ impl MemoryStore {
         Ok(rows
             .into_iter()
             .map(|r| FactConflict {
-                object_id: record_id_to_string(&r.object_id),
                 object_name: r.object_name,
                 predicate: r.predicate,
                 valid_from: r.valid_from,
@@ -545,24 +647,9 @@ impl MemoryStore {
             .collect())
     }
 
-    /// Link an entity to a note by setting its `note_path`. Called on commit so
-    /// a later fact about the same subject routes as an update of that note
-    /// rather than creating a duplicate (Phase 3 decision #2).
-    pub async fn set_entity_note_path(&self, entity_id: &str, note_path: &str) -> AppResult<()> {
-        let key = entity_id.strip_prefix("entity:").unwrap_or(entity_id);
-        self.db
-            .query("UPDATE type::record('entity', $key) SET note_path = $path;")
-            .bind(("key", key.to_string()))
-            .bind(("path", note_path.to_string()))
-            .await
-            .map_err(|e| AppError::other(format!("set_entity_note_path: {e}")))?
-            .check()
-            .map_err(|e| AppError::other(format!("set_entity_note_path check: {e}")))?;
-        Ok(())
-    }
-
-    /// Delete a fact edge by record id. `undo_commit` uses this to remove
-    /// exactly the facts a Keep wrote — the ids are tracked, never re-derived.
+    /// Delete a fact edge by record id. The audit log's per-Fact revert uses
+    /// this to remove exactly the facts a turn recorded — the ids are tracked,
+    /// never re-derived (ADR-0009 §6).
     pub async fn delete_fact(&self, fact_id: &str) -> AppResult<()> {
         let key = fact_id.strip_prefix("fact:").unwrap_or(fact_id);
         self.db
@@ -666,17 +753,6 @@ pub struct ChunkHit {
     pub distance: f32,
 }
 
-/// Raw row shape for `similar_entities_by_embedding` — an entity plus its
-/// cosine distance from the query vector.
-#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
-struct EntityEmbeddingHit {
-    pub id: RecordId,
-    pub entity_type: String,
-    pub canonical_name: String,
-    pub note_path: Option<String>,
-    pub distance: f32,
-}
-
 /// Surfaced to JS as a flat string id. The id stays stable across renames —
 /// the canonical_name field can change; the slug-derived record id doesn't.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -695,7 +771,7 @@ struct ExistingEntity {
     pub aliases: Vec<String>,
 }
 
-/// Row shape for `lookup_entity` — the fields the staging pipeline needs.
+/// Row shape for `lookup_entity` — the fields the conversational agent needs.
 #[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
 struct EntityRow {
     pub id: RecordId,
@@ -704,9 +780,9 @@ struct EntityRow {
     pub note_path: Option<String>,
 }
 
-/// JS/staging-facing entity resolution result. The `id` is the flat
-/// `entity:<slug>` string; `note_path` is `Some` once the entity has been
-/// filed into a note.
+/// Entity resolution result used by the conversational agent's graph tools.
+/// The `id` is the flat `entity:<slug>` string; `note_path` is `Some` once
+/// the entity has been filed into a note.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EntityLookup {
     pub id: String,
@@ -715,19 +791,30 @@ pub struct EntityLookup {
     pub note_path: Option<String>,
 }
 
-/// An existing entity that is a near name-match for a freshly-mentioned one.
-/// `score` is the trigram similarity in `[0,1]`; higher is closer.
+/// What a `relate_fact_with` call did to the graph, so a commit can record
+/// the exact inverse for undo.
 #[derive(Debug, Clone)]
-pub struct EntityMatch {
-    pub id: String,
-    pub entity_type: String,
-    pub canonical_name: String,
-    pub note_path: Option<String>,
-    pub score: f32,
+pub enum FactWrite {
+    /// A new `fact` edge was RELATEd. Undo deletes it.
+    Created(String),
+    /// An existing CURRENT edge was closed in place — a later message refined
+    /// the same relationship with an end date (a tense correction). Undo
+    /// reopens it: a matched edge was always current before the write, so
+    /// clearing `valid_to` restores it exactly.
+    ClosedInPlace(String),
+}
+
+impl FactWrite {
+    /// The record id of the affected edge, whichever kind of write it was.
+    pub fn fact_id(&self) -> &str {
+        match self {
+            FactWrite::Created(id) | FactWrite::ClosedInPlace(id) => id,
+        }
+    }
 }
 
 /// Caller-supplied data for a fact write. Strings instead of typed enums
-/// because the predicate vocabulary lives in `core::extraction` and may
+/// because the predicate vocabulary is agent-driven (ADR-0009) and may
 /// expand without recompiling the storage layer.
 #[derive(Debug, Clone)]
 pub struct FactWriteInput {
@@ -746,6 +833,19 @@ pub struct FactWriteInput {
 /// (CREATE/RELATE returns, existence checks).
 #[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
 struct IdRow {
+    pub id: RecordId,
+}
+
+/// Row shape for `recent_messages`. `timestamp` and `id` are selected only to
+/// satisfy SurrealDB's "ORDER BY idiom must be projected" rule — the caller
+/// uses just `role` and `content`.
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+struct ChatMessageRow {
+    pub role: String,
+    pub content: String,
+    #[allow(dead_code)]
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    #[allow(dead_code)]
     pub id: RecordId,
 }
 
@@ -768,28 +868,45 @@ pub struct FactRow {
 /// `out` record link to fetch the contradicting object's display name.
 #[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
 struct ConflictRow {
-    pub object_id: RecordId,
     pub object_name: String,
     pub predicate: String,
     pub valid_from: chrono::DateTime<chrono::Utc>,
     pub source_chat_id: String,
 }
 
-/// An existing current fact that a staged fact would contradict. Surfaced to
-/// the staging tray's conflict banner.
+/// An existing current fact that a new fact would contradict. Surfaced by the
+/// agent's `find_contradiction` graph tool (ADR-0009 §5).
 #[derive(Debug, Clone)]
 pub struct FactConflict {
-    pub object_id: String,
     pub object_name: String,
     pub predicate: String,
     pub valid_from: chrono::DateTime<chrono::Utc>,
     pub source_chat_id: String,
+}
+
+/// An Open Loop (ADR-0011 §5) surfaced to the agent and the UI. The `id` lets
+/// the agent close it (`close_open_loop`) once it's resolved.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenLoop {
+    pub id: String,
+    pub title: String,
+    pub context: Option<String>,
+}
+
+/// Row shape for the active-loop query. `last_surfaced_at` / `created` are
+/// projected only to satisfy SurrealDB's ORDER-BY rule.
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+struct OpenLoopRow {
+    pub id: RecordId,
+    pub title: String,
+    pub context: Option<String>,
 }
 
 /// Format a SurrealDB RecordId as the `table:key` string we hand back to JS.
 /// We only ever produce string-keyed ids in this app, so the other RecordIdKey
 /// variants are best-effort fallbacks.
-fn record_id_to_string(rid: &RecordId) -> String {
+pub(crate) fn record_id_to_string(rid: &RecordId) -> String {
     let key = match &rid.key {
         RecordIdKey::String(s) => s.clone(),
         RecordIdKey::Number(n) => n.to_string(),
@@ -814,6 +931,18 @@ pub fn slugify(input: &str) -> String {
         }
     }
     out.trim_end_matches('_').to_string()
+}
+
+/// Splice-safe key for an `open_loop:<id>` reference — strips the table prefix
+/// and keeps only `[a-z0-9_]` (the charset `record_open_loop` generates), so the
+/// key can be spliced into an `open_loop:<key>` record id without injection.
+fn open_loop_key(loop_id: &str) -> String {
+    loop_id
+        .strip_prefix("open_loop:")
+        .unwrap_or(loop_id)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
 }
 
 /// Apply once at startup. All DDL is `IF NOT EXISTS` so re-running is safe.
@@ -869,6 +998,32 @@ DEFINE FIELD IF NOT EXISTS role       ON chat_message TYPE string
 DEFINE FIELD IF NOT EXISTS content    ON chat_message TYPE string;
 DEFINE FIELD IF NOT EXISTS session_id ON chat_message TYPE string;
 DEFINE FIELD IF NOT EXISTS timestamp  ON chat_message TYPE datetime VALUE time::now();
+
+-- Tasks: reminders (ADR-0007). The scheduling-side mirror of the `## Tasks`
+-- checklist in Tasks.md. Distinct from the `task` *entity* type above.
+DEFINE TABLE IF NOT EXISTS task SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS title          ON task TYPE string;
+DEFINE FIELD IF NOT EXISTS status         ON task TYPE string
+    ASSERT $value IN ['open','done'];
+DEFINE FIELD IF NOT EXISTS due            ON task TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS remind_at      ON task TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS notified       ON task TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS created        ON task TYPE datetime;
+DEFINE FIELD IF NOT EXISTS completed_at   ON task TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS source_chat_id ON task TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS task_remind    ON task FIELDS remind_at;
+
+-- Open Loops (ADR-0011 §5): unresolved questions / stated commitments the agent
+-- noticed. Soft and conversational — distinct from a scheduled `task`. Surfaced
+-- in conversation until resolved (`archived_at` set) or aged out of the window.
+DEFINE TABLE IF NOT EXISTS open_loop SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS title            ON open_loop TYPE string;
+DEFINE FIELD IF NOT EXISTS context          ON open_loop TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created          ON open_loop TYPE datetime;
+DEFINE FIELD IF NOT EXISTS source_chat_id   ON open_loop TYPE string;
+DEFINE FIELD IF NOT EXISTS archived_at      ON open_loop TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS last_surfaced_at ON open_loop TYPE option<datetime>;
+DEFINE INDEX IF NOT EXISTS open_loop_active ON open_loop FIELDS archived_at;
 "#;
 
 /// One-shot bootstrap shared across Tauri commands. Lives in app state.
@@ -894,6 +1049,41 @@ mod tests {
             .join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&p).expect("tempdir");
         p
+    }
+
+    /// Open Loops (ADR-0011 §5): record → list active; closing archives it;
+    /// a loop aged past the decay window falls out of the active set.
+    #[tokio::test]
+    async fn open_loop_record_list_close_and_decay() {
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open store");
+
+        let id = store
+            .record_open_loop("Decide on the vendor", Some("Acme vs Beta"), "chat_message:1")
+            .await
+            .unwrap();
+        let active = store.list_active_open_loops(10, 14).await.unwrap();
+        assert!(active.iter().any(|l| l.id == id && l.title == "Decide on the vendor"));
+
+        store.close_open_loop(&id).await.unwrap();
+        let active = store.list_active_open_loops(10, 14).await.unwrap();
+        assert!(!active.iter().any(|l| l.id == id), "closed loop is not active");
+
+        // A loop aged past the window falls out (back-date `created` directly).
+        let stale = store
+            .record_open_loop("Stale thread", None, "chat_message:2")
+            .await
+            .unwrap();
+        let key = stale.strip_prefix("open_loop:").unwrap();
+        let old = chrono::Utc::now() - chrono::Duration::days(30);
+        store
+            .db
+            .query(format!("UPDATE open_loop:{key} SET created = $old;"))
+            .bind(("old", old))
+            .await
+            .unwrap();
+        let active = store.list_active_open_loops(10, 14).await.unwrap();
+        assert!(!active.iter().any(|l| l.id == stale), "decayed loop excluded");
     }
 
     /// Round-trip a bi-temporal employment change. Verifies:
@@ -1026,10 +1216,10 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
-    /// End-to-end storage pipeline (P2-M8 integration check): persist a chat
-    /// message, upsert entities, relate a fact citing that message, then
-    /// supersede it. Verifies provenance and supersession chain together
-    /// without needing the GLiNER or embedding models.
+    /// End-to-end graph + provenance round-trip: persist a chat message,
+    /// upsert entities, relate a fact citing that message, then supersede it.
+    /// Verifies provenance and the supersession chain hold together without
+    /// touching the embedding path.
     #[tokio::test]
     async fn full_storage_pipeline_chat_to_superseded_fact() {
         use chrono::TimeZone;
@@ -1188,9 +1378,9 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
-    /// set_entity_note_path links a note; delete_fact removes a single edge.
+    /// delete_fact removes a single edge.
     #[tokio::test]
-    async fn set_note_path_and_delete_fact() {
+    async fn delete_fact_removes_one_edge() {
         use chrono::Utc;
         let dir = tempdir_for_test();
         let store = MemoryStore::open(&dir).await.expect("open");
@@ -1205,17 +1395,6 @@ mod tests {
             .await
             .expect("acme")
             .id;
-
-        store
-            .set_entity_note_path(&john, "People/John.md")
-            .await
-            .expect("set note_path");
-        let looked = store
-            .lookup_entity("John")
-            .await
-            .expect("lookup")
-            .expect("found");
-        assert_eq!(looked.note_path.as_deref(), Some("People/John.md"));
 
         let fact_id = store
             .relate_fact(FactWriteInput {
@@ -1460,6 +1639,215 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// A closed write of an existing CURRENT (subject, predicate, object)
+    /// edge closes that edge in place — a tense correction — rather than
+    /// leaving a stale current edge beside a new closed one.
+    #[tokio::test]
+    async fn relate_fact_closes_an_existing_current_edge_in_place() {
+        use chrono::TimeZone;
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        let josh = store
+            .upsert_entity("Josh", "person", vec![])
+            .await
+            .expect("josh")
+            .id;
+        let cloudflare = store
+            .upsert_entity("Cloudflare", "organization", vec![])
+            .await
+            .expect("cloudflare")
+            .id;
+
+        let from = chrono::Utc.with_ymd_and_hms(2019, 1, 1, 0, 0, 0).unwrap();
+        // Turn 1: Josh works at Cloudflare — a current (open) edge.
+        let first = store
+            .relate_fact(FactWriteInput {
+                subject_id: josh.clone(),
+                predicate: "works_at".into(),
+                object_id: cloudflare.clone(),
+                valid_from: from,
+                valid_to: None,
+                source_chat_id: "msg_001".into(),
+                confidence: 0.95,
+            })
+            .await
+            .expect("first");
+
+        // Turn 2: the same employment, now closed — "worked at".
+        let ends = chrono::Utc.with_ymd_and_hms(2019, 12, 31, 0, 0, 0).unwrap();
+        let outcome = store
+            .relate_fact_with(
+                FactWriteInput {
+                    subject_id: josh.clone(),
+                    predicate: "works_at".into(),
+                    object_id: cloudflare.clone(),
+                    valid_from: from,
+                    valid_to: Some(ends),
+                    source_chat_id: "msg_002".into(),
+                    confidence: 0.95,
+                },
+                true,
+            )
+            .await
+            .expect("second");
+
+        // It closed the existing edge in place — same id, no parallel edge.
+        match &outcome {
+            FactWrite::ClosedInPlace(id) => {
+                assert_eq!(id, &first, "the original edge was the one closed")
+            }
+            other => panic!("expected ClosedInPlace, got {other:?}"),
+        }
+        assert!(
+            store
+                .current_facts(&josh)
+                .await
+                .expect("current")
+                .is_empty(),
+            "no current employer remains after the tense correction"
+        );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `recent_messages` returns the session's last `limit` rows oldest-first,
+    /// scoped to one session, with the recent tail kept when `limit` is small.
+    #[tokio::test]
+    async fn recent_messages_returns_session_tail_oldest_first() {
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        // Two sessions interleaved — recent_messages must scope to one.
+        for (role, text) in [
+            ("user", "first"),
+            ("assistant", "first reply"),
+            ("user", "second"),
+            ("assistant", "second reply"),
+            ("user", "third"),
+        ] {
+            store
+                .insert_chat_message(role, text, "sess-A")
+                .await
+                .expect("insert A");
+        }
+        store
+            .insert_chat_message("user", "other session", "sess-B")
+            .await
+            .expect("insert B");
+
+        // The whole session, oldest-first.
+        let all = store.recent_messages("sess-A", 20).await.expect("all");
+        assert_eq!(all.len(), 5, "all five sess-A rows, sess-B excluded");
+        assert_eq!(all[0], ("user".to_string(), "first".to_string()));
+        assert_eq!(all[4], ("user".to_string(), "third".to_string()));
+
+        // A small limit keeps the most recent tail — still oldest-first.
+        let tail = store.recent_messages("sess-A", 2).await.expect("tail");
+        assert_eq!(tail.len(), 2);
+        assert_eq!(
+            tail,
+            vec![
+                ("assistant".to_string(), "second reply".to_string()),
+                ("user".to_string(), "third".to_string()),
+            ]
+        );
+
+        // An unknown session yields an empty history, not an error.
+        assert!(store
+            .recent_messages("no-such-session", 20)
+            .await
+            .expect("empty")
+            .is_empty());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `facts_by_source` returns exactly the `fact` ids stamped with a given
+    /// `source_chat_id` — the Facts one turn recorded.
+    #[tokio::test]
+    async fn facts_by_source_returns_facts_a_turn_recorded() {
+        use chrono::Utc;
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        let josh = store
+            .upsert_entity("Josh", "person", vec![])
+            .await
+            .expect("josh")
+            .id;
+        let acme = store
+            .upsert_entity("Acme", "organization", vec![])
+            .await
+            .expect("acme")
+            .id;
+        let rust = store
+            .upsert_entity("Rust", "topic", vec![])
+            .await
+            .expect("rust")
+            .id;
+
+        // Turn 1 records two facts; turn 2 records one — distinct provenance.
+        let f1 = store
+            .relate_fact(FactWriteInput {
+                subject_id: josh.clone(),
+                predicate: "works_at".into(),
+                object_id: acme.clone(),
+                valid_from: Utc::now(),
+                valid_to: None,
+                source_chat_id: "chat_message:turn1".into(),
+                confidence: 0.9,
+            })
+            .await
+            .expect("f1");
+        let f2 = store
+            .relate_fact(FactWriteInput {
+                subject_id: josh.clone(),
+                predicate: "interested_in".into(),
+                object_id: rust.clone(),
+                valid_from: Utc::now(),
+                valid_to: None,
+                source_chat_id: "chat_message:turn1".into(),
+                confidence: 0.9,
+            })
+            .await
+            .expect("f2");
+        let f3 = store
+            .relate_fact(FactWriteInput {
+                subject_id: acme.clone(),
+                predicate: "located_in".into(),
+                object_id: rust.clone(),
+                valid_from: Utc::now(),
+                valid_to: None,
+                source_chat_id: "chat_message:turn2".into(),
+                confidence: 0.9,
+            })
+            .await
+            .expect("f3");
+
+        let turn1 = store
+            .facts_by_source("chat_message:turn1")
+            .await
+            .expect("turn1");
+        assert_eq!(turn1.len(), 2, "turn 1 recorded exactly two facts");
+        assert!(turn1.contains(&f1) && turn1.contains(&f2));
+        assert!(!turn1.contains(&f3), "turn 2's fact is not in turn 1");
+
+        let turn2 = store
+            .facts_by_source("chat_message:turn2")
+            .await
+            .expect("turn2");
+        assert_eq!(turn2, vec![f3]);
+
+        assert!(store
+            .facts_by_source("chat_message:never")
+            .await
+            .expect("none")
+            .is_empty());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[test]
     fn slugify_handles_punctuation_and_spaces() {
         assert_eq!(slugify("Bill Gates"), "bill_gates");
@@ -1469,99 +1857,4 @@ mod tests {
         assert_eq!(slugify("---"), "");
     }
 
-    #[tokio::test]
-    async fn similar_entities_finds_near_name_matches_only() {
-        let dir = tempdir_for_test();
-        let store = MemoryStore::open(&dir).await.expect("open");
-        store
-            .upsert_entity("John Smith", "person", vec![])
-            .await
-            .expect("e1");
-        store
-            .upsert_entity("Acme Corporation", "organization", vec![])
-            .await
-            .expect("e2");
-        store
-            .upsert_entity("Jane Doe", "person", vec![])
-            .await
-            .expect("e3");
-
-        // A near match of the same type is surfaced.
-        let near = store
-            .similar_entities("Jon Smith", "person")
-            .await
-            .expect("query");
-        assert_eq!(near.len(), 1, "only John Smith is close; got {near:?}");
-        assert_eq!(near[0].canonical_name, "John Smith");
-
-        // An exact (case-insensitive) match is excluded — that resolves via
-        // lookup_entity and is not a "did you mean".
-        let exact = store
-            .similar_entities("john smith", "person")
-            .await
-            .expect("query");
-        assert!(exact.is_empty(), "an exact name is not a 'did you mean'");
-
-        // A near match of a different type does not cross over.
-        let cross = store
-            .similar_entities("Jon Smith", "organization")
-            .await
-            .expect("query");
-        assert!(cross.is_empty(), "person near-matches stay within persons");
-
-        std::fs::remove_dir_all(dir).ok();
-    }
-
-    #[tokio::test]
-    async fn similar_entities_by_embedding_filters_by_distance_and_type() {
-        let dir = tempdir_for_test();
-        let store = MemoryStore::open(&dir).await.expect("open");
-
-        // A 768-dim unit vector with one non-zero component — the HNSW index
-        // is fixed at dimension 768.
-        fn unit(component: usize) -> Vec<f32> {
-            let mut v = vec![0.0f32; 768];
-            v[component] = 1.0;
-            v
-        }
-
-        let robert = store
-            .upsert_entity("Robert Chen", "person", vec![])
-            .await
-            .expect("e1");
-        let bob = store
-            .upsert_entity("Bob Jones", "person", vec![])
-            .await
-            .expect("e2");
-        let acme = store
-            .upsert_entity("Acme", "organization", vec![])
-            .await
-            .expect("e3");
-
-        // Robert and Acme sit at the query point; Bob is orthogonal (far).
-        store
-            .set_entity_embedding(&robert.id, unit(0))
-            .await
-            .expect("emb1");
-        store
-            .set_entity_embedding(&bob.id, unit(7))
-            .await
-            .expect("emb2");
-        store
-            .set_entity_embedding(&acme.id, unit(0))
-            .await
-            .expect("emb3");
-
-        let hits = store
-            .similar_entities_by_embedding(unit(0), "person", 10)
-            .await
-            .expect("search");
-
-        // Acme is dropped on type, Bob on distance — only Robert survives.
-        assert_eq!(hits.len(), 1, "only the near, same-type entity: {hits:?}");
-        assert_eq!(hits[0].canonical_name, "Robert Chen");
-        assert!(hits[0].score > 0.99, "an exact-vector hit scores ~1.0");
-
-        std::fs::remove_dir_all(dir).ok();
-    }
 }

@@ -1,63 +1,106 @@
-//! App-level settings commands. Currently the BYOK (bring-your-own-key) cloud
-//! provider configuration — see `core::cloud`.
+//! App-level settings commands: the conversational-engine selector (ADR-0009 §5,
+//! ADR-0012 — Claude Code CLI or GitHub Copilot CLI) and the shared models
+//! directory.
 
-use crate::core::cloud::CloudProvider;
+use crate::core::claude_code;
 use crate::core::formation_state::AppConfig;
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
+use std::path::PathBuf;
 
-/// BYOK config as the settings UI sees it. The API key itself is never sent
-/// back to the front end — `has_key` only reports whether one is stored.
-#[derive(Debug, Serialize)]
-pub struct ByokConfig {
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub has_key: bool,
+/// The configured shared models directory, or `None` for Ollama's default.
+/// A string so the settings UI can show it.
+#[tauri::command]
+pub fn get_models_dir(app: tauri::AppHandle) -> Option<String> {
+    AppConfig::load(&app)
+        .models_dir
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
-/// The current BYOK setup, for the settings screen.
+/// Set the shared models directory, or clear it (`None` / empty) to fall back
+/// to Ollama's default location.
 #[tauri::command]
-pub fn get_byok_config(app: tauri::AppHandle) -> ByokConfig {
+pub fn set_models_dir(dir: Option<String>, app: tauri::AppHandle) -> AppResult<()> {
+    let mut cfg = AppConfig::load(&app);
+    cfg.models_dir = dir
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from);
+    cfg.save(&app)
+}
+
+// ---- ADR-0009: the conversational-agent engine selector --------------------
+
+/// Probe the user's machine for a `claude` binary and its authentication
+/// state. Safe to call at any time — it never spends a generation token. The
+/// settings and onboarding UIs call this to show the Claude Code engine's
+/// install/login status.
+#[tauri::command]
+pub async fn detect_claude_code() -> claude_code::ClaudeCodeStatus {
+    claude_code::detect().await
+}
+
+/// Probe the user's machine for a `copilot` binary (ADR-0012). Copilot has no
+/// cheap auth-status command, so this reports install only; login state surfaces
+/// on the first turn. Makes no network request.
+#[tauri::command]
+pub fn detect_copilot() -> crate::core::copilot::CopilotStatus {
+    crate::core::copilot::detect()
+}
+
+/// The conversational-engine selection the settings UI reads.
+#[derive(Debug, Serialize)]
+pub struct ConversationEngineConfig {
+    /// The active engine: `"claude-code"` (default) or `"copilot"`.
+    pub engine: String,
+    /// Model alias for the Claude Code engine, or `None` (the default).
+    pub claude_code_model: Option<String>,
+    /// Model for the GitHub Copilot engine, or `None` (the default).
+    pub copilot_model: Option<String>,
+}
+
+/// The current conversational-engine setup, for the settings screen. `None`
+/// (the field was never written) resolves to the Claude Code default.
+#[tauri::command]
+pub fn get_conversation_engine(app: tauri::AppHandle) -> ConversationEngineConfig {
     let cfg = AppConfig::load(&app);
-    ByokConfig {
-        provider: cfg.byok_provider,
-        model: cfg.byok_model,
-        has_key: cfg
-            .byok_api_key
-            .map(|k| !k.trim().is_empty())
-            .unwrap_or(false),
+    let engine = match cfg.conversation_engine.as_deref() {
+        Some("copilot") => "copilot".to_string(),
+        _ => "claude-code".to_string(),
+    };
+    ConversationEngineConfig {
+        engine,
+        claude_code_model: cfg.claude_code_model,
+        copilot_model: cfg.copilot_model,
     }
 }
 
-/// Save the BYOK config. A `None` provider clears BYOK entirely (back to local
-/// generation). When `provider` is set, the stored key is replaced only if
-/// `api_key` is a non-empty string — passing `None`/empty keeps the existing
-/// key so the user can change the model without re-entering the secret.
+/// Persist the conversational-engine choice and the chosen engine's model.
+/// Returns an error when `engine` is not `"claude-code"` or `"copilot"`.
 #[tauri::command]
-pub fn set_byok_config(
-    provider: Option<String>,
+pub fn set_conversation_engine(
+    engine: String,
     model: Option<String>,
-    api_key: Option<String>,
     app: tauri::AppHandle,
 ) -> AppResult<()> {
+    let engine = engine.trim();
+    match engine {
+        "claude-code" | "copilot" => {}
+        other => {
+            return Err(AppError::other(format!(
+                "unknown conversation engine: {other} (expected \"claude-code\" or \"copilot\")"
+            )));
+        }
+    }
+
     let mut cfg = AppConfig::load(&app);
-    match provider {
-        None => {
-            cfg.byok_provider = None;
-            cfg.byok_api_key = None;
-            cfg.byok_model = None;
-        }
-        Some(p) => {
-            // Reject an unrecognised provider before persisting it.
-            if CloudProvider::parse(&p).is_none() {
-                return Err(AppError::other(format!("unknown cloud provider: {p}")));
-            }
-            cfg.byok_provider = Some(p);
-            cfg.byok_model = model.filter(|m| !m.trim().is_empty());
-            if let Some(key) = api_key.filter(|k| !k.trim().is_empty()) {
-                cfg.byok_api_key = Some(key);
-            }
-        }
+    cfg.conversation_engine = Some(engine.to_string());
+    // Trim the model; an empty string means "use the default". The model targets
+    // the selected engine's own field.
+    let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+    match engine {
+        "copilot" => cfg.copilot_model = model,
+        _ => cfg.claude_code_model = model,
     }
     cfg.save(&app)
 }

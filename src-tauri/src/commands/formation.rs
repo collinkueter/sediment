@@ -12,15 +12,28 @@ use walkdir::WalkDir;
 /// note traversal so the user never sees these files in their note list.
 pub const APP_DIR: &str = ".chat-notes";
 
-/// Show the native folder picker, return the chosen path or None if cancelled.
-#[tauri::command]
-pub async fn pick_formation_dir(app: tauri::AppHandle) -> AppResult<Option<PathBuf>> {
+/// Show the native folder picker; resolve to the chosen path or None if
+/// cancelled.
+async fn pick_folder(app: &tauri::AppHandle) -> AppResult<Option<PathBuf>> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<PathBuf>>();
     app.dialog().file().pick_folder(move |path| {
         let _ = tx.send(path.and_then(|p| p.into_path().ok()));
     });
     rx.await
         .map_err(|e| AppError::other(format!("dialog cancelled: {e}")))
+}
+
+/// Pick a formation folder (onboarding / formation switch).
+#[tauri::command]
+pub async fn pick_formation_dir(app: tauri::AppHandle) -> AppResult<Option<PathBuf>> {
+    pick_folder(&app).await
+}
+
+/// Pick an arbitrary directory — used by Settings to choose the shared models
+/// location.
+#[tauri::command]
+pub async fn pick_directory(app: tauri::AppHandle) -> AppResult<Option<PathBuf>> {
+    pick_folder(&app).await
 }
 
 /// Initialize `.chat-notes/` skeleton inside the formation, set the active formation, persist to config.

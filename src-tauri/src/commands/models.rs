@@ -1,87 +1,73 @@
-//! Model provisioning: a launch-time readiness check for the active tier's
-//! models, plus streamed downloaders for the two model backends.
+//! Model provisioning: a launch-time readiness check for the local embedding
+//! model, plus a streamed Ollama model downloader.
 //!
-//! - Ollama chat / embedding models — pulled via `ollama pull` (streamed).
-//! - GLiNER extraction model — downloaded straight from HuggingFace into the
-//!   open formation's `.chat-notes/models/`.
+//! ADR-0009 retired GLiNER and the hardware-tier strategy; the agent runs on an
+//! external CLI. The only model Sediment still provisions locally is the Ollama
+//! embedding model (`nomic-embed-text`) that backs `search_notes` retrieval.
 //!
-//! The UI runs `check_model_readiness` on launch and, if anything is missing,
-//! shows a one-click setup screen that drives the two download commands.
+//! The UI runs `check_model_readiness` on launch and, if the embedding model is
+//! missing, shows a one-click setup screen that drives `pull_ollama_model`.
 
-use crate::commands::formation::APP_DIR;
-use crate::core::extraction::ModelPaths;
-use crate::core::formation_state::{AppConfig, FormationState};
-use crate::core::hardware::Tier;
-use crate::core::models::{models_for_tier, size_hint};
-use crate::core::ollama_sidecar::OllamaSidecar;
+use crate::core::formation_state::AppConfig;
+use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
 use crate::error::{AppError, AppResult};
 use futures::StreamExt;
 use serde::Serialize;
-use std::path::Path;
+use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::State;
-use tokio::io::AsyncWriteExt;
 
-const GLINER_TOKENIZER_URL: &str =
-    "https://huggingface.co/onnx-community/gliner-multitask-large-v0.5/resolve/main/tokenizer.json";
-const GLINER_ONNX_URL: &str =
-    "https://huggingface.co/onnx-community/gliner-multitask-large-v0.5/resolve/main/onnx/model.onnx";
+/// The directory a Sediment-spawned Ollama daemon should use for its models —
+/// `<models_dir>/ollama` when a shared models directory is configured, else
+/// `None` so Ollama keeps its own default location.
+pub(crate) fn ollama_models_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    AppConfig::load(app).models_dir.map(|dir| dir.join("ollama"))
+}
 
-/// One model the active tier needs, and whether it is installed.
+/// One model Sediment needs locally, and whether it is installed.
 #[derive(Debug, Serialize)]
 pub struct ModelRequirement {
-    /// `"chat"` | `"embed"` | `"gliner"`.
+    /// `"embed"` — the only local model class after ADR-0009.
     pub kind: String,
-    /// Ollama pull tag for chat/embed models; `"gliner"` for the ONNX model.
+    /// Ollama pull tag.
     pub id: String,
     pub label: String,
     pub size_hint: String,
     pub present: bool,
 }
 
-/// Result of the launch-time model check for the active tier.
+/// Result of the launch-time model check.
 #[derive(Debug, Serialize)]
 pub struct ModelReadiness {
-    pub tier: String,
-    /// False when `ollama` is not on PATH — the chat/embed models can't be
+    /// False when `ollama` is not on PATH — the embedding model can't be
     /// pulled until the user installs Ollama.
     pub ollama_installed: bool,
     pub requirements: Vec<ModelRequirement>,
     pub all_present: bool,
 }
 
-/// A progress tick emitted while pulling or downloading a model.
+/// A progress tick emitted while pulling a model.
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelProgress {
     pub model: String,
-    /// Human-readable phase ("pulling manifest", "GLiNER model", "complete").
+    /// Human-readable phase ("pulling manifest", "complete").
     pub phase: String,
     pub completed: u64,
     pub total: u64,
     pub done: bool,
 }
 
-/// Check whether every model the active tier needs is installed. Ollama models
-/// are matched against `ollama list`; the GLiNER model against the open
-/// formation's `.chat-notes/models/` directory.
+/// Check whether the local embedding model is installed, matched against
+/// `ollama list`.
 #[tauri::command]
 pub async fn check_model_readiness(
-    formation: State<'_, FormationState>,
     sidecar: State<'_, OllamaSidecar>,
     app: tauri::AppHandle,
 ) -> AppResult<ModelReadiness> {
-    let root = formation.require()?;
-    let tier = AppConfig::load(&app)
-        .selected_tier
-        .as_deref()
-        .and_then(Tier::parse)
-        .unwrap_or(Tier::Standard);
-    let models = models_for_tier(tier);
-
     // Ollama: probe install, ensure the daemon is up (best-effort), then list.
     let status = sidecar.status().await;
     let local: Vec<String> = if status.installed {
-        let _ = sidecar.ensure_running().await;
+        let _ = sidecar.ensure_running(ollama_models_dir(&app)).await;
         sidecar
             .client()
             .list_local_models()
@@ -98,37 +84,16 @@ pub async fn check_model_readiness(
             .any(|n| n == req || *n == format!("{req}:latest"))
     };
 
-    let mut requirements = Vec::new();
-    if let Some(chat) = models.chat {
-        requirements.push(ModelRequirement {
-            kind: "chat".into(),
-            id: chat.into(),
-            label: format!("Chat model · {chat}"),
-            size_hint: size_hint(chat).into(),
-            present: has(chat),
-        });
-    }
-    requirements.push(ModelRequirement {
+    let requirements = vec![ModelRequirement {
         kind: "embed".into(),
-        id: models.embed.into(),
-        label: format!("Embedding model · {}", models.embed),
-        size_hint: size_hint(models.embed).into(),
-        present: has(models.embed),
-    });
-    if models.needs_gliner {
-        let paths = ModelPaths::under_app_dir(&root.join(APP_DIR));
-        requirements.push(ModelRequirement {
-            kind: "gliner".into(),
-            id: "gliner".into(),
-            label: "Extraction model · GLiNER multitask".into(),
-            size_hint: "~1.6 GB".into(),
-            present: paths.exist(),
-        });
-    }
+        id: DEFAULT_EMBED_MODEL.into(),
+        label: format!("Embedding model · {DEFAULT_EMBED_MODEL}"),
+        size_hint: "~0.3 GB".into(),
+        present: has(DEFAULT_EMBED_MODEL),
+    }];
 
     let all_present = requirements.iter().all(|r| r.present);
     Ok(ModelReadiness {
-        tier: format!("{tier:?}"),
         ollama_installed: status.installed,
         requirements,
         all_present,
@@ -142,8 +107,9 @@ pub async fn pull_ollama_model(
     model: String,
     on_progress: Channel<ModelProgress>,
     sidecar: State<'_, OllamaSidecar>,
+    app: tauri::AppHandle,
 ) -> AppResult<()> {
-    sidecar.ensure_running().await?;
+    sidecar.ensure_running(ollama_models_dir(&app)).await?;
     let mut stream = sidecar
         .client()
         .pull_model_stream(model.clone(), false)
@@ -167,87 +133,5 @@ pub async fn pull_ollama_model(
         total: 0,
         done: true,
     });
-    Ok(())
-}
-
-/// Download the GLiNER multitask ONNX model into the open formation's
-/// `.chat-notes/models/`, streaming progress. Idempotent — files already on
-/// disk are skipped.
-#[tauri::command]
-pub async fn download_gliner_model(
-    on_progress: Channel<ModelProgress>,
-    formation: State<'_, FormationState>,
-) -> AppResult<()> {
-    let root = formation.require()?;
-    let paths = ModelPaths::under_app_dir(&root.join(APP_DIR));
-
-    download_file(
-        GLINER_TOKENIZER_URL,
-        &paths.tokenizer(),
-        "GLiNER tokenizer",
-        &on_progress,
-    )
-    .await?;
-    download_file(GLINER_ONNX_URL, &paths.onnx(), "GLiNER model", &on_progress).await?;
-
-    let _ = on_progress.send(ModelProgress {
-        model: "gliner".into(),
-        phase: "complete".into(),
-        completed: 0,
-        total: 0,
-        done: true,
-    });
-    Ok(())
-}
-
-/// Stream `url` to `dest` via a `.part` temp file + rename. Emits a progress
-/// tick every ~4 MB. Skips the download entirely if `dest` already exists.
-async fn download_file(
-    url: &str,
-    dest: &Path,
-    label: &str,
-    channel: &Channel<ModelProgress>,
-) -> AppResult<()> {
-    if dest.is_file() {
-        return Ok(());
-    }
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-
-    let resp = reqwest::get(url)
-        .await
-        .map_err(|e| AppError::other(format!("download {label}: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(AppError::other(format!(
-            "download {label}: HTTP {}",
-            resp.status()
-        )));
-    }
-    let total = resp.content_length().unwrap_or(0);
-
-    let tmp = dest.with_extension("part");
-    let mut file = tokio::fs::File::create(&tmp).await?;
-    let mut stream = resp.bytes_stream();
-    let mut completed: u64 = 0;
-    let mut last_emit: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| AppError::other(format!("download {label}: {e}")))?;
-        file.write_all(&chunk).await?;
-        completed += chunk.len() as u64;
-        if completed - last_emit >= 4_000_000 {
-            last_emit = completed;
-            let _ = channel.send(ModelProgress {
-                model: "gliner".into(),
-                phase: label.into(),
-                completed,
-                total,
-                done: false,
-            });
-        }
-    }
-    file.flush().await?;
-    drop(file);
-    tokio::fs::rename(&tmp, dest).await?;
     Ok(())
 }

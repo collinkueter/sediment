@@ -1,10 +1,10 @@
 pub mod app;
+pub mod audit;
 pub mod chat;
-pub mod extraction;
 pub mod formation;
 pub mod hardware;
 pub mod memory;
 pub mod models;
 pub mod ollama;
 pub mod settings;
-pub mod staging;
+pub mod tasks;

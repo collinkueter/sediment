@@ -9,6 +9,7 @@
 use crate::error::{AppError, AppResult};
 use ollama_rs::generation::embeddings::request::GenerateEmbeddingsRequest;
 use ollama_rs::Ollama;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use tokio::sync::OnceCell;
@@ -54,7 +55,12 @@ impl OllamaSidecar {
 
     /// Ensure `ollama serve` is reachable. Spawns the daemon if needed and
     /// polls the health endpoint until it answers (or 8s pass).
-    pub async fn ensure_running(&self) -> AppResult<OllamaStatus> {
+    ///
+    /// `models_dir`, when set, is exported as `OLLAMA_MODELS` so a daemon WE
+    /// spawn stores models there (the user's shared models directory). It has
+    /// no effect when Ollama is already running — an existing daemon (system
+    /// service, menu-bar app) keeps whatever storage location it started with.
+    pub async fn ensure_running(&self, models_dir: Option<PathBuf>) -> AppResult<OllamaStatus> {
         if !is_installed() {
             return Err(AppError::other(
                 "Ollama not found on PATH. Install from https://ollama.com/download.",
@@ -65,12 +71,16 @@ impl OllamaSidecar {
         }
         // Spawn-and-detach. We don't keep the Child handle — Ollama is a long-
         // lived server we want to outlive any one app launch.
-        Command::new("ollama")
-            .arg("serve")
+        let mut cmd = Command::new("ollama");
+        cmd.arg("serve")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            .spawn()
+            .stdin(Stdio::null());
+        if let Some(dir) = models_dir {
+            std::fs::create_dir_all(&dir).ok();
+            cmd.env("OLLAMA_MODELS", &dir);
+        }
+        cmd.spawn()
             .map_err(|e| AppError::other(format!("spawn ollama serve: {e}")))?;
 
         let total_attempts = SPAWN_WAIT_MS / POLL_INTERVAL_MS;

@@ -1,14 +1,10 @@
-//! Tauri commands exposing Ollama lifecycle, model listing, and streaming
-//! completions. Streaming uses Tauri 2's `Channel<T>` so each invocation gets
-//! its own ordered token pipe back to the JS side.
+//! Tauri commands exposing Ollama lifecycle and model listing. ADR-0009
+//! retired the Ollama chat path; Ollama now backs only note-search embeddings.
 
 use crate::core::ollama_sidecar::{OllamaSidecar, OllamaStatus};
 use crate::error::{AppError, AppResult};
-use futures::StreamExt;
-use ollama_rs::generation::completion::request::GenerationRequest;
 use ollama_rs::models::LocalModel;
 use serde::Serialize;
-use tauri::ipc::Channel;
 use tauri::State;
 
 #[derive(Debug, Serialize)]
@@ -36,8 +32,13 @@ pub async fn ollama_status(sidecar: State<'_, OllamaSidecar>) -> AppResult<Ollam
 
 /// Spawn `ollama serve` if needed; block (up to 8s) for it to answer.
 #[tauri::command]
-pub async fn ollama_ensure_running(sidecar: State<'_, OllamaSidecar>) -> AppResult<OllamaStatus> {
-    sidecar.ensure_running().await
+pub async fn ollama_ensure_running(
+    sidecar: State<'_, OllamaSidecar>,
+    app: tauri::AppHandle,
+) -> AppResult<OllamaStatus> {
+    sidecar
+        .ensure_running(crate::commands::models::ollama_models_dir(&app))
+        .await
 }
 
 /// Installed local models. Empty list is a normal state (nothing pulled yet).
@@ -49,33 +50,4 @@ pub async fn ollama_list_models(sidecar: State<'_, OllamaSidecar>) -> AppResult<
         .await
         .map_err(|e| AppError::other(format!("list models: {e}")))?;
     Ok(models.into_iter().map(Into::into).collect())
-}
-
-/// Stream a completion. Tokens arrive on `on_token`. Returns once the model
-/// signals `done` (or on error). The JS side accumulates tokens into a bubble.
-#[tauri::command]
-pub async fn ollama_generate(
-    model: String,
-    prompt: String,
-    on_token: Channel<String>,
-    sidecar: State<'_, OllamaSidecar>,
-) -> AppResult<()> {
-    let client = sidecar.client();
-    let request = GenerationRequest::new(model, prompt);
-    let mut stream = client
-        .generate_stream(request)
-        .await
-        .map_err(|e| AppError::other(format!("start generation: {e}")))?;
-
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|e| AppError::other(format!("stream error: {e}")))?;
-        for response in chunk {
-            if !response.response.is_empty() {
-                on_token
-                    .send(response.response)
-                    .map_err(|e| AppError::other(format!("channel send: {e}")))?;
-            }
-        }
-    }
-    Ok(())
 }

@@ -20,6 +20,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
+tauri-plugin-notification = "2"
 
 # --- Serialization ---
 serde = { version = "1", features = ["derive"] }
@@ -39,9 +40,6 @@ notify = "6"
 notify-debouncer-full = "0.3"
 walkdir = "2"
 
-# --- Hardware probe ---
-sysinfo = "0.31"
-
 # --- Time ---
 chrono = { version = "0.4", features = ["serde"] }
 
@@ -54,20 +52,13 @@ surrealdb = { version = "3.0", default-features = false, features = ["kv-surreal
 ollama-rs = { version = "0.2", features = ["stream"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
-# --- Entity/relation extraction (Phase 2) ---
-# Spec v0.2 mentioned graphrag-rs but on inspection that crate is a 50KLOC
-# opinionated framework that brings LanceDB back via persistent-storage.
-# gline-rs is the focused GLiNER inference engine — pure Rust + ONNX, supports
-# both NER and (via multitask GLiNER models) relation extraction.
-gline-rs = "1.0"
-# orp = ONNX runtime pipeline. gline-rs depends on it and exposes APIs that
-# take orp's `RuntimeParameters`, so we depend on it directly to construct one.
-orp = "0.9"
-
 # --- Utility ---
 uuid = { version = "1", features = ["v4", "serde"] }
 futures = "0.3"
 async-trait = "0.1"
+
+# --- MCP server (ADR-0009 §5 — the graph-only stdio MCP server) ---
+rmcp = { version = "0.16", features = ["server", "transport-io", "schemars"] }
 
 [profile.dev]
 incremental = true

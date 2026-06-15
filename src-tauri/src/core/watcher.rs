@@ -3,6 +3,7 @@
 //! configurable debounce window so a flurry of editor saves coalesces into
 //! a single notification.
 
+use crate::commands::formation::APP_DIR;
 use crate::error::{AppError, AppResult};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use notify_debouncer_full::{
@@ -15,9 +16,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
-/// Directory inside the formation root that holds app state — its contents are
-/// intentionally NOT surfaced as user-visible changes.
-const APP_DIR: &str = ".chat-notes";
 const DEBOUNCE_MS: u64 = 500;
 pub const EVENT_NAME: &str = "formation-change";
 /// How long a self-write mark suppresses watcher events for a path. Long
@@ -38,9 +36,10 @@ pub struct FormationChange {
 #[derive(Default)]
 pub struct FormationWatcher {
     inner: Mutex<Option<Debouncer<RecommendedWatcher, FileIdMap>>>,
-    /// Paths the app itself just wrote, with the write time. Watcher events for
-    /// these are dropped so a commit doesn't trigger a redundant re-index — the
-    /// commit pipeline re-indexes the note synchronously (P3-M6).
+    /// Paths the app itself just wrote, with the write time. Watcher events
+    /// for these are dropped so an internal write does not trigger a redundant
+    /// re-index — only external edits (Obsidian, cloud-sync, …) need to flow
+    /// through the watcher.
     self_writes: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
@@ -84,8 +83,10 @@ impl FormationWatcher {
         }
     }
 
-    /// Record that the app itself just wrote `rel_path`. The next watcher event
-    /// for that path is suppressed (the commit pipeline re-indexes it directly).
+    /// Record that the app itself just wrote `rel_path`. The next watcher
+    /// event for that path is suppressed — the writer (e.g. the agent's note
+    /// edit) handles indexing directly; the watcher only services external
+    /// edits.
     pub fn mark_self_write(&self, rel_path: &str) {
         if let Ok(mut marks) = self.self_writes.lock() {
             marks.insert(rel_path.to_string(), Instant::now());
@@ -109,8 +110,8 @@ fn emit_changes(
         }
     };
     for mut change in filter_events(events, root) {
-        // Drop paths the app itself just wrote — the commit pipeline already
-        // re-indexed them; re-emitting would double the work.
+        // Drop paths the app itself just wrote — the writer already indexed
+        // them; re-emitting would double the work.
         change.paths = {
             let mut marks = self_writes.lock().expect("self-write set poisoned");
             filter_self_writes(&mut marks, change.paths, Instant::now())
@@ -215,7 +216,7 @@ mod tests {
             // Should be filtered (inside .chat-notes/).
             debounced(
                 EventKind::Create(CreateKind::File),
-                vec![root.join(APP_DIR).join("staging").join("foo.json")],
+                vec![root.join(APP_DIR).join("audit").join("foo.json")],
             ),
             // Should be filtered (non-markdown).
             debounced(
