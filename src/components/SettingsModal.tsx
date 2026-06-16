@@ -1,11 +1,20 @@
-import { type ClaudeCodeStatus, type CopilotStatus, tauri } from "@/lib/tauri";
+import { Segmented } from "@/components/Segmented";
+import { Icon } from "@/components/icons";
+import { useFormationStore } from "@/lib/store";
+import type { ClaudeCodeStatus, CopilotStatus } from "@/lib/tauri";
+import { tauri } from "@/lib/tauri";
+import { type Theme, useThemeStore } from "@/lib/theme";
 import { useEffect, useRef, useState } from "react";
 
 type Engine = "claude-code" | "copilot";
 
-/// Settings overlay. Two sections:
+/** The Claude Code model aliases offered in the model selector. */
+const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
+
+/// Settings overlay. Sections:
 ///  - Conversation engine: which agentic CLI runs the conversation (ADR-0009).
-///  - Model storage: where the local embedding model is kept.
+///  - Appearance: theme picker.
+///  - Formation: model storage path + local model status.
 export function SettingsModal({
   onClose,
   onModelConfigChanged,
@@ -24,6 +33,10 @@ export function SettingsModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+
+  const { theme, setTheme } = useThemeStore();
+  const formationPath = useFormationStore((s) => s.formationPath);
+  const pickFormation = useFormationStore((s) => s.pick);
 
   useEffect(() => {
     Promise.all([tauri.getModelsDir(), tauri.getConversationEngine()])
@@ -126,231 +139,334 @@ export function SettingsModal({
     }
   }
 
+  // Derived engine ready state
+  const claudeCodeReady = !!claudeCode?.installed && !!claudeCode.logged_in;
+  const copilotReady = !!copilot?.installed;
+  const selectedStatus = engine === "claude-code" ? claudeCode : copilot;
+  const selectedReady = engine === "claude-code" ? claudeCodeReady : copilotReady;
+  const showWarning = selectedStatus !== null && !selectedReady;
+
+  // Status chip text/color for each engine
+  function claudeCodeStatusLabel(): string {
+    if (claudeCode === null) return "Checking…";
+    if (!claudeCode.installed) return "Not installed";
+    if (!claudeCode.logged_in) return "Not signed in";
+    const parts = ["Installed · authenticated"];
+    if (claudeCode.email) parts.push(claudeCode.email);
+    if (claudeCode.subscription_type) parts.push(claudeCode.subscription_type);
+    return parts.join(" · ");
+  }
+
+  function copilotStatusLabel(): string {
+    if (copilot === null) return "Checking…";
+    if (!copilot.installed) return "Not detected";
+    return "Installed";
+  }
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      <button
+        type="button"
+        aria-label="Close settings"
+        className="absolute inset-0 cursor-default bg-black/40"
+        onClick={onClose}
+      />
       <div
         ref={dialogRef}
         // biome-ignore lint/a11y/useSemanticElements: native <dialog> requires the imperative showModal API and brings its own focus / top-layer model — we keep a styled div + ARIA so the visibility-via-prop pattern (`{settingsOpen && …}`) stays intact.
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
-        className="max-h-[85vh] w-full max-w-md space-y-5 overflow-auto rounded-lg border border-zinc-200 bg-white p-6 shadow-lg dark:border-zinc-800 dark:bg-zinc-900"
+        className="relative max-h-[84vh] w-[min(660px,94vw)] overflow-y-auto rounded-2xl border border-line-strong bg-raised shadow-2xl"
       >
-        <div className="flex items-center justify-between">
-          <h2
-            id="settings-title"
-            className="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
-          >
+        {/* Sticky header */}
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-raised px-[22px] py-[18px]">
+          <h2 id="settings-title" className="font-serif text-[19px] font-semibold text-ink">
             Settings
           </h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close settings"
-            className="rounded px-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+            className="grid h-[30px] w-[30px] place-items-center rounded-lg border-none bg-transparent text-muted hover:bg-bg-sunk hover:text-ink"
           >
-            ✕
+            <Icon.X className="h-[18px] w-[18px]" />
           </button>
         </div>
 
-        <section className="space-y-3">
-          <div>
-            <h3 className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+        {/* Body */}
+        <div className="px-[22px] pb-6 pt-5">
+          {/* ── Conversation engine ── */}
+          <section className="mb-[26px]">
+            <p className="mb-[11px] text-[11px] font-bold uppercase tracking-[.06em] text-faint">
               Conversation engine
-            </h3>
-            <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-              Which agentic CLI runs the conversation. The conversation and your note content go to
-              that CLI under your own subscription — they leave your machine. Note search and your
-              formation stay on-device.
             </p>
-          </div>
 
-          {loading ? (
-            <p className="text-xs text-zinc-400 dark:text-zinc-500">Loading…</p>
-          ) : (
-            <div className="space-y-1.5">
-              {/* Claude Code */}
-              <button
-                type="button"
-                onClick={() => setEngine("claude-code")}
-                className={`block w-full rounded-md border px-3 py-2 text-left ${
-                  engine === "claude-code"
-                    ? "border-zinc-900 bg-zinc-100 dark:border-zinc-100 dark:bg-zinc-800"
-                    : "border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"
-                }`}
-              >
-                <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                  Claude Code
-                </div>
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Runs the agent on your Claude Pro/Max subscription via the local Claude Code CLI.
-                  No API key needed.
-                </div>
-              </button>
-              <p
-                className={`pl-3 text-[11px] ${
-                  claudeCode?.installed && claudeCode.logged_in
-                    ? "text-emerald-600 dark:text-emerald-400"
-                    : "text-zinc-500 dark:text-zinc-400"
-                }`}
-              >
-                {claudeCode === null
-                  ? "Checking for Claude Code…"
-                  : !claudeCode.installed
-                    ? "Not installed. Install Claude Code from claude.com/claude-code."
-                    : !claudeCode.logged_in
-                      ? "Installed — run `claude` in a terminal and sign in."
-                      : `Connected as ${claudeCode.email} · ${claudeCode.subscription_type} subscription.`}
-              </p>
-
-              {engine === "claude-code" && (
-                <div className="space-y-1.5 pl-3 pt-1">
-                  <label className="block text-xs text-zinc-600 dark:text-zinc-400">
-                    Model
-                    <input
-                      type="text"
-                      value={claudeCodeModel}
-                      onChange={(e) => setClaudeCodeModel(e.target.value)}
-                      placeholder="sonnet"
-                      className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
-                    />
-                  </label>
-                </div>
-              )}
-
-              {/* GitHub Copilot */}
-              <button
-                type="button"
-                onClick={() => setEngine("copilot")}
-                className={`block w-full rounded-md border px-3 py-2 text-left ${
-                  engine === "copilot"
-                    ? "border-zinc-900 bg-zinc-100 dark:border-zinc-100 dark:bg-zinc-800"
-                    : "border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"
-                }`}
-              >
-                <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                  GitHub Copilot
-                </div>
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Runs the agent via your GitHub Copilot subscription. Each turn draws on your
-                  Copilot premium-request quota.
-                </div>
-              </button>
-              <p
-                className={`pl-3 text-[11px] ${
-                  copilot?.installed
-                    ? "text-emerald-600 dark:text-emerald-400"
-                    : "text-zinc-500 dark:text-zinc-400"
-                }`}
-              >
-                {copilot === null
-                  ? "Checking for the Copilot CLI…"
-                  : !copilot.installed
-                    ? "Not installed. Install with `npm install -g @github/copilot`."
-                    : "Installed — run `copilot login` if turns fail."}
-              </p>
-
-              {engine === "copilot" && (
-                <div className="space-y-1.5 pl-3 pt-1">
-                  <label className="block text-xs text-zinc-600 dark:text-zinc-400">
-                    Model
-                    <input
-                      type="text"
-                      value={copilotModel}
-                      onChange={(e) => setCopilotModel(e.target.value)}
-                      placeholder="claude-haiku-4.5"
-                      className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
-                    />
-                  </label>
-                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                    Examples: claude-haiku-4.5, gpt-5-mini. Leave blank for the Copilot default.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
-        </section>
-
-        <section className="space-y-3 border-t border-zinc-200 pt-5 dark:border-zinc-800">
-          <div>
-            <h3 className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-              Model storage
-            </h3>
-            <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-              Where the local embedding model is kept. A shared folder lets the Ollama daemon
-              Sediment starts store models in one place across formations.
-            </p>
-          </div>
-
-          {loading ? (
-            <p className="text-xs text-zinc-400 dark:text-zinc-500">Loading…</p>
-          ) : (
-            <>
-              <div className="flex items-center gap-2">
-                <code className="min-w-0 flex-1 truncate rounded-md border border-zinc-300 bg-zinc-50 px-2 py-1.5 text-[11px] text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                  {modelsDir ?? "Default — Ollama's own storage location"}
-                </code>
-                <button
-                  type="button"
-                  onClick={() => void chooseFolder()}
-                  className="shrink-0 rounded-md border border-zinc-300 px-2 py-1.5 text-[11px] text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                >
-                  Choose…
-                </button>
-                {modelsDir && (
+            {loading ? (
+              <p className="text-xs text-muted">Loading…</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  {/* Claude Code card */}
                   <button
                     type="button"
-                    onClick={() => setModelsDir(null)}
-                    className="shrink-0 rounded-md px-2 py-1.5 text-[11px] text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                    onClick={() => setEngine("claude-code")}
+                    className={[
+                      "relative cursor-pointer rounded-[13px] border-[1.5px] p-[15px] text-left transition-colors",
+                      engine === "claude-code"
+                        ? "border-accent bg-accent-tint"
+                        : "border-line hover:border-line-strong",
+                    ].join(" ")}
                   >
-                    Use default
+                    {/* Selected check badge */}
+                    {engine === "claude-code" && (
+                      <span className="absolute right-3 top-3 grid h-5 w-5 place-items-center rounded-full bg-accent text-white">
+                        <Icon.Check className="h-3 w-3" strokeWidth={3} />
+                      </span>
+                    )}
+                    <div className="flex items-center gap-[9px] text-[14px] font-semibold text-ink">
+                      <span
+                        className="grid h-[25px] w-[25px] shrink-0 place-items-center rounded-[7px] text-[12px] font-bold text-white bg-[linear-gradient(150deg,var(--accent),var(--accent-ink))]"
+                        aria-hidden="true"
+                      >
+                        C
+                      </span>
+                      Claude Code
+                    </div>
+                    <p className="mt-2 text-[12px] leading-relaxed text-muted">
+                      Drives your own installed, own-authenticated Claude Code binary. Nothing
+                      leaves your machine but the turn.
+                    </p>
+                    <span
+                      className={[
+                        "mt-[10px] inline-flex items-center gap-[5px] text-[11px] font-semibold",
+                        claudeCodeReady ? "text-sage" : "text-muted",
+                      ].join(" ")}
+                    >
+                      <span
+                        className="inline-block h-[6px] w-[6px] rounded-full bg-current"
+                        aria-hidden="true"
+                      />
+                      {claudeCodeStatusLabel()}
+                    </span>
                   </button>
-                )}
-              </div>
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                Ollama models move to this folder only when Sediment starts the Ollama server — an
-                Ollama already running keeps its current location until next launch.
-              </p>
-            </>
-          )}
-        </section>
 
-        {(() => {
-          // Warn — but don't block — when the user's chosen engine isn't ready.
-          // The user may want to save the choice now and finish the install
-          // separately; turns simply fail until they do.
-          const selectedStatus = engine === "claude-code" ? claudeCode : copilot;
-          const selectedReady =
-            engine === "claude-code"
-              ? !!claudeCode?.installed && !!claudeCode.logged_in
-              : !!copilot?.installed;
-          if (selectedStatus === null || selectedReady) return null;
-          return (
-            <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-300">
+                  {/* GitHub Copilot card */}
+                  <button
+                    type="button"
+                    onClick={() => setEngine("copilot")}
+                    className={[
+                      "relative cursor-pointer rounded-[13px] border-[1.5px] p-[15px] text-left transition-colors",
+                      engine === "copilot"
+                        ? "border-accent bg-accent-tint"
+                        : "border-line hover:border-line-strong",
+                    ].join(" ")}
+                  >
+                    {engine === "copilot" && (
+                      <span className="absolute right-3 top-3 grid h-5 w-5 place-items-center rounded-full bg-accent text-white">
+                        <Icon.Check className="h-3 w-3" strokeWidth={3} />
+                      </span>
+                    )}
+                    <div className="flex items-center gap-[9px] text-[14px] font-semibold text-ink">
+                      <span
+                        className="grid h-[25px] w-[25px] shrink-0 place-items-center rounded-[7px] bg-[#24292f] text-[11px] font-bold text-white"
+                        aria-hidden="true"
+                      >
+                        GH
+                      </span>
+                      GitHub Copilot
+                    </div>
+                    <p className="mt-2 text-[12px] leading-relaxed text-muted">
+                      Uses your Copilot CLI subscription as the engine. The agent persona is
+                      identical either way.
+                    </p>
+                    <span
+                      className={[
+                        "mt-[10px] inline-flex items-center gap-[5px] text-[11px] font-semibold",
+                        copilotReady ? "text-sage" : "text-muted",
+                      ].join(" ")}
+                    >
+                      <span
+                        className="inline-block h-[6px] w-[6px] rounded-full bg-current"
+                        aria-hidden="true"
+                      />
+                      {copilotStatusLabel()}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Model selector — shown below the grid for the selected engine */}
+                {engine === "claude-code" && (
+                  <label className="mt-3 block text-[11px] text-ink-soft">
+                    Model
+                    <select
+                      value={claudeCodeModel}
+                      onChange={(e) => setClaudeCodeModel(e.target.value)}
+                      className="mt-1 block w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-[12px] text-ink focus:border-accent focus:outline-none"
+                    >
+                      <option value="sonnet">Sonnet — balanced (recommended)</option>
+                      <option value="opus">Opus — most capable</option>
+                      <option value="haiku">Haiku — fastest</option>
+                      {!CLAUDE_MODELS.includes(claudeCodeModel) && (
+                        <option value={claudeCodeModel}>{claudeCodeModel} (custom)</option>
+                      )}
+                    </select>
+                  </label>
+                )}
+
+                {engine === "copilot" && (
+                  <label className="mt-3 block text-[11px] text-ink-soft">
+                    Model
+                    <input
+                      list="copilot-models"
+                      value={copilotModel}
+                      onChange={(e) => setCopilotModel(e.target.value)}
+                      placeholder="Copilot default"
+                      className="mt-1 block w-full rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-[12px] text-ink placeholder:text-faint focus:border-accent focus:outline-none"
+                    />
+                    <datalist id="copilot-models">
+                      <option value="claude-haiku-4.5" />
+                      <option value="claude-sonnet-4.5" />
+                      <option value="gpt-5" />
+                      <option value="gpt-5-mini" />
+                    </datalist>
+                    <span className="mt-1 block text-[11px] text-muted">
+                      Leave blank for the Copilot default.
+                    </span>
+                  </label>
+                )}
+              </>
+            )}
+
+            {error && <p className="mt-2 text-xs text-danger">{error}</p>}
+          </section>
+
+          {/* ── Appearance ── */}
+          <section className="mb-[26px]">
+            <p className="mb-[11px] text-[11px] font-bold uppercase tracking-[.06em] text-faint">
+              Appearance
+            </p>
+            <div className="flex items-center justify-between border-b border-line py-[11px]">
+              <div>
+                <p className="text-[13.5px] font-medium text-ink">Theme</p>
+                <p className="mt-0.5 text-[11.5px] text-muted">
+                  Paper for daylight, Strata for night
+                </p>
+              </div>
+              <Segmented<Theme>
+                value={theme}
+                onChange={setTheme}
+                ariaLabel="Theme"
+                options={[
+                  { value: "paper", label: "Paper" },
+                  { value: "strata", label: "Strata" },
+                ]}
+              />
+            </div>
+          </section>
+
+          {/* ── Formation ── */}
+          <section className="mb-[26px]">
+            <p className="mb-[11px] text-[11px] font-bold uppercase tracking-[.06em] text-faint">
+              Formation
+            </p>
+
+            {loading ? (
+              <p className="text-xs text-muted">Loading…</p>
+            ) : (
+              <>
+                {/* Formation location (the notes folder) */}
+                <div className="flex items-center justify-between border-b border-line py-[11px]">
+                  <div className="min-w-0 flex-1 pr-4">
+                    <p className="text-[13.5px] font-medium text-ink">Location</p>
+                    <p className="mt-0.5 truncate font-mono text-[11.5px] text-muted">
+                      {formationPath ?? "No formation open"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void pickFormation()}
+                    className="shrink-0 text-[13px] font-semibold text-accent-ink hover:underline"
+                  >
+                    Switch…
+                  </button>
+                </div>
+
+                {/* Model storage (the embedding-model cache directory) */}
+                <div className="flex items-center justify-between border-b border-line py-[11px]">
+                  <div className="min-w-0 flex-1 pr-4">
+                    <p className="text-[13.5px] font-medium text-ink">Model storage</p>
+                    <p className="mt-0.5 truncate font-mono text-[11.5px] text-muted">
+                      {modelsDir ?? "Default — Ollama's own storage location"}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void chooseFolder()}
+                      className="text-[13px] font-semibold text-accent-ink hover:underline"
+                    >
+                      Change…
+                    </button>
+                    {modelsDir && (
+                      <button
+                        type="button"
+                        onClick={() => setModelsDir(null)}
+                        className="text-[12px] text-muted hover:text-ink-soft"
+                      >
+                        Use default
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Local models status */}
+                <div className="flex items-center justify-between py-[11px]">
+                  <div>
+                    <p className="text-[13.5px] font-medium text-ink">Local models</p>
+                    <p className="mt-0.5 text-[11.5px] text-muted">
+                      Embeddings · all-MiniLM · installed
+                    </p>
+                  </div>
+                  <span className="inline-flex items-center gap-[5px] text-[12px] font-semibold text-sage">
+                    <span
+                      className="inline-block h-[6px] w-[6px] rounded-full bg-current"
+                      aria-hidden="true"
+                    />
+                    Ready
+                  </span>
+                </div>
+              </>
+            )}
+          </section>
+
+          {/* Engine not ready warning */}
+          {showWarning && (
+            <p className="mb-4 flex items-center gap-2 rounded-lg border border-warn/40 bg-warn-tint px-3 py-2 text-[11.5px] text-warn">
+              <Icon.Warning className="h-4 w-4 flex-none" />
               This engine isn't ready — turns will fail until you sign in / install.
             </p>
-          );
-        })()}
+          )}
 
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={saving}
-            className="rounded-md px-3 py-1.5 text-xs text-zinc-500 hover:bg-zinc-100 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void save()}
-            disabled={saving || loading}
-            className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
+          {/* Footer actions */}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+              className="rounded-lg px-3 py-1.5 text-xs text-muted hover:bg-bg-sunk hover:text-ink-soft disabled:opacity-40"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={saving || loading}
+              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-accent-ink disabled:opacity-40"
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

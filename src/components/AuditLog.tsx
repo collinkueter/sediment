@@ -1,3 +1,4 @@
+import { Icon } from "@/components/icons";
 import { useAuditStore, useFormationStore } from "@/lib/store";
 import type { AuditEntry, ChatTurnAuditEntry, TaskCompletionAuditEntry } from "@/lib/tauri";
 import { useState } from "react";
@@ -16,22 +17,29 @@ export function AuditLog() {
       : `${entries.length} entr${entries.length === 1 ? "y" : "ies"}`;
 
   return (
-    <div className="border-t border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="border-t border-line bg-surface">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="flex w-full items-center justify-between px-4 py-1.5 text-xs text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        className="flex w-full items-center justify-between px-4 py-1.5 text-xs text-muted hover:bg-bg-sunk"
       >
-        <span>
-          History <span className="ml-1 text-zinc-400 dark:text-zinc-600">— {summary}</span>
+        <span className="flex items-center gap-2">
+          <Icon.Undo className="h-3.5 w-3.5 text-faint" aria-hidden />
+          <span>
+            History &amp; undo <span className="ml-1 text-faint">— {summary}</span>
+          </span>
         </span>
-        <span aria-hidden>{open ? "▾" : "▸"}</span>
+        {open ? (
+          <Icon.ChevronDown className="h-3.5 w-3.5" aria-hidden />
+        ) : (
+          <Icon.ChevronRight className="h-3.5 w-3.5" aria-hidden />
+        )}
       </button>
       {open && (
-        <div className="max-h-72 overflow-auto border-t border-zinc-200 dark:border-zinc-800">
+        <div className="max-h-72 overflow-auto border-t border-line">
           {entries.length === 0 ? (
-            <p className="px-4 py-3 text-xs text-zinc-400 dark:text-zinc-500">
+            <p className="px-4 py-3 text-xs text-muted">
               Every conversational turn and task check-off that changes your formation is logged
               here. Revert a whole turn, a single recorded fact, or a daily-note append.
             </p>
@@ -97,36 +105,24 @@ function ChatTurnBlock({ entry }: { entry: ChatTurnAuditEntry }) {
   }
 
   return (
-    <div className="border-b border-zinc-200 px-4 py-2.5 last:border-b-0 dark:border-zinc-800">
+    <div className="border-b border-line px-4 py-2.5 last:border-b-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-xs italic text-zinc-500 dark:text-zinc-400">
-            "{entry.userExcerpt}"
-          </p>
+          <p className="truncate text-xs italic text-ink-soft">"{entry.userExcerpt}"</p>
           {entry.replyExcerpt && (
-            <p className="mt-0.5 truncate text-[11px] text-zinc-400 dark:text-zinc-500">
-              {entry.replyExcerpt}
-            </p>
+            <p className="mt-0.5 truncate text-[11px] text-muted">{entry.replyExcerpt}</p>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span
-            aria-hidden
-            title="Chat turn"
-            className="text-[10px] text-zinc-300 dark:text-zinc-600"
-          >
-            💬
-          </span>
-          <span className="text-[10px] uppercase tracking-wide text-zinc-400 dark:text-zinc-600">
-            {when}
-          </span>
+          <Icon.Sparkle aria-label="Chat turn" className="h-3 w-3 text-faint" />
+          <span className="text-[10px] uppercase tracking-wide text-faint">{when}</span>
           {(noteCount > 0 || factCount > 0) && (
             <button
               type="button"
               onClick={() => void revertTurn()}
               disabled={reverting}
               aria-label={`Revert turn from ${when} — ${entry.userExcerpt}`}
-              className="rounded px-2 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-200 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              className="rounded px-2 py-0.5 text-[11px] text-muted hover:bg-bg-sunk hover:text-ink-soft disabled:opacity-40"
             >
               Revert turn
             </button>
@@ -135,26 +131,25 @@ function ChatTurnBlock({ entry }: { entry: ChatTurnAuditEntry }) {
       </div>
 
       {noteCount === 0 && factCount === 0 ? (
-        <p className="mt-1.5 text-[11px] text-zinc-400 dark:text-zinc-600">
-          No changes — the agent only answered.
-        </p>
+        <p className="mt-1.5 text-[11px] text-faint">No changes — the agent only answered.</p>
       ) : (
         <>
           {noteCount > 0 && (
             <ul className="mt-2 space-y-1">
               {entry.changedNotes.map((note) => (
                 <li key={note.path} className="flex items-center gap-2 text-xs">
-                  <span
-                    aria-hidden
-                    title={note.wasCreate ? "New note" : "Updated note"}
-                    className="shrink-0"
-                  >
-                    {note.wasCreate ? "➕" : "✎"}
-                  </span>
+                  {note.wasCreate ? (
+                    <Icon.Plus aria-label="New note" className="h-3 w-3 shrink-0 text-accent" />
+                  ) : (
+                    <Icon.Pencil
+                      aria-label="Updated note"
+                      className="h-3 w-3 shrink-0 text-muted"
+                    />
+                  )}
                   <button
                     type="button"
                     onClick={() => void openNote(note.path)}
-                    className="truncate font-medium text-zinc-700 hover:underline dark:text-zinc-300"
+                    className="truncate font-medium text-accent-ink hover:underline"
                   >
                     {note.path}
                   </button>
@@ -164,16 +159,16 @@ function ChatTurnBlock({ entry }: { entry: ChatTurnAuditEntry }) {
           )}
           {factCount > 0 && (
             <div className="mt-2">
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              <p className="text-[11px] text-muted">
                 Recorded {factCount} fact{factCount === 1 ? "" : "s"}
               </p>
               <ul className="mt-1 space-y-1">
                 {entry.recordedFactIds.map((factId) => (
                   <li key={factId} className="flex items-center gap-2 text-xs">
-                    <span aria-hidden className="shrink-0 text-zinc-300 dark:text-zinc-600">
+                    <span aria-hidden className="shrink-0 text-faint">
                       •
                     </span>
-                    <code className="min-w-0 flex-1 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                    <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
                       {factId}
                     </code>
                     <button
@@ -181,7 +176,7 @@ function ChatTurnBlock({ entry }: { entry: ChatTurnAuditEntry }) {
                       onClick={() => void revertFact(factId)}
                       disabled={reverting}
                       aria-label={`Revert fact ${factId}`}
-                      className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-200 hover:text-zinc-700 disabled:opacity-40 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                      className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-bg-sunk hover:text-ink-soft disabled:opacity-40"
                     >
                       Revert
                     </button>
@@ -231,34 +226,22 @@ function TaskCompletionBlock({ entry }: { entry: TaskCompletionAuditEntry }) {
   }
 
   return (
-    <div className="border-b border-zinc-200 px-4 py-2.5 last:border-b-0 dark:border-zinc-800">
+    <div className="border-b border-line px-4 py-2.5 last:border-b-0">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-xs font-medium text-zinc-700 dark:text-zinc-300">
-            {entry.taskTitle}
-          </p>
-          <p className="mt-0.5 truncate text-[11px] text-zinc-400 dark:text-zinc-500">
-            → {entry.dailyNotePath}
-          </p>
+          <p className="truncate text-xs font-medium text-ink">{entry.taskTitle}</p>
+          <p className="mt-0.5 truncate text-[11px] text-muted">→ {entry.dailyNotePath}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span
-            aria-hidden
-            title="Task completion"
-            className="text-[10px] text-zinc-300 dark:text-zinc-600"
-          >
-            ✅
-          </span>
-          <span className="text-[10px] uppercase tracking-wide text-zinc-400 dark:text-zinc-600">
-            {when}
-          </span>
+          <Icon.CheckSquare aria-label="Task completion" className="h-3 w-3 text-sage" />
+          <span className="text-[10px] uppercase tracking-wide text-faint">{when}</span>
           {!editedSince && (
             <button
               type="button"
               onClick={() => void revert()}
               disabled={reverting}
               aria-label={`Revert task completion — ${entry.taskTitle}`}
-              className="rounded px-2 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-200 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              className="rounded px-2 py-0.5 text-[11px] text-muted hover:bg-bg-sunk hover:text-ink-soft disabled:opacity-40"
             >
               Revert
             </button>
@@ -266,7 +249,7 @@ function TaskCompletionBlock({ entry }: { entry: TaskCompletionAuditEntry }) {
         </div>
       </div>
       {editedSince && (
-        <p className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+        <p className="mt-1.5 text-[11px] text-gold">
           This entry has been edited — please remove it manually.
         </p>
       )}
@@ -279,17 +262,15 @@ function TaskCompletionBlock({ entry }: { entry: TaskCompletionAuditEntry }) {
 
 function RevertErrorBanner({ error, onDismiss }: { error: string; onDismiss: () => void }) {
   return (
-    <div className="mt-2 flex items-start justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 dark:border-red-900/60 dark:bg-red-950/40">
-      <p className="min-w-0 flex-1 text-[11px] text-red-700 dark:text-red-300">
-        Revert failed — {error}
-      </p>
+    <div className="mt-2 flex items-start justify-between gap-2 rounded-md border border-danger/40 bg-danger-tint px-2 py-1.5">
+      <p className="min-w-0 flex-1 text-[11px] text-danger">Revert failed — {error}</p>
       <button
         type="button"
         onClick={onDismiss}
         aria-label="Dismiss revert error"
-        className="shrink-0 rounded px-1 text-[11px] text-red-500 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/40"
+        className="shrink-0 rounded px-1 text-[11px] text-danger hover:bg-danger/10"
       >
-        ✕
+        <Icon.X className="h-3 w-3" aria-hidden />
       </button>
     </div>
   );

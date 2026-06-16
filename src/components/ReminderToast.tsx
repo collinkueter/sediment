@@ -1,3 +1,4 @@
+import { Icon } from "@/components/icons";
 import { useRemindersStore } from "@/lib/store";
 
 /// Floating toast shown when the scheduler fires a reminder (ADR-0007). Sits
@@ -11,14 +12,15 @@ export function ReminderToast() {
   if (!task) return null;
 
   return (
-    <div className="-translate-x-1/2 fixed bottom-24 left-1/2 z-50 flex items-center gap-3 rounded-lg bg-rose-600 px-4 py-2 text-sm text-white shadow-lg">
+    <div className="-translate-x-1/2 fixed bottom-20 left-1/2 z-50 flex items-center gap-3 rounded-xl bg-accent px-4 py-2.5 text-sm text-white shadow-2xl">
+      <Icon.Bell className="h-4 w-4 shrink-0" />
       <span>
-        <span aria-hidden>🔔</span> Reminder: <span className="font-medium">{task.title}</span>
+        Reminder: <span className="font-semibold">{task.title}</span>
       </span>
       <button
         type="button"
         onClick={() => void complete(task.id)}
-        className="rounded bg-white/15 px-2 py-0.5 text-xs font-medium hover:bg-white/25"
+        className="rounded-md bg-white/15 px-2.5 py-1 font-semibold text-xs hover:bg-white/25"
       >
         Done
       </button>
@@ -26,9 +28,9 @@ export function ReminderToast() {
         type="button"
         aria-label="Dismiss"
         onClick={dismiss}
-        className="text-white/70 hover:text-white"
+        className="grid h-6 w-6 place-items-center rounded-md text-white/70 hover:bg-white/15 hover:text-white"
       >
-        ✕
+        <Icon.X className="h-4 w-4" />
       </button>
     </div>
   );

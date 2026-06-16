@@ -1,0 +1,693 @@
+<!doctype html>
+<html lang="en" data-theme="paper">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sediment — redesign mockup (conversation-as-hero)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+/* ════════════════════════════════════════════════════════════════════
+   SEDIMENT — conversation-as-hero layout
+   Same "Strata" system: warm/archival, Fraunces voice, clay accent.
+   Center = the conversation (the product's primary surface).
+   Left = formation nav.  Right = the active note as a reference pane
+   (collapsible → conversation goes full-width focus mode).
+   ════════════════════════════════════════════════════════════════════ */
+:root[data-theme="paper"] {
+  --bg:#f4f1ea; --bg-sunk:#ece7dd; --surface:#fbf9f4; --raised:#ffffff;
+  --ink:#2a241d; --ink-soft:#5d5446; --muted:#968c7c; --faint:#b6ab98;
+  --line:#e6dfd2; --line-strong:#d8cfbd;
+  --accent:#b4552d; --accent-ink:#8c3f1d; --accent-tint:#f2e4d9;
+  --gold:#a87f33; --gold-tint:#f1e7d2; --sage:#5d7068; --sage-tint:#e2e8e2;
+  --user-bg:#2a241d; --user-ink:#f6f2ea;
+  --hero-bg:#f6f3ec;
+  --shadow:0 1px 2px rgba(53,40,24,.05),0 8px 24px -12px rgba(53,40,24,.18);
+  --shadow-pop:0 12px 40px -8px rgba(53,40,24,.28);
+  --grain:.035;
+}
+:root[data-theme="strata"] {
+  --bg:#1a1814; --bg-sunk:#141210; --surface:#211e19; --raised:#2a261f;
+  --ink:#ece4d6; --ink-soft:#b6ac98; --muted:#897f6e; --faint:#62594b;
+  --line:#322d25; --line-strong:#3f382d;
+  --accent:#db7d50; --accent-ink:#ef9468; --accent-tint:#3a281d;
+  --gold:#cda35e; --gold-tint:#34291a; --sage:#8aa399; --sage-tint:#243029;
+  --user-bg:#ece4d6; --user-ink:#211e19;
+  --hero-bg:#1e1b16;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -14px rgba(0,0,0,.6);
+  --shadow-pop:0 16px 48px -10px rgba(0,0,0,.7);
+  --grain:.05;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:"Hanken Grotesk",system-ui,sans-serif;background:var(--bg);color:var(--ink);
+  -webkit-font-smoothing:antialiased;overflow:hidden;font-size:13.5px;line-height:1.5}
+::selection{background:var(--accent-tint);color:var(--accent-ink)}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:var(--grain);
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.app{display:flex;flex-direction:column;height:100vh}
+
+/* Title bar */
+.titlebar{height:44px;flex:0 0 44px;display:flex;align-items:center;gap:14px;padding:0 12px 0 14px;
+  background:linear-gradient(var(--surface),var(--bg));border-bottom:1px solid var(--line);user-select:none}
+.traffic{display:flex;gap:8px;padding-right:6px}
+.traffic i{width:12px;height:12px;border-radius:50%;display:block}
+.traffic .r{background:#ec6a5e}.traffic .y{background:#f4bf4f}.traffic .g{background:#61c554}
+.brand{display:flex;align-items:baseline;gap:9px}
+.brand .mark{font-family:"Fraunces",serif;font-weight:600;font-size:16px;letter-spacing:-.01em}
+.brand .layers{display:flex;flex-direction:column;gap:1.5px}
+.brand .layers span{display:block;height:2px;border-radius:2px;background:var(--accent)}
+.brand .layers span:nth-child(1){width:13px;opacity:.45}
+.brand .layers span:nth-child(2){width:16px;opacity:.7}
+.brand .layers span:nth-child(3){width:11px}
+.crumb{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);padding-left:4px}
+.crumb b{color:var(--ink-soft);font-weight:500}
+.crumb svg{width:13px;height:13px;opacity:.5}
+.tb-spacer{flex:1}
+.tb-actions{display:flex;align-items:center;gap:2px}
+.theme-seg{display:flex;background:var(--bg-sunk);border-radius:8px;padding:2px;margin-right:6px}
+.theme-seg button{border:none;background:transparent;font:inherit;font-size:11.5px;font-weight:600;color:var(--muted);
+  padding:4px 11px;border-radius:6px;cursor:pointer;transition:color .14s}
+.theme-seg button.on{background:var(--raised);color:var(--ink);box-shadow:var(--shadow)}
+.theme-seg button:hover:not(.on){color:var(--ink)}
+.iconbtn{width:30px;height:30px;border-radius:8px;border:none;background:transparent;color:var(--muted);
+  display:grid;place-items:center;cursor:pointer;position:relative;transition:background .14s,color .14s}
+.iconbtn:hover{background:var(--bg-sunk);color:var(--ink)}
+.iconbtn svg{width:17px;height:17px}
+.badge{position:absolute;top:3px;right:3px;min-width:15px;height:15px;padding:0 4px;background:var(--accent);
+  color:#fff;border-radius:8px;font-size:9.5px;font-weight:700;display:grid;place-items:center;border:1.5px solid var(--surface)}
+
+/* Workspace */
+.work{flex:1;display:flex;min-height:0}
+.divider{flex:0 0 7px;cursor:col-resize;position:relative;z-index:5}
+.divider::before{content:"";position:absolute;inset:0 3px;background:var(--line);transition:background .15s}
+.divider::after{content:"";position:absolute;top:50%;left:50%;width:3px;height:30px;transform:translate(-50%,-50%);
+  border-radius:3px;background:var(--faint);opacity:0;transition:opacity .15s}
+.divider:hover::before{background:var(--accent)}
+.divider:hover::after{opacity:.9;background:var(--accent)}
+
+/* ── LEFT: Formation nav ─────────────────────────────────────────── */
+.formation{flex:0 0 240px;display:flex;flex-direction:column;background:var(--surface);min-height:0}
+.col-head{padding:13px 14px 10px}
+.formation-switch{display:flex;align-items:center;gap:9px;width:100%;padding:7px 9px;border:1px solid var(--line);
+  border-radius:9px;background:var(--raised);cursor:pointer;box-shadow:var(--shadow);transition:border-color .15s}
+.formation-switch:hover{border-color:var(--line-strong)}
+.formation-switch .glyph{width:26px;height:26px;border-radius:7px;flex:0 0 26px;
+  background:linear-gradient(150deg,var(--accent),var(--accent-ink));display:grid;place-items:center;color:#fff}
+.formation-switch .glyph svg{width:15px;height:15px}
+.formation-switch .meta{text-align:left;min-width:0;flex:1}
+.formation-switch .meta b{display:block;font-size:13px;font-weight:600;color:var(--ink)}
+.formation-switch .meta span{font-size:11px;color:var(--muted)}
+.formation-switch .chev{color:var(--faint)}.formation-switch .chev svg{width:14px;height:14px}
+.search{margin:2px 14px 8px;display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg-sunk);
+  border-radius:8px;color:var(--muted)}
+.search svg{width:14px;height:14px}
+.search input{border:none;background:transparent;outline:none;color:var(--ink);font:inherit;font-size:12.5px;width:100%}
+.search kbd{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--faint);border:1px solid var(--line-strong);
+  border-radius:4px;padding:1px 4px}
+.tree{flex:1;overflow-y:auto;padding:2px 8px 14px}
+.tree-label{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
+  padding:9px 8px 4px;display:flex;align-items:center;gap:6px}
+.tree-label .count{margin-left:auto;font-weight:600;letter-spacing:0}
+.row{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:7px;cursor:pointer;color:var(--ink-soft);
+  font-size:13px;position:relative;transition:background .12s}
+.row:hover{background:var(--bg-sunk)}
+.row svg{width:15px;height:15px;opacity:.7;flex:0 0 15px}
+.row .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.folder{color:var(--muted);font-weight:500}
+.row.nested{padding-left:28px}
+.row.active{background:var(--accent-tint);color:var(--accent-ink);font-weight:600}
+.row.active::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;border-radius:3px;background:var(--accent)}
+.row.active svg{opacity:1;color:var(--accent)}
+.row .dot{width:6px;height:6px;border-radius:50%;margin-left:auto}.row .dot.gold{background:var(--gold)}
+
+/* ── CENTER: Conversation (HERO) ─────────────────────────────────── */
+.hero{flex:1;display:flex;flex-direction:column;background:var(--hero-bg);min-width:0;min-height:0;position:relative}
+
+/* In-play bar */
+.inplay{display:flex;align-items:center;gap:12px;padding:10px 22px;border-bottom:1px solid var(--line);
+  background:linear-gradient(var(--surface),transparent);flex-wrap:wrap}
+.inplay .lbl{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink-soft)}
+.inplay .lbl .live{width:6px;height:6px;border-radius:50%;background:var(--sage);animation:pulse 2.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.inplay .vsep{width:1px;height:18px;background:var(--line-strong)}
+.ichip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 6px;border-radius:20px;background:var(--raised);
+  border:1px solid var(--line);font-size:12.5px;color:var(--ink);cursor:pointer;box-shadow:var(--shadow);
+  transition:border-color .14s,transform .14s}
+.ichip:hover{border-color:var(--accent);transform:translateY(-1px)}
+.ichip .av{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff}
+.ichip .av.person{background:linear-gradient(150deg,#b4552d,#8c3f1d)}
+.ichip .av.org{background:linear-gradient(150deg,#5d7068,#3f5249);border-radius:5px}
+.ichip .av.proj{background:linear-gradient(150deg,#a87f33,#7c5d22);border-radius:5px}
+.ipill{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:8px;font-size:12px;cursor:pointer;
+  background:var(--raised);border:1px solid var(--line);box-shadow:var(--shadow)}
+.ipill .lead{width:7px;height:7px;border-radius:50%}
+.ipill.task .lead{background:var(--gold)}.ipill.loop .lead{background:var(--sage)}
+.ipill .when{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--gold);font-weight:500}
+.inplay .more{margin-left:auto;color:var(--muted);font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+.inplay .more svg{width:14px;height:14px}
+
+/* Transcript — centered reading column */
+.stream{flex:1;overflow-y:auto;padding:30px 22px 10px}
+.thread{max-width:680px;margin:0 auto;display:flex;flex-direction:column;gap:24px}
+.daymark{display:flex;align-items:center;gap:12px;color:var(--faint);font-size:11px;font-weight:600;
+  letter-spacing:.06em;text-transform:uppercase}
+.daymark::before,.daymark::after{content:"";height:1px;background:var(--line);flex:1}
+.turn{display:flex;flex-direction:column;gap:12px}
+.user-row{display:flex;justify-content:flex-end}
+.user-bubble{max-width:80%;background:var(--user-bg);color:var(--user-ink);padding:10px 15px;
+  border-radius:16px 16px 5px 16px;font-size:14px;line-height:1.5}
+.trace{align-self:flex-start;display:flex;flex-direction:column;gap:3px;padding-left:42px}
+.trace .line{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted)}
+.trace .line svg{width:13px;height:13px;color:var(--sage);flex:0 0 13px}
+.trace .line b{color:var(--ink-soft);font-weight:600}
+.trace .summary{font-size:11px;color:var(--faint);padding-left:20px;font-family:"IBM Plex Mono",monospace}
+.agent-row{display:flex;gap:14px}
+.agent-av{flex:0 0 30px;width:30px;height:30px;border-radius:9px;margin-top:2px;
+  background:linear-gradient(150deg,var(--accent),var(--accent-ink));display:grid;place-items:center;color:#fff;box-shadow:var(--shadow)}
+.agent-av svg{width:17px;height:17px}
+.agent-msg{font-family:"Fraunces",serif;font-size:16.5px;line-height:1.62;color:var(--ink);max-width:560px}
+.agent-msg p{margin-bottom:11px}
+.agent-msg .cite{font-family:"Hanken Grotesk",sans-serif;font-size:12.5px;font-weight:600;color:var(--accent-ink);
+  background:var(--accent-tint);padding:1px 8px;border-radius:6px;cursor:pointer;white-space:nowrap}
+.agent-msg .q{display:block;margin-top:14px;padding:12px 16px;border-left:2.5px solid var(--accent);background:var(--accent-tint);
+  border-radius:0 12px 12px 0;font-style:italic;color:var(--accent-ink);font-size:16px}
+.agent-tools{margin-top:12px;padding-left:0;display:flex;gap:8px;flex-wrap:wrap}
+.agent-tools .act{font-family:"Hanken Grotesk",sans-serif;font-size:12px;font-weight:600;color:var(--ink-soft);
+  border:1px solid var(--line-strong);background:var(--raised);padding:5px 11px;border-radius:8px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:6px;box-shadow:var(--shadow)}
+.agent-tools .act:hover{border-color:var(--accent);color:var(--accent-ink)}
+.agent-tools .act svg{width:13px;height:13px}
+.agent-tools .act.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.agent-tools .act.primary:hover{background:var(--accent-ink);color:#fff}
+
+/* Composer — generous, hero-weight */
+.composer{padding:14px 22px 20px;background:linear-gradient(transparent,var(--hero-bg) 35%)}
+.composer-inner{max-width:680px;margin:0 auto}
+.composer-box{background:var(--raised);border:1px solid var(--line-strong);border-radius:16px;padding:13px 15px 11px;
+  box-shadow:var(--shadow);transition:border-color .15s,box-shadow .15s}
+.composer-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
+.composer-box textarea{width:100%;border:none;background:transparent;outline:none;resize:none;font:inherit;font-size:14.5px;
+  color:var(--ink);line-height:1.55;min-height:50px}
+.composer-box textarea::placeholder{color:var(--faint)}
+.composer-row{display:flex;align-items:center;gap:10px;margin-top:8px}
+.composer-row .hint{font-size:11px;color:var(--faint);display:flex;align-items:center;gap:7px}
+.composer-row .hint kbd{font-family:"IBM Plex Mono",monospace;font-size:10px;border:1px solid var(--line-strong);
+  border-radius:4px;padding:0 4px;color:var(--muted)}
+.composer-row .tool{margin-left:0;color:var(--muted);width:28px;height:28px;border-radius:8px;border:none;background:transparent;
+  cursor:pointer;display:grid;place-items:center}
+.composer-row .tool:hover{background:var(--bg-sunk);color:var(--ink)}
+.composer-row .tool svg{width:16px;height:16px}
+.send{margin-left:auto;display:inline-flex;align-items:center;gap:7px;border:none;cursor:pointer;background:var(--accent);
+  color:#fff;font:inherit;font-weight:600;font-size:13px;padding:8px 15px;border-radius:10px;box-shadow:var(--shadow);
+  transition:transform .12s,background .14s}
+.send:hover{background:var(--accent-ink);transform:translateY(-1px)}
+.send svg{width:14px;height:14px}
+
+/* ── RIGHT: Note reference pane ──────────────────────────────────── */
+.note{flex:0 0 392px;display:flex;flex-direction:column;background:var(--surface);min-height:0}
+.note-head{display:flex;align-items:center;gap:10px;padding:11px 18px;border-bottom:1px solid var(--line)}
+.note-head .collapse{color:var(--muted);width:26px;height:26px;border-radius:7px;border:none;background:transparent;
+  cursor:pointer;display:grid;place-items:center}
+.note-head .collapse:hover{background:var(--bg-sunk);color:var(--ink)}
+.note-head .collapse svg{width:16px;height:16px}
+.note-title-wrap{min-width:0;flex:1}
+.note-title{font-family:"Fraunces",serif;font-size:15.5px;font-weight:600;color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.note-sub{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.note-sub .pip{width:5px;height:5px;border-radius:50%;background:var(--sage)}
+.seg{display:flex;background:var(--bg-sunk);border-radius:8px;padding:2px}
+.seg button{border:none;background:transparent;font:inherit;font-size:11.5px;font-weight:500;color:var(--muted);
+  padding:4px 9px;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:5px}
+.seg button.on{background:var(--raised);color:var(--ink);box-shadow:var(--shadow)}
+.seg button svg{width:12px;height:12px}
+.note-scroll{flex:1;overflow-y:auto;padding:24px 22px 50px}
+.prose h1{font-family:"Fraunces",serif;font-size:23px;font-weight:600;letter-spacing:-.01em;color:var(--ink);margin-bottom:4px}
+.prose .frontmatter{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0 22px;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.tag{font-size:11px;font-weight:500;padding:3px 9px;border-radius:20px;background:var(--bg-sunk);border:1px solid var(--line);
+  color:var(--ink-soft);display:inline-flex;align-items:center;gap:5px}
+.tag .k{color:var(--muted)}
+.prose h2{font-family:"Fraunces",serif;font-size:14.5px;font-weight:600;color:var(--accent-ink);margin:24px 0 9px;
+  display:flex;align-items:center;gap:9px}
+.prose h2::before{content:"";width:13px;height:2px;background:var(--accent);border-radius:2px;opacity:.6}
+.prose ul{list-style:none}
+.prose li{position:relative;padding:3px 0 3px 18px;color:var(--ink-soft);font-size:13.5px;line-height:1.55}
+.prose li::before{content:"";position:absolute;left:3px;top:11px;width:5px;height:5px;border-radius:50%;background:var(--faint)}
+.wiki{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid var(--accent-tint);font-weight:500;cursor:pointer;padding-bottom:1px}
+.wiki:hover{border-bottom-color:var(--accent);background:var(--accent-tint)}
+.prose li b{color:var(--ink);font-weight:600}
+.justedited{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:600;color:var(--sage);
+  background:var(--sage-tint);padding:2px 8px;border-radius:20px;margin-left:8px;vertical-align:middle;white-space:nowrap}
+.justedited svg{width:11px;height:11px;flex:0 0 11px}
+
+/* collapsed state */
+.app.focus .note{display:none}
+.app.focus .divider.note-div{display:none}
+
+/* Turn receipt — the undo affordance, attached to the turn it describes
+   (replaces the old floating toast that covered the conversation). */
+.receipt{display:flex;align-items:center;gap:9px;margin-left:44px;margin-top:6px;max-width:560px;
+  padding:7px 9px 7px 13px;background:var(--surface);border:1px solid var(--line);border-radius:10px;
+  font-size:12px;color:var(--muted)}
+.receipt > svg{width:14px;height:14px;color:var(--sage);flex:0 0 14px}
+.receipt .txt{min-width:0}
+.receipt b{color:var(--ink-soft);font-weight:600}
+.receipt .cite-mini{color:var(--accent-ink);font-weight:600}
+.receipt .undo{margin-left:auto;flex:0 0 auto;border:1px solid var(--line-strong);background:var(--raised);
+  color:var(--accent-ink);font:inherit;font-weight:600;font-size:11.5px;padding:4px 13px;border-radius:7px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:6px}
+.receipt .undo svg{width:12px;height:12px}
+.receipt .undo:hover{background:var(--accent-tint);border-color:var(--accent)}
+
+/* Daily-note checklist */
+.prose ul.check{list-style:none}
+.prose ul.check li{padding-left:27px}
+.prose ul.check li::before{display:none}
+.prose ul.check li .box{position:absolute;left:0;top:1px;width:17px;height:17px;border-radius:5px;
+  border:1.5px solid var(--line-strong);display:grid;place-items:center;background:var(--raised)}
+.prose ul.check li .box svg{width:11px;height:11px;color:#fff;opacity:0}
+.prose ul.check li.done .box{background:var(--sage);border-color:var(--sage)}
+.prose ul.check li.done .box svg{opacity:1}
+.prose ul.check li.done{color:var(--faint);text-decoration:line-through;text-decoration-color:var(--line-strong)}
+.prose .reflect{font-style:italic;color:var(--ink-soft)}
+
+/* Overlays: backdrop shared by palette + settings */
+.backdrop{position:fixed;inset:0;background:rgba(30,22,12,.34);z-index:300;display:none}
+[data-theme="strata"] .backdrop{background:rgba(0,0,0,.55)}
+.backdrop.open{display:block}
+
+/* Command palette (⌘K) */
+.palette{position:fixed;top:84px;left:50%;transform:translateX(-50%);width:min(620px,92vw);z-index:320;
+  background:var(--raised);border:1px solid var(--line-strong);border-radius:16px;box-shadow:var(--shadow-pop);
+  overflow:hidden;display:none}
+.palette.open{display:block}
+.palette .pinput{display:flex;align-items:center;gap:12px;padding:15px 18px;border-bottom:1px solid var(--line)}
+.palette .pinput svg{width:18px;height:18px;color:var(--muted);flex:0 0 18px}
+.palette .pinput input{border:none;background:transparent;outline:none;font:inherit;font-size:16px;color:var(--ink);width:100%}
+.palette .pinput .esc{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--faint);border:1px solid var(--line-strong);border-radius:5px;padding:2px 6px}
+.palette .presults{max-height:344px;overflow-y:auto;padding:7px}
+.pgroup{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);padding:11px 12px 5px}
+.presult{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:9px;cursor:pointer}
+.presult.sel,.presult:hover{background:var(--accent-tint)}
+.presult .ic{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:#fff;flex:0 0 28px}
+.presult .ic svg{width:15px;height:15px}
+.presult .pm{flex:1;min-width:0}
+.presult .pm .pt{font-size:13.5px;color:var(--ink);font-weight:500}
+.presult .pm .ps{font-size:11.5px;color:var(--muted)}
+.presult .pk{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:var(--faint)}
+
+/* Tasks & reminders popover (bell) */
+.popover{position:fixed;top:48px;right:14px;width:344px;z-index:320;background:var(--raised);border:1px solid var(--line-strong);
+  border-radius:14px;box-shadow:var(--shadow-pop);overflow:hidden;display:none}
+.popover.open{display:block}
+.pop-head{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--line)}
+.pop-head b{font-size:13px;font-weight:600;color:var(--ink)}
+.pop-head .all{font-size:11.5px;color:var(--accent-ink);cursor:pointer;font-weight:600}
+.pop-sub{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);padding:11px 14px 4px}
+.pop-body{padding:6px 8px 10px;max-height:420px;overflow-y:auto}
+.titem{display:flex;gap:11px;padding:8px 10px;border-radius:9px;cursor:pointer}
+.titem:hover{background:var(--bg-sunk)}
+.titem .chk{width:17px;height:17px;border-radius:6px;border:1.5px solid var(--line-strong);flex:0 0 17px;margin-top:1px;background:var(--raised)}
+.titem .tb{flex:1;min-width:0}
+.titem .tb .tt{font-size:13px;color:var(--ink)}
+.titem .tb .td{font-size:11.5px;color:var(--muted);margin-top:1px}
+.titem .due{align-self:flex-start;font-family:"IBM Plex Mono",monospace;font-size:10.5px;font-weight:500;color:var(--gold);
+  background:var(--gold-tint);padding:2px 8px;border-radius:6px;white-space:nowrap}
+.titem .due.soon{color:var(--accent-ink);background:var(--accent-tint)}
+.titem.loop .chk{border-radius:50%;border-style:dashed;border-color:var(--sage)}
+
+/* Settings modal */
+.modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(660px,94vw);max-height:84vh;overflow-y:auto;
+  z-index:320;background:var(--raised);border:1px solid var(--line-strong);border-radius:18px;box-shadow:var(--shadow-pop);display:none}
+.modal.open{display:block}
+.m-head{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--line);
+  position:sticky;top:0;background:var(--raised)}
+.m-head h2{font-family:"Fraunces",serif;font-size:19px;font-weight:600;color:var(--ink)}
+.m-head .x{cursor:pointer;color:var(--muted);width:30px;height:30px;border-radius:8px;display:grid;place-items:center;border:none;background:transparent}
+.m-head .x:hover{background:var(--bg-sunk);color:var(--ink)}
+.m-head .x svg{width:18px;height:18px}
+.m-body{padding:20px 22px 24px}
+.m-section{margin-bottom:26px}
+.m-section > .lbl{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin-bottom:11px}
+.engine-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.engine{border:1.5px solid var(--line);border-radius:13px;padding:15px;cursor:pointer;position:relative;transition:border-color .14s}
+.engine:hover{border-color:var(--line-strong)}
+.engine.sel{border-color:var(--accent);background:var(--accent-tint)}
+.engine .en{font-weight:600;font-size:14px;color:var(--ink);display:flex;align-items:center;gap:9px}
+.engine .en .logo{width:25px;height:25px;border-radius:7px;display:grid;place-items:center;color:#fff;font-size:12px;font-weight:700}
+.engine .ed{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5}
+.engine .es{margin-top:10px;font-size:11px;font-weight:600;display:inline-flex;align-items:center;gap:5px}
+.engine .es.ok{color:var(--sage)}.engine .es.off{color:var(--muted)}
+.engine .es i{width:6px;height:6px;border-radius:50%;background:currentColor}
+.engine .ck{position:absolute;top:12px;right:12px;width:20px;height:20px;border-radius:50%;background:var(--accent);display:none;place-items:center;color:#fff}
+.engine.sel .ck{display:grid}.engine .ck svg{width:12px;height:12px}
+.m-row{display:flex;align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)}
+.m-row:last-child{border-bottom:none}
+.m-row .mr-t{font-size:13.5px;color:var(--ink);font-weight:500}.m-row .mr-s{font-size:11.5px;color:var(--muted);margin-top:2px}
+.m-seg{display:flex;background:var(--bg-sunk);border-radius:8px;padding:2px}
+.m-seg button{border:none;background:transparent;font:inherit;font-size:12px;font-weight:600;color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer}
+.m-seg button.on{background:var(--raised);color:var(--ink);box-shadow:var(--shadow)}
+
+/* Mockup controls */
+.controls{position:fixed;bottom:22px;right:22px;z-index:500;display:flex;gap:6px;background:var(--raised);
+  border:1px solid var(--line-strong);border-radius:12px;padding:6px;box-shadow:var(--shadow-pop)}
+.controls button{font:inherit;font-size:12px;font-weight:600;border:none;cursor:pointer;border-radius:8px;padding:7px 12px;
+  background:transparent;color:var(--muted)}
+.controls button.on{background:var(--accent);color:#fff}
+.controls .sep{width:1px;background:var(--line);margin:4px 2px}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:8px;border:3px solid var(--surface)}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- Title bar -->
+  <header class="titlebar">
+    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+    <div class="brand"><span class="layers"><span></span><span></span><span></span></span><span class="mark">Sediment</span></div>
+    <div class="crumb">
+      <b>Field Notes</b>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+      Conversation
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-actions">
+      <div class="theme-seg">
+        <button class="on" data-theme-btn="paper" onclick="setTheme('paper')">Paper</button>
+        <button data-theme-btn="strata" onclick="setTheme('strata')">Strata</button>
+      </div>
+      <button class="iconbtn" title="Search (⌘K)" onclick="openPalette()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></button>
+      <button class="iconbtn" title="Tasks &amp; reminders" onclick="toggleTasks(event)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="badge">2</span></button>
+      <button class="iconbtn" title="Settings" onclick="openSettings()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+    </div>
+  </header>
+
+  <div class="work">
+
+    <!-- LEFT: Formation -->
+    <aside class="formation">
+      <div class="col-head">
+        <button class="formation-switch">
+          <span class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/><path d="M3 17l9 4 9-4"/></svg></span>
+          <span class="meta"><b>Field Notes</b><span>148 notes · synced</span></span>
+          <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 9l4-4 4 4"/><path d="M16 15l-4 4-4-4"/></svg></span>
+        </button>
+      </div>
+      <div class="search" onclick="openPalette()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input placeholder="Search notes &amp; entities" readonly /><kbd>⌘K</kbd>
+      </div>
+      <nav class="tree">
+        <div class="tree-label">Pinned</div>
+        <div class="row" data-note="daily" onclick="openNote('daily')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v7"/><path d="M5 9h14l-2 11H7L5 9z"/></svg><span class="name">Today · Jun 15</span><span class="dot gold"></span></div>
+        <div class="row" onclick="toggleTasks(event)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg><span class="name">Tasks</span></div>
+        <div class="tree-label">People <span class="count">24</span></div>
+        <div class="row active" data-note="keaton" onclick="openNote('keaton')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class="name">Keaton Vale</span></div>
+        <div class="row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class="name">Mara Lindqvist</span></div>
+        <div class="row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class="name">Theo Brandt</span></div>
+        <div class="tree-label">Projects <span class="count">9</span></div>
+        <div class="row folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg><span class="name">Sediment</span></div>
+        <div class="row nested" data-note="lease" onclick="openNote('lease')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="name">Lease decision</span></div>
+        <div class="tree-label">Organizations <span class="count">11</span></div>
+        <div class="row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 9h.01M9 13h.01M9 17h.01M15 9h.01M15 13h.01M15 17h.01"/></svg><span class="name">Stripe</span></div>
+      </nav>
+    </aside>
+
+    <div class="divider"></div>
+
+    <!-- CENTER: Conversation (HERO) -->
+    <main class="hero">
+      <div class="inplay">
+        <span class="lbl"><span class="live"></span> In focus</span>
+        <span class="ichip" onclick="openNote('keaton')"><span class="av person">KV</span>Keaton Vale</span>
+        <span class="ichip"><span class="av org">S</span>Stripe</span>
+        <span class="ichip" onclick="openNote('lease')"><span class="av proj">L</span>Lease decision</span>
+        <span class="vsep"></span>
+        <span class="ipill task" onclick="toggleTasks(event)"><span class="lead"></span>Lease renewal<span class="when">Fri</span></span>
+        <span class="ipill loop" onclick="openSettings()"><span class="lead"></span>Pick an engine</span>
+        <span class="more" onclick="toggleTasks(event)">2 more <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+
+      <div class="stream">
+        <div class="thread">
+          <div class="daymark">Today · June 15</div>
+
+          <div class="turn">
+            <div class="user-row"><div class="user-bubble">Had lunch with Keaton — she just joined Stripe as a staff designer, and we got into the lease decision again.</div></div>
+            <div class="trace">
+              <div class="line"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><b>recalled</b> Keaton Vale, Lease decision</div>
+              <div class="line"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg><b>recorded</b> 2 facts · 1 supersede</div>
+              <div class="summary">Keaton Vale → at → Stripe (was: Figma)</div>
+              <div class="line"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v7"/><path d="M5 9h14l-2 11H7L5 9z"/></svg><b>logged</b> lunch in today's daily note</div>
+            </div>
+            <div class="agent-row">
+              <div class="agent-av"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.6 4.8L18 9.4l-4.4 1.6L12 16l-1.6-5L6 9.4l4.4-1.6L12 3z"/></svg></div>
+              <div class="agent-msg">
+                <p>Updated <span class="cite" onclick="openNote('keaton')">Keaton Vale</span> — moved her to <b>Stripe</b> as staff designer and kept the Figma history as superseded, not deleted.</p>
+                <p>You've circled the lease twice now without landing it. She owes you a PM intro for the referral.</p>
+                <span class="q">Want me to make the lease decision depend on that intro, and nudge you Thursday?</span>
+                <div class="agent-tools">
+                  <button class="act primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>Yes, link &amp; nudge</button>
+                  <button class="act" onclick="openNote('lease')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>Open lease note</button>
+                </div>
+              </div>
+            </div>
+            <div class="receipt">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+              <span class="txt">Recorded <b>2 facts</b> · updated <span class="cite-mini">Keaton Vale</span> · logged to today's daily note</span>
+              <button class="undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>Undo</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="composer-inner">
+          <div class="composer-box">
+            <textarea placeholder="Tell Sediment a thought, or ask what it knows…">Yes — and remind me to send her the staff-design rubric link.</textarea>
+            <div class="composer-row">
+              <button class="tool" title="Attach"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5l-8.5 8.5a5 5 0 0 1-7-7l9-9a3 3 0 0 1 4 4l-9 9a1 1 0 0 1-1.5-1.5l8.5-8.5"/></svg></button>
+              <span class="hint"><kbd>↵</kbd> send <kbd>⌘↵</kbd> newline</span>
+              <button class="send">Send<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div class="divider note-div"></div>
+
+    <!-- RIGHT: Note reference pane -->
+    <aside class="note">
+      <header class="note-head">
+        <button class="collapse" title="Hide note (focus the conversation)" onclick="document.getElementById('app').classList.toggle('focus')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+        <div class="note-title-wrap">
+          <div class="note-title" id="noteTitle">Keaton Vale</div>
+          <div class="note-sub" id="noteSub"><span class="pip"></span> Person · edited just now</div>
+        </div>
+        <div class="seg">
+          <button class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Read</button>
+          <button><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>Source</button>
+        </div>
+      </header>
+      <div class="note-scroll">
+        <!-- Person note -->
+        <article class="prose" data-note="keaton">
+          <h1>Keaton Vale</h1>
+          <div class="frontmatter">
+            <span class="tag"><span class="k">type</span> person</span>
+            <span class="tag"><span class="k">at</span> <a class="wiki">Stripe</a></span>
+            <span class="tag"><span class="k">city</span> Oakland</span>
+          </div>
+          <h2>Work</h2>
+          <ul>
+            <li>Joined <a class="wiki">Stripe</a> as a <b>staff product designer</b> — June 2025 <i>(superseded: was at Figma)</i><span class="justedited"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>just now</span></li>
+            <li>Leads the design-systems guild; owns the tokens migration</li>
+            <li>Wants to talk through <a class="wiki">Sediment</a>'s working-set model</li>
+          </ul>
+          <h2>Threads</h2>
+          <ul>
+            <li>Owes me a PM intro for the <a class="wiki" onclick="openNote('lease')">Lease decision</a> referral</li>
+            <li>Said she'd send the staff-design rubric — not yet received</li>
+          </ul>
+        </article>
+
+        <!-- Daily note (opened from "Today · Jun 15") -->
+        <article class="prose" data-note="daily" hidden>
+          <h1>Sunday, June 15</h1>
+          <div class="frontmatter">
+            <span class="tag"><span class="k">daily note</span> 2025-06-15</span>
+            <span class="tag"><span class="k">week</span> 2025-W24</span>
+          </div>
+          <h2>Checklist</h2>
+          <ul class="check">
+            <li class="done"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Morning pages</li>
+            <li class="done"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Read 20 pages</li>
+            <li><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Workout</li>
+            <li><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Inbox to zero</li>
+          </ul>
+          <h2>Did</h2>
+          <ul>
+            <li>Lunch with <a class="wiki" onclick="openNote('keaton')">Keaton Vale</a> — she joined <a class="wiki">Stripe</a> as staff designer <span class="justedited"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>from chat</span></li>
+            <li>Reviewed <a class="wiki" onclick="openNote('lease')">Lease decision</a> options again — still blocked on the PM intro</li>
+            <li>Completed task <b>Send Q2 numbers</b></li>
+          </ul>
+          <h2>Notes</h2>
+          <ul>
+            <li class="reflect">Kept circling the lease without deciding. The blocker is the intro, not the options — worth making that dependency explicit so it stops resurfacing.</li>
+          </ul>
+        </article>
+
+        <!-- Project note (opened from a wiki-link or "Open lease note") -->
+        <article class="prose" data-note="lease" hidden>
+          <h1>Lease decision</h1>
+          <div class="frontmatter">
+            <span class="tag"><span class="k">type</span> project</span>
+            <span class="tag"><span class="k">status</span> deciding</span>
+            <span class="tag"><span class="k">due</span> Fri Jun 20</span>
+          </div>
+          <h2>Options</h2>
+          <ul>
+            <li>Renew current space — $4,200/mo, 24-month term</li>
+            <li>Relocate near <a class="wiki">Stripe</a> — pending <a class="wiki" onclick="openNote('keaton')">Keaton Vale</a>'s PM intro</li>
+          </ul>
+          <h2>Open questions</h2>
+          <ul>
+            <li>Need the PM intro before committing <i>(blocking — depends on <a class="wiki" onclick="openNote('keaton')">Keaton Vale</a>)</i></li>
+          </ul>
+          <h2>Decision</h2>
+          <ul>
+            <li>Land by Friday — nudge set for Thursday</li>
+          </ul>
+        </article>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- ════ Overlays ════ -->
+<div class="backdrop" id="backdrop" onclick="closeOverlays()"></div>
+
+<!-- Command palette (⌘K) -->
+<div class="palette" id="palette">
+  <div class="pinput">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    <input placeholder="Search notes, entities, or type a command…" id="palInput" />
+    <span class="esc">esc</span>
+  </div>
+  <div class="presults">
+    <div class="pgroup">Jump to</div>
+    <div class="presult sel" onclick="openNote('keaton')"><span class="ic" style="background:linear-gradient(150deg,#b4552d,#8c3f1d)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg></span><div class="pm"><div class="pt">Keaton Vale</div><div class="ps">Person · People/Keaton Vale.md</div></div><span class="pk">↵</span></div>
+    <div class="presult" onclick="openNote('lease')"><span class="ic" style="background:linear-gradient(150deg,#a87f33,#7c5d22)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span><div class="pm"><div class="pt">Lease decision</div><div class="ps">Project · Projects/Lease decision.md</div></div></div>
+    <div class="presult" onclick="openNote('daily')"><span class="ic" style="background:linear-gradient(150deg,#5d7068,#3f5249)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v7"/><path d="M5 9h14l-2 11H7L5 9z"/></svg></span><div class="pm"><div class="pt">Today · June 15</div><div class="ps">Daily note · Daily Notes/2025-06-15.md</div></div></div>
+    <div class="presult" onclick="openNote('keaton')"><span class="ic" style="background:linear-gradient(150deg,#5d7068,#3f5249);border-radius:6px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/></svg></span><div class="pm"><div class="pt">Stripe</div><div class="ps">Organization · 3 linked notes</div></div></div>
+    <div class="pgroup">Actions</div>
+    <div class="presult" onclick="openSettings()"><span class="ic" style="background:var(--ink-soft)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></span><div class="pm"><div class="pt">Open Settings</div><div class="ps">Engine, appearance, formation</div></div><span class="pk">⌘,</span></div>
+  </div>
+</div>
+
+<!-- Tasks & reminders popover (bell) -->
+<div class="popover" id="tasks">
+  <div class="pop-head"><b>Tasks &amp; reminders</b><span class="all">View all</span></div>
+  <div class="pop-body">
+    <div class="pop-sub">Due soon</div>
+    <div class="titem"><span class="chk"></span><div class="tb"><div class="tt">Decide on lease renewal</div><div class="td">blocked on Keaton's PM intro</div></div><span class="due soon">Fri</span></div>
+    <div class="titem"><span class="chk"></span><div class="tb"><div class="tt">Send staff-design rubric to Keaton</div><div class="td">she asked over lunch</div></div><span class="due">Thu</span></div>
+    <div class="titem"><span class="chk"></span><div class="tb"><div class="tt">Prep Q3 planning doc</div></div><span class="due">Jun 25</span></div>
+    <div class="pop-sub">Open loops</div>
+    <div class="titem loop" onclick="openSettings()"><span class="chk"></span><div class="tb"><div class="tt">Pick a conversation engine</div><div class="td">Claude Code vs Copilot — unset in Settings</div></div></div>
+    <div class="titem loop"><span class="chk"></span><div class="tb"><div class="tt">Asked about the lease, never decided</div><div class="td">raised twice this week</div></div></div>
+  </div>
+</div>
+
+<!-- Settings modal (gear / "Pick an engine") -->
+<div class="modal" id="settings">
+  <div class="m-head"><h2>Settings</h2><button class="x" onclick="closeOverlays()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+  <div class="m-body">
+    <div class="m-section">
+      <div class="lbl">Conversation engine</div>
+      <div class="engine-grid">
+        <div class="engine sel" onclick="selectEngine(this)">
+          <span class="ck"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>
+          <div class="en"><span class="logo" style="background:linear-gradient(150deg,#b4552d,#8c3f1d)">C</span>Claude Code</div>
+          <div class="ed">Drives your own installed, own-authenticated Claude Code binary. Nothing leaves your machine but the turn.</div>
+          <div class="es ok"><i></i> Installed · authenticated</div>
+        </div>
+        <div class="engine" onclick="selectEngine(this)">
+          <span class="ck"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>
+          <div class="en"><span class="logo" style="background:#24292f">GH</span>GitHub Copilot</div>
+          <div class="ed">Uses your Copilot CLI subscription as the engine. The agent persona is identical either way.</div>
+          <div class="es off"><i></i> Not detected</div>
+        </div>
+      </div>
+    </div>
+    <div class="m-section">
+      <div class="lbl">Appearance</div>
+      <div class="m-row">
+        <div><div class="mr-t">Theme</div><div class="mr-s">Paper for daylight, Strata for night</div></div>
+        <div class="m-seg">
+          <button class="on" data-theme-btn="paper" onclick="setTheme('paper')">Paper</button>
+          <button data-theme-btn="strata" onclick="setTheme('strata')">Strata</button>
+        </div>
+      </div>
+    </div>
+    <div class="m-section">
+      <div class="lbl">Formation</div>
+      <div class="m-row"><div><div class="mr-t">Location</div><div class="mr-s">~/Notes/Field Notes</div></div><span class="all" style="color:var(--accent-ink);font-weight:600;cursor:pointer">Change…</span></div>
+      <div class="m-row"><div><div class="mr-t">Local models</div><div class="mr-s">Embeddings · all-MiniLM · installed</div></div><span class="es ok" style="font-size:12px"><i></i> Ready</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- Focus is a real app control (also on the note pane's ‹ button); kept here as a quick demo toggle. -->
+<div class="controls">
+  <button onclick="document.getElementById('app').classList.toggle('focus')">Focus</button>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function setTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  document.querySelectorAll('[data-theme-btn]').forEach(b => b.classList.toggle('on', b.dataset.themeBtn === t));
+}
+document.querySelectorAll('.divider').forEach(d => d.title = 'Drag to resize');
+
+const noteMeta = {
+  keaton: { title: 'Keaton Vale',     sub: 'Person · edited just now' },
+  daily:  { title: 'Sunday, June 15', sub: 'Daily note · 2 of 4 done' },
+  lease:  { title: 'Lease decision',  sub: 'Project · due Fri' },
+};
+function openNote(id){
+  document.querySelectorAll('.note-scroll [data-note]').forEach(a => { a.hidden = a.dataset.note !== id; });
+  const m = noteMeta[id];
+  if (m){ $('noteTitle').textContent = m.title; $('noteSub').innerHTML = '<span class="pip"></span> ' + m.sub; }
+  document.querySelectorAll('.tree .row').forEach(r => r.classList.toggle('active', r.dataset.note === id));
+  document.querySelector('.note-scroll').scrollTop = 0;
+  document.getElementById('app').classList.remove('focus');
+  closeOverlays();
+}
+function closeOverlays(){ ['backdrop','palette','tasks','settings'].forEach(id => $(id).classList.remove('open')); }
+function openPalette(){ closeOverlays(); $('backdrop').classList.add('open'); $('palette').classList.add('open'); setTimeout(() => $('palInput').focus(), 30); }
+function openSettings(){ closeOverlays(); $('backdrop').classList.add('open'); $('settings').classList.add('open'); }
+function toggleTasks(e){ if(e) e.stopPropagation(); const open = $('tasks').classList.contains('open'); closeOverlays(); if(!open) $('tasks').classList.add('open'); }
+function selectEngine(el){ el.parentElement.querySelectorAll('.engine').forEach(x => x.classList.remove('sel')); el.classList.add('sel'); }
+
+// Close the tasks popover on an outside click.
+document.addEventListener('click', (e) => {
+  if ($('tasks').classList.contains('open') && !e.target.closest('#tasks') && !e.target.closest('[title="Tasks & reminders"]') && !e.target.closest('.ipill') && !e.target.closest('.more') && !e.target.closest('[onclick*="toggleTasks"]')) {
+    $('tasks').classList.remove('open');
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k'){ e.preventDefault(); openPalette(); }
+  if (e.key === 'Escape') closeOverlays();
+});
+</script>
+</body>
+</html>

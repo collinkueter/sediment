@@ -1,3 +1,5 @@
+import { EmptyState as EmptyState_ } from "@/components/EmptyState";
+import { Icon } from "@/components/icons";
 import {
   type ChatTurn,
   useAuditStore,
@@ -13,7 +15,7 @@ import { useEffect, useRef, useState } from "react";
 /// The conversation surface (ADR-0009). One conversation: the user types, the
 /// agent grounds itself, records what it learns into the formation, and replies
 /// — all in the same turn. Each turn streams the agent's reply plus an inline
-/// trail of the tools it used, and offers a quiet undo once it completes.
+/// trail of the tools it used, then settles into a quiet receipt with an undo.
 export function ChatPane() {
   const sessionId = useChatStore((s) => s.sessionId);
   const turns = useChatStore((s) => s.turns);
@@ -24,7 +26,7 @@ export function ChatPane() {
   const failTurn = useChatStore((s) => s.failTurn);
   const resetTurn = useChatStore((s) => s.resetTurn);
   const refreshAudit = useAuditStore((s) => s.refresh);
-  const armUndo = useAuditStore((s) => s.armUndo);
+  const undoTurn = useAuditStore((s) => s.undoTurn);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -39,8 +41,8 @@ export function ChatPane() {
   }, [turns]);
 
   // Run one conversational turn into the given local turn id. Streams reply
-  // text + tool activity; on success arms the quiet undo and refreshes the
-  // audit panel, on failure marks the turn so it can be retried in place.
+  // text + tool activity; on success records the receipt fields and refreshes
+  // the side panels, on failure marks the turn so it can be retried in place.
   async function runTurn(turnLocalId: string, message: string) {
     setBusy(true);
     try {
@@ -51,13 +53,13 @@ export function ChatPane() {
           appendActivity(turnLocalId, { tool: event.tool, summary: event.summary });
         }
       });
-      completeTurn(turnLocalId, result.reply, result.turnId);
-      armUndo({
-        kind: "chatTurn",
-        turnId: result.turnId,
-        changedNoteCount: result.changedNotes.length,
-        recordedFactCount: result.recordedFactCount,
-      });
+      completeTurn(
+        turnLocalId,
+        result.reply,
+        result.turnId,
+        result.changedNotes,
+        result.recordedFactCount,
+      );
       // Refresh the Working Set panel with the authoritative state from this turn.
       useWorkingSetStore.getState().setWorkingSet(result.workingSet);
       // The turn edited notes on disk and may have recorded a task — refresh
@@ -119,89 +121,116 @@ export function ChatPane() {
   }
 
   return (
-    <div className="flex h-full w-full flex-col">
-      <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-        <span className="text-sm font-medium text-zinc-500 dark:text-zinc-400">Conversation</span>
-        <span className="text-xs text-zinc-400 dark:text-zinc-500">
-          {busy ? "thinking…" : `${turns.length} turn${turns.length === 1 ? "" : "s"}`}
-        </span>
-      </header>
-
-      <div ref={scrollRef} className="min-h-0 flex-1 space-y-4 overflow-auto px-4 py-3">
+    <div className="flex h-full w-full min-w-0 flex-col bg-bg">
+      {/* Transcript — a centered reading column. */}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-[22px] pt-[30px] pb-[10px]">
         {turns.length === 0 ? (
           <EmptyState />
         ) : (
-          turns.map((turn) => (
-            <TurnView
-              key={turn.id}
-              turn={turn}
-              busy={busy}
-              onRetry={() => void handleRetry(turn.id)}
-            />
-          ))
+          <div className="mx-auto flex max-w-[680px] flex-col gap-6">
+            <DayMark />
+            {turns.map((turn) => (
+              <TurnView
+                key={turn.id}
+                turn={turn}
+                busy={busy}
+                onRetry={() => void handleRetry(turn.id)}
+                onUndo={() => void undoTurn(turn.turnId ?? "")}
+              />
+            ))}
+          </div>
         )}
       </div>
 
-      <div className="border-t border-zinc-200 px-3 py-3 dark:border-zinc-800">
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Tell Sediment a thought, or ask about your formation. Enter to send, ⌘Enter for newline."
-          rows={3}
-          disabled={busy}
-          className="block w-full resize-none rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm placeholder:text-zinc-400 focus:border-zinc-400 focus:outline-none disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:placeholder:text-zinc-500"
-        />
-        <div className="mt-2 flex items-center justify-end">
-          <button
-            type="button"
-            onClick={() => void handleSend()}
-            disabled={!draft.trim() || busy}
-            className="whitespace-nowrap rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
-          >
-            Send (⌘↵)
-          </button>
+      {/* Composer — generous, hero-weight. */}
+      <div className="bg-gradient-to-b from-transparent to-bg px-[22px] pt-[14px] pb-5">
+        <div className="mx-auto max-w-[680px]">
+          <div className="rounded-2xl border border-line-strong bg-raised px-[15px] pt-[13px] pb-[11px] shadow-sm transition-colors focus-within:border-accent">
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Tell Sediment a thought, or ask what it knows…"
+              rows={2}
+              disabled={busy}
+              className="block min-h-[50px] w-full resize-none border-none bg-transparent text-[14.5px] leading-relaxed text-ink outline-none placeholder:text-faint disabled:opacity-60"
+            />
+            <div className="mt-2 flex items-center gap-[10px]">
+              <span className="flex items-center gap-[7px] text-[11px] text-faint">
+                <kbd className="rounded border border-line-strong px-1 font-mono text-[10px] text-muted">
+                  ↵
+                </kbd>
+                send
+                <kbd className="rounded border border-line-strong px-1 font-mono text-[10px] text-muted">
+                  ⇧↵
+                </kbd>
+                newline
+              </span>
+              <button
+                type="button"
+                onClick={() => void handleSend()}
+                disabled={!draft.trim() || busy}
+                className="ml-auto inline-flex items-center gap-[7px] whitespace-nowrap rounded-[10px] bg-accent px-[15px] py-2 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-accent-ink disabled:opacity-40"
+              >
+                Send
+                <Icon.Send className="h-[14px] w-[14px]" />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function DayMark() {
+  const label = new Date()
+    .toLocaleDateString(undefined, { month: "long", day: "numeric" })
+    .toUpperCase();
+  return (
+    <div className="flex items-center gap-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-faint before:h-px before:flex-1 before:bg-line before:content-[''] after:h-px after:flex-1 after:bg-line after:content-['']">
+      Today · {label}
     </div>
   );
 }
 
 function EmptyState() {
   return (
-    <div className="flex h-full items-center justify-center text-center text-sm text-zinc-400 dark:text-zinc-500">
-      <p className="max-w-xs leading-relaxed">
-        Sediment is a thinking partner. Tell it what's on your mind — it records what it learns into
-        your notes, asks when it needs more, and answers from what it already knows. Each launch
-        starts a fresh conversation — your formation is the long-term memory.
-      </p>
-    </div>
+    <EmptyState_
+      icon={Icon.Sparkle}
+      title="A thinking partner"
+      description="Tell Sediment what's on your mind. It records what it learns into your notes, asks when it needs more, and answers from what it already knows. Each launch starts fresh — your formation is the long-term memory."
+    />
   );
 }
 
 /// One conversational turn: the user's bubble, the agent's tool-activity trail,
-/// and the streamed reply (or a retry affordance if the turn failed).
+/// the streamed reply (or a retry affordance), and a quiet receipt with undo.
 function TurnView({
   turn,
   busy,
   onRetry,
+  onUndo,
 }: {
   turn: ChatTurn;
   busy: boolean;
   onRetry: () => void;
+  onUndo: () => void;
 }) {
+  const hasReceipt =
+    !turn.failure && (Boolean(turn.changedNotes?.length) || Boolean(turn.recordedFactCount));
   return (
-    <div className="space-y-2">
-      {/* User message */}
+    <div className="flex flex-col gap-3">
+      {/* User message — right-aligned dark bubble with a clipped corner. */}
       <div className="flex justify-end">
-        <div className="max-w-[80%] whitespace-pre-wrap rounded-lg bg-zinc-900 px-3 py-2 text-sm text-white dark:bg-zinc-100 dark:text-zinc-900">
+        <div className="max-w-[80%] whitespace-pre-wrap rounded-[16px_16px_5px_16px] bg-user-bg px-[15px] py-[10px] text-[14px] leading-relaxed text-user-ink">
           {turn.userMessage}
         </div>
       </div>
 
-      {/* Tool-activity trail — a subtle muted line per tool call */}
+      {/* Fact-trail — a subtle muted line per tool call. */}
       {turn.activity.length > 0 && (
-        <ul className="space-y-0.5 pl-1">
+        <ul className="flex flex-col gap-[3px] self-start pl-[42px]">
           {turn.activity.map((a, i) => (
             <ActivityLine
               // biome-ignore lint/suspicious/noArrayIndexKey: activity is append-only and positional
@@ -212,29 +241,31 @@ function TurnView({
         </ul>
       )}
 
-      {/* Assistant reply, or a failed-turn retry affordance */}
+      {/* Assistant reply, or a failed-turn retry affordance. */}
       {turn.failure ? (
-        <div className="flex justify-start">
-          <div className="max-w-[80%] rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm dark:border-red-900/60 dark:bg-red-950/40">
-            <p className="whitespace-pre-wrap text-red-700 dark:text-red-300">
-              ⚠️ {turn.failure.error}
-            </p>
-            <button
-              type="button"
-              onClick={onRetry}
-              disabled={busy}
-              className="mt-2 rounded-md border border-red-300 px-2 py-0.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-40 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/40"
-            >
-              Retry
-            </button>
-          </div>
+        <div className="ml-[44px] max-w-[560px] rounded-xl border border-line-strong bg-danger-tint px-4 py-3">
+          <p className="flex items-start gap-2 whitespace-pre-wrap text-[13px] text-ink-soft">
+            <Icon.Warning className="mt-px h-4 w-4 flex-none text-danger" />
+            {turn.failure.error}
+          </p>
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={busy}
+            className="mt-2 rounded-md border border-line-strong px-2 py-0.5 text-[11.5px] font-semibold text-accent-ink hover:bg-accent-tint disabled:opacity-40"
+          >
+            Retry
+          </button>
         </div>
       ) : (
-        <div className="flex justify-start">
-          <div className="max-w-[80%] whitespace-pre-wrap rounded-lg bg-zinc-100 px-3 py-2 text-sm text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
+        <div className="flex gap-[14px]">
+          <div className="mt-0.5 grid h-[30px] w-[30px] flex-none place-items-center rounded-[9px] bg-[linear-gradient(150deg,var(--accent),var(--accent-ink))] text-white shadow-sm">
+            <Icon.Sparkle className="h-[17px] w-[17px]" />
+          </div>
+          <div className="max-w-[560px] font-serif text-[16.5px] leading-[1.62] text-ink">
             {turn.reply.length === 0 ? (
               turn.pending ? (
-                <span className="italic text-zinc-400 dark:text-zinc-500">Thinking…</span>
+                <span className="italic text-muted">Thinking…</span>
               ) : (
                 <span className="opacity-50">…</span>
               )
@@ -244,25 +275,59 @@ function TurnView({
           </div>
         </div>
       )}
+
+      {/* Receipt — the inline undo affordance, attached to the turn it describes. */}
+      {hasReceipt && <Receipt turn={turn} onUndo={onUndo} />}
     </div>
   );
 }
 
-/// One line of the inline tool-activity trail — a small muted entry naming the
-/// tool the agent used and a short summary of the call.
+/// The quiet receipt under a completed turn: what it recorded, which note it
+/// touched, and an undo button that reverses the whole turn.
+function Receipt({ turn, onUndo }: { turn: ChatTurn; onUndo: () => void }) {
+  const factCount = turn.recordedFactCount ?? 0;
+  const changed = turn.changedNotes ?? [];
+  const firstPath = changed[0]?.path;
+  const firstName = firstPath ? basename(firstPath) : undefined;
+  const extra = changed.length - 1;
+  return (
+    <div className="ml-[44px] flex max-w-[560px] items-center gap-[9px] rounded-xl border border-line bg-surface py-[7px] pr-[9px] pl-[13px] text-[12px] text-muted">
+      <Icon.Check className="h-[14px] w-[14px] flex-none text-sage" />
+      <span className="min-w-0 flex-1 truncate">
+        Recorded <b className="font-semibold text-ink-soft">{factCount} facts</b>
+        {firstName && (
+          <>
+            {" · updated "}
+            <cite className="font-semibold not-italic text-accent-ink">{firstName}</cite>
+            {extra > 0 && ` +${extra} more`}
+          </>
+        )}
+      </span>
+      <button
+        type="button"
+        onClick={onUndo}
+        className="inline-flex flex-none items-center gap-[6px] rounded-[7px] border border-line-strong bg-raised px-[13px] py-1 text-[11.5px] font-semibold text-accent-ink hover:border-accent hover:bg-accent-tint"
+      >
+        <Icon.Undo className="h-3 w-3" />
+        Undo
+      </button>
+    </div>
+  );
+}
+
+/// One line of the inline fact-trail — a small muted entry summarising a tool
+/// the agent used to produce its reply.
 function ActivityLine({ activity }: { activity: ToolActivity }) {
   return (
-    <li className="flex items-center gap-1.5 text-[11px] text-zinc-400 dark:text-zinc-500">
-      <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-        ↳
-      </span>
+    <li className="flex items-center gap-[7px] text-[11.5px] text-muted">
+      <Icon.Sparkle className="h-[13px] w-[13px] flex-none text-sage" />
       <span className="truncate">{activity.summary}</span>
     </li>
   );
 }
 
 /// Render assistant text, turning `[[note path]]` citations into clickable
-/// links that open the cited note in the left pane.
+/// links that open the cited note in the reference pane.
 function CitedText({ text }: { text: string }) {
   const openNote = useFormationStore((s) => s.openNote);
   // Split on [[...]] while keeping the delimiters.
@@ -281,9 +346,9 @@ function CitedText({ text }: { text: string }) {
               onClick={() => {
                 openNote(notePath).catch((e) => console.error("open cited note failed:", e));
               }}
-              className="rounded bg-zinc-200 px-1 font-medium text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600"
+              className="rounded-md bg-accent-tint px-2 font-sans text-[12.5px] font-semibold text-accent-ink"
             >
-              {notePath}
+              {basename(notePath)}
             </button>
           );
         }
@@ -292,4 +357,10 @@ function CitedText({ text }: { text: string }) {
       })}
     </>
   );
+}
+
+/// The display name for a note path: the basename without its `.md` extension.
+function basename(path: string): string {
+  const last = path.split("/").pop() ?? path;
+  return last.replace(/\.md$/i, "");
 }

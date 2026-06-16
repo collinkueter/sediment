@@ -1,5 +1,6 @@
 import {
   type AuditEntry,
+  type ChangedNote,
   type DailyNoteAppendedPayload,
   type FormationNote,
   type Task,
@@ -43,6 +44,10 @@ export interface ChatTurn {
   pending: boolean;
   /** The audit-entry id once the turn completes — drives the quiet undo. */
   turnId?: string;
+  /** Notes this turn changed on disk — drives the inline receipt. */
+  changedNotes?: ChangedNote[];
+  /** How many facts the turn recorded — drives the inline receipt. */
+  recordedFactCount?: number;
   /** Set when the turn failed; drives the inline retry affordance. */
   failure?: ChatFailure;
 }
@@ -57,8 +62,14 @@ interface ChatState {
   appendReply: (id: string, text: string) => void;
   /** Append a tool-activity line to a turn's trail. */
   appendActivity: (id: string, activity: ToolActivity) => void;
-  /** Mark a turn complete: set its authoritative reply and audit turn id. */
-  completeTurn: (id: string, reply: string, turnId: string) => void;
+  /** Mark a turn complete: set its reply, audit turn id, and receipt fields. */
+  completeTurn: (
+    id: string,
+    reply: string,
+    turnId: string,
+    changedNotes: ChangedNote[],
+    recordedFactCount: number,
+  ) => void;
   /** Mark a turn as failed so it can be retried. */
   failTurn: (id: string, failure: ChatFailure) => void;
   /** Clear a turn's failure + partial state so it can be re-run in place. */
@@ -89,9 +100,11 @@ export const useChatStore = create<ChatState>((set) => ({
         t.id === id ? { ...t, activity: [...t.activity, activity] } : t,
       ),
     })),
-  completeTurn: (id, reply, turnId) =>
+  completeTurn: (id, reply, turnId, changedNotes, recordedFactCount) =>
     set((state) => ({
-      turns: state.turns.map((t) => (t.id === id ? { ...t, reply, turnId, pending: false } : t)),
+      turns: state.turns.map((t) =>
+        t.id === id ? { ...t, reply, turnId, changedNotes, recordedFactCount, pending: false } : t,
+      ),
     })),
   failTurn: (id, failure) =>
     set((state) => ({

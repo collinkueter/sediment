@@ -1,3 +1,4 @@
+import { Icon } from "@/components/icons";
 import { useFormationStore } from "@/lib/store";
 import { type ClaudeCodeStatus, type CopilotStatus, tauri } from "@/lib/tauri";
 import { useEffect, useMemo, useState } from "react";
@@ -28,8 +29,8 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
   }
 
   return (
-    <div className="flex h-full w-full items-center justify-center bg-zinc-50 dark:bg-zinc-950">
-      <div className="w-full max-w-lg space-y-6 rounded-lg border border-zinc-200 bg-white p-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="flex h-full w-full items-center justify-center bg-bg">
+      <div className="w-full max-w-lg space-y-6 rounded-lg border border-line bg-raised p-8 shadow-sm">
         <Stepper current={step} />
         {step === "welcome" && <Welcome onNext={() => setStep("formation")} />}
         {step === "formation" && <FormationStep onPick={pick} />}
@@ -52,19 +53,14 @@ function Stepper({ current }: { current: Step }) {
   );
   const currentIdx = steps.findIndex((s) => s.id === current);
   return (
-    <ol className="flex items-center justify-between text-[10px] uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+    <ol className="flex items-center justify-between text-[10px] uppercase tracking-wider text-faint">
       {steps.map((s, i) => {
         const reached = i <= currentIdx;
         return (
-          <li
-            key={s.id}
-            className={`flex items-center gap-1 ${reached ? "text-zinc-700 dark:text-zinc-300" : ""}`}
-          >
+          <li key={s.id} className={`flex items-center gap-1 ${reached ? "text-ink-soft" : ""}`}>
             <span
               className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] ${
-                reached
-                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                  : "border border-zinc-300 dark:border-zinc-700"
+                reached ? "bg-accent text-white" : "border border-line-strong text-faint"
               }`}
             >
               {i + 1}
@@ -80,10 +76,8 @@ function Stepper({ current }: { current: Step }) {
 function Welcome({ onNext }: { onNext: () => void }) {
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
-        Welcome to Sediment
-      </h1>
-      <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+      <h1 className="font-serif text-2xl font-semibold text-ink">Welcome to Sediment</h1>
+      <p className="text-sm leading-relaxed text-ink-soft">
         Sediment is a desktop note-taking app where the primary input is conversation. You chat with
         an AI agent; it grounds itself in your notes, records what it learns, and questions you when
         something is unclear or contradicts what it already knows. The conversation runs on your
@@ -92,7 +86,7 @@ function Welcome({ onNext }: { onNext: () => void }) {
       <button
         type="button"
         onClick={onNext}
-        className="w-full rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+        className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-ink"
       >
         Get started
       </button>
@@ -103,16 +97,21 @@ function Welcome({ onNext }: { onNext: () => void }) {
 function FormationStep({ onPick }: { onPick: () => Promise<void> }) {
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Pick a formation</h2>
-      <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+      <h2 className="font-serif text-lg font-semibold text-ink">Pick a formation</h2>
+      <p className="text-sm leading-relaxed text-ink-soft">
         A formation is a folder of markdown notes. Sediment is Obsidian-compatible — point it at a
         new folder or one that already holds your notes. We'll create a{" "}
         <code className="font-mono">.chat-notes/</code> subdirectory for app state.
       </p>
       <button
         type="button"
-        onClick={() => onPick().catch((e) => console.error("pick failed:", e))}
-        className="w-full rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+        onClick={() =>
+          onPick().catch((e: unknown) => {
+            // pick errors are surfaced by the native dialog — no UI needed
+            void e;
+          })
+        }
+        className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-ink"
       >
         Choose folder…
       </button>
@@ -152,32 +151,22 @@ function EngineStep({ onNext }: { onNext: () => void }) {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
-        Set up a conversation engine
-      </h2>
-      <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+      <h2 className="font-serif text-lg font-semibold text-ink">Set up a conversation engine</h2>
+      <p className="text-sm leading-relaxed text-ink-soft">
         Sediment runs the agent on an agentic CLI you've installed yourself. You don't need both —
         either one works. You can change this later in Settings.
       </p>
 
       {!checked ? (
-        <p className="text-xs text-zinc-400 dark:text-zinc-500">Checking your machine…</p>
+        <p className="text-xs text-faint">Checking your machine…</p>
       ) : (
         <ul className="space-y-2">
-          <li className="rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+          <li className="rounded-md border border-line px-3 py-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                Claude Code
-              </span>
+              <span className="text-sm font-medium text-ink">Claude Code</span>
               <EngineBadge ready={claudeReady} />
             </div>
-            <p
-              className={`mt-1 text-[11px] ${
-                claudeReady
-                  ? "text-emerald-600 dark:text-emerald-400"
-                  : "text-zinc-500 dark:text-zinc-400"
-              }`}
-            >
+            <p className={`mt-1 text-[11px] ${claudeReady ? "text-sage" : "text-muted"}`}>
               {!claudeCode?.installed
                 ? "Install Claude Code from claude.com/claude-code."
                 : !claudeCode.logged_in
@@ -185,20 +174,12 @@ function EngineStep({ onNext }: { onNext: () => void }) {
                   : `Connected as ${claudeCode.email} · ${claudeCode.subscription_type} subscription.`}
             </p>
           </li>
-          <li className="rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+          <li className="rounded-md border border-line px-3 py-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                GitHub Copilot
-              </span>
+              <span className="text-sm font-medium text-ink">GitHub Copilot</span>
               <EngineBadge ready={copilotReady} />
             </div>
-            <p
-              className={`mt-1 text-[11px] ${
-                copilotReady
-                  ? "text-emerald-600 dark:text-emerald-400"
-                  : "text-zinc-500 dark:text-zinc-400"
-              }`}
-            >
+            <p className={`mt-1 text-[11px] ${copilotReady ? "text-sage" : "text-muted"}`}>
               {!copilot?.installed
                 ? "Install with `npm install -g @github/copilot`."
                 : "Installed — run `copilot login` if turns fail."}
@@ -208,12 +189,13 @@ function EngineStep({ onNext }: { onNext: () => void }) {
       )}
 
       {checked && anyReady && (
-        <p className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-300">
-          ✓ You're ready to chat.
+        <p className="flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-[11px] text-sage bg-sage-tint">
+          <Icon.Check className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          You're ready to chat.
         </p>
       )}
       {checked && !anyReady && (
-        <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-300">
+        <p className="rounded-md border border-line px-3 py-2 text-[11px] text-gold bg-gold-tint">
           No engine is ready yet. You can finish onboarding and set one up later in Settings — turns
           will fail until you do.
         </p>
@@ -223,7 +205,7 @@ function EngineStep({ onNext }: { onNext: () => void }) {
         type="button"
         onClick={onNext}
         disabled={!checked}
-        className="w-full rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+        className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-ink disabled:opacity-50"
       >
         {anyReady ? "Continue" : "Set up later in Settings"}
       </button>
@@ -235,14 +217,15 @@ function EngineBadge({ ready }: { ready: boolean }) {
   return ready ? (
     <span
       aria-label="Ready"
-      className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+      className="flex items-center gap-1 rounded-full bg-sage-tint px-1.5 py-0.5 text-[10px] font-medium text-sage"
     >
-      ✓ Ready
+      <Icon.Check className="h-2.5 w-2.5" aria-hidden />
+      Ready
     </span>
   ) : (
     <span
       aria-label="Not ready"
-      className="rounded-full bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+      className="rounded-full border border-line px-1.5 py-0.5 text-[10px] font-medium text-muted"
     >
       Not ready
     </span>
@@ -252,8 +235,8 @@ function EngineBadge({ ready }: { ready: boolean }) {
 function DoneStep({ busy, onFinish }: { busy: boolean; onFinish: () => void }) {
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">You're set</h2>
-      <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+      <h2 className="font-serif text-lg font-semibold text-ink">You're set</h2>
+      <p className="text-sm leading-relaxed text-ink-soft">
         Next, Sediment checks that the local embedding model is installed and downloads it if
         missing — it powers note search.
       </p>
@@ -261,7 +244,7 @@ function DoneStep({ busy, onFinish }: { busy: boolean; onFinish: () => void }) {
         type="button"
         onClick={onFinish}
         disabled={busy}
-        className="w-full rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+        className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-ink disabled:opacity-50"
       >
         {busy ? "Saving…" : "Open Sediment"}
       </button>

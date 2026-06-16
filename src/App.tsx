@@ -1,16 +1,17 @@
 import { AuditLog } from "@/components/AuditLog";
 import { ChatPane } from "@/components/ChatPane";
+import { CommandPalette } from "@/components/CommandPalette";
 import { FileTree } from "@/components/FileTree";
 import { FormationPicker } from "@/components/FormationPicker";
-import { IndexProgress } from "@/components/IndexProgress";
+import { InFocusBar } from "@/components/InFocusBar";
 import { ModelSetup } from "@/components/ModelSetup";
 import { NoteViewer } from "@/components/NoteViewer";
 import { Onboarding } from "@/components/Onboarding";
 import { ReminderToast } from "@/components/ReminderToast";
 import { RemindersPopover } from "@/components/RemindersPopover";
 import { SettingsModal } from "@/components/SettingsModal";
+import { TitleBar } from "@/components/TitleBar";
 import { UndoToast } from "@/components/UndoToast";
-import { WorkingSetPanel } from "@/components/WorkingSetPanel";
 import {
   useAuditStore,
   useFormationStore,
@@ -18,16 +19,31 @@ import {
   useWorkingSetStore,
 } from "@/lib/store";
 import { type ModelReadiness, type Task, tauri } from "@/lib/tauri";
+import { useUiStore } from "@/lib/ui";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface FormationChangeEvent {
   kind: string;
   paths: string[];
 }
 
+const LEFT_MIN = 200;
+const LEFT_MAX = 360;
+const RIGHT_MIN = 300;
+const RIGHT_MAX = 560;
+
+function clamp(v: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, v));
+}
+
+function readWidth(key: string, fallback: number, min: number, max: number) {
+  if (typeof window === "undefined") return fallback;
+  const v = Number(window.localStorage.getItem(key));
+  return Number.isFinite(v) && v > 0 ? clamp(v, min, max) : fallback;
+}
+
 export default function App() {
-  const [version, setVersion] = useState<string>("");
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   const restore = useFormationStore((s) => s.restore);
   const handleExternalChange = useFormationStore((s) => s.handleExternalChange);
@@ -37,21 +53,23 @@ export default function App() {
   const setWorkingSet = useWorkingSetStore((s) => s.setWorkingSet);
   const [modelReadiness, setModelReadiness] = useState<ModelReadiness | null>(null);
   const [modelsChecked, setModelsChecked] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [remindersOpen, setRemindersOpen] = useState(false);
   const refreshReminders = useRemindersStore((s) => s.refresh);
   const showDueToast = useRemindersStore((s) => s.showDueToast);
   const openTaskCount = useRemindersStore((s) => s.tasks.filter((t) => t.status === "open").length);
 
+  const settingsOpen = useUiStore((s) => s.settingsOpen);
+  const closeSettings = useUiStore((s) => s.closeSettings);
+  const remindersOpen = useUiStore((s) => s.remindersOpen);
+  const closeReminders = useUiStore((s) => s.closeReminders);
+  const togglePalette = useUiStore((s) => s.togglePalette);
+  const toggleNotePane = useUiStore((s) => s.toggleNotePane);
+  const notePaneCollapsed = useUiStore((s) => s.notePaneCollapsed);
+  const closeAllOverlays = useUiStore((s) => s.closeAllOverlays);
+
   useEffect(() => {
-    tauri
-      .appVersion()
-      .then(setVersion)
-      .catch(() => setVersion("?"));
     restore().catch((e) => console.error("restore formation failed:", e));
-    // Kick the Ollama daemon awake in the background so the first chat
-    // message doesn't pay the cold-start latency. Errors are non-fatal —
-    // the chat pane surfaces them with bootstrap guidance.
+    // Kick the Ollama daemon awake so the first chat message doesn't pay the
+    // cold-start latency. Errors are non-fatal — chat surfaces them.
     tauri.ollamaEnsureRunning().catch((e) => console.warn("ollama ensure failed:", e));
     tauri
       .getOnboardingState()
@@ -60,7 +78,6 @@ export default function App() {
   }, [restore]);
 
   useEffect(() => {
-    // Subscribe to the Rust core's debounced file watcher.
     const unlistenP = listen<FormationChangeEvent>("formation-change", (event) => {
       handleExternalChange(event.payload.paths).catch((e) =>
         console.error("external change handler failed:", e),
@@ -72,18 +89,12 @@ export default function App() {
   }, [handleExternalChange]);
 
   useEffect(() => {
-    // Load the audit log for the open formation. It is refreshed after each
-    // conversational turn and after any undo by the audit store itself.
     if (formationPath) {
       refreshAudit().catch(() => {});
     }
   }, [formationPath, refreshAudit]);
 
   useEffect(() => {
-    // Load reminders for the open formation, and surface a toast + refresh
-    // whenever the scheduler fires one. (A turn that records a task refreshes
-    // the list directly — see ChatPane.) The listener is only active while a
-    // formation is open; without one there's nothing the scheduler could fire.
     if (!formationPath) return;
     refreshReminders().catch(() => {});
     const dueP = listen<Task>("reminder-due", (event) => {
@@ -96,9 +107,6 @@ export default function App() {
   }, [formationPath, refreshReminders, showDueToast]);
 
   useEffect(() => {
-    // Subscribe to daily-note-appended events from the indexer. The audit
-    // store's setup action wires the listener and arms the quiet undo toast.
-    // Only active while a formation is open — same pattern as reminder-due.
     if (!formationPath) return;
     const unlistenP = setupAudit();
     return () => {
@@ -107,9 +115,6 @@ export default function App() {
   }, [formationPath, setupAudit]);
 
   useEffect(() => {
-    // Populate the Working Set panel as soon as a formation is open.
-    // Refreshed after every chat turn by ChatPane. This initial load
-    // covers the launch/restore path.
     if (!formationPath) return;
     tauri
       .getWorkingSet()
@@ -117,9 +122,24 @@ export default function App() {
       .catch(() => {});
   }, [formationPath, setWorkingSet]);
 
+  // Global shortcuts: ⌘K command palette, ⌘\ toggle note pane, Esc closes overlays.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        togglePalette();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+        e.preventDefault();
+        toggleNotePane();
+      } else if (e.key === "Escape") {
+        closeAllOverlays();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [togglePalette, toggleNotePane, closeAllOverlays]);
+
   const runModelCheck = useCallback(() => {
-    // Check the local embedding model is installed. Re-run on launch,
-    // formation switch, and a models-directory change in Settings.
     if (onboardingComplete !== true || !formationPath) return;
     setModelsChecked(false);
     tauri
@@ -136,12 +156,9 @@ export default function App() {
     runModelCheck();
   }, [runModelCheck]);
 
-  // Show onboarding until the user finishes it. `null` = still loading state from disk.
   if (onboardingComplete === false) {
     return <Onboarding onComplete={() => setOnboardingComplete(true)} />;
   }
-
-  // With a formation open, hold the app behind the model check.
   if (onboardingComplete === true && formationPath && !modelsChecked) {
     return <CheckingModels />;
   }
@@ -150,113 +167,144 @@ export default function App() {
   }
 
   return (
-    <div className="relative flex h-full w-full flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
-      <TitleBar
-        version={version}
-        reminderCount={openTaskCount}
-        onToggleReminders={() => setRemindersOpen((o) => !o)}
-        onOpenSettings={() => setSettingsOpen(true)}
-      />
+    <div className="relative flex h-full w-full flex-col bg-bg text-ink">
+      <TitleBar openTaskCount={openTaskCount} />
+
       {remindersOpen && (
         <>
           <button
             type="button"
             aria-label="Close reminders"
             className="fixed inset-0 z-40 cursor-default"
-            onClick={() => setRemindersOpen(false)}
+            onClick={closeReminders}
           />
-          <RemindersPopover onClose={() => setRemindersOpen(false)} />
+          <RemindersPopover onClose={closeReminders} />
         </>
       )}
+
       <main className="flex min-h-0 flex-1">
-        <section className="flex basis-3/5 border-r border-zinc-200 dark:border-zinc-800">
-          {formationPath ? (
-            <>
-              <FileTree />
-              <div className="min-h-0 flex-1">
-                <NoteViewer />
-              </div>
-            </>
-          ) : (
-            <FormationPicker />
-          )}
-        </section>
-        <section className="flex basis-2/5 flex-col">
-          <WorkingSetPanel />
-          <div className="min-h-0 flex-1">
-            <ChatPane />
-          </div>
-        </section>
+        {formationPath ? <Workspace collapsedNote={notePaneCollapsed} /> : <FormationPicker />}
       </main>
+
       <AuditLog />
+      <CommandPalette />
       <UndoToast />
       <ReminderToast />
       {settingsOpen && (
-        <SettingsModal
-          onClose={() => setSettingsOpen(false)}
-          onModelConfigChanged={runModelCheck}
-        />
+        <SettingsModal onClose={closeSettings} onModelConfigChanged={runModelCheck} />
       )}
+    </div>
+  );
+}
+
+/** The three-column resizable workspace: Formation · Conversation (hero) · Note. */
+function Workspace({ collapsedNote }: { collapsedNote: boolean }) {
+  const [leftWidth, setLeftWidth] = useState(() =>
+    readWidth("sediment.leftWidth", 240, LEFT_MIN, LEFT_MAX),
+  );
+  const [rightWidth, setRightWidth] = useState(() =>
+    readWidth("sediment.rightWidth", 392, RIGHT_MIN, RIGHT_MAX),
+  );
+
+  const persist = useCallback((key: string, value: number) => {
+    window.localStorage.setItem(key, String(Math.round(value)));
+  }, []);
+
+  return (
+    <div className="flex min-h-0 w-full flex-1">
+      <aside className="flex min-h-0 flex-none flex-col" style={{ width: leftWidth }}>
+        <FileTree />
+      </aside>
+      <ResizeDivider
+        onDelta={(dx) => setLeftWidth((w) => clamp(w + dx, LEFT_MIN, LEFT_MAX))}
+        onCommit={() => persist("sediment.leftWidth", leftWidth)}
+      />
+
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
+        <InFocusBar />
+        <div className="min-h-0 flex-1">
+          <ChatPane />
+        </div>
+      </section>
+
+      {!collapsedNote && (
+        <>
+          <ResizeDivider
+            onDelta={(dx) => setRightWidth((w) => clamp(w - dx, RIGHT_MIN, RIGHT_MAX))}
+            onCommit={() => persist("sediment.rightWidth", rightWidth)}
+          />
+          <aside className="flex min-h-0 flex-none flex-col" style={{ width: rightWidth }}>
+            <NoteViewer />
+          </aside>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** A draggable column divider with a hairline that lights up on hover. */
+function ResizeDivider({
+  onDelta,
+  onCommit,
+}: {
+  onDelta: (dx: number) => void;
+  onCommit: () => void;
+}) {
+  const last = useRef(0);
+  const dragging = useRef(false);
+
+  // Keyboard resize: arrow keys nudge the boundary in 24px steps.
+  function onKeyDown(e: React.KeyboardEvent) {
+    const step = e.shiftKey ? 64 : 24;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      onDelta(-step);
+      onCommit();
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      onDelta(step);
+      onCommit();
+    }
+  }
+
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: a draggable column splitter has no native element; role="separator" is the ARIA-correct choice
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize panel — arrow keys to adjust"
+      title="Drag, or focus and use arrow keys, to resize"
+      tabIndex={0}
+      className="group relative z-10 w-[7px] flex-none cursor-col-resize focus:outline-none"
+      onKeyDown={onKeyDown}
+      onPointerDown={(e) => {
+        dragging.current = true;
+        last.current = e.clientX;
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        if (!dragging.current) return;
+        const dx = e.clientX - last.current;
+        last.current = e.clientX;
+        if (dx !== 0) onDelta(dx);
+      }}
+      onPointerUp={(e) => {
+        if (!dragging.current) return;
+        dragging.current = false;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+        onCommit();
+      }}
+    >
+      <span className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line transition-colors group-hover:bg-accent group-focus:bg-accent" />
+      <span className="pointer-events-none absolute top-1/2 left-1/2 h-8 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent opacity-0 transition-opacity group-hover:opacity-90 group-focus:opacity-90" />
     </div>
   );
 }
 
 function CheckingModels() {
   return (
-    <div className="flex h-full w-full items-center justify-center bg-zinc-50 text-sm text-zinc-400 dark:bg-zinc-950 dark:text-zinc-500">
+    <div className="flex h-full w-full items-center justify-center bg-bg text-sm text-muted">
       Checking models…
     </div>
-  );
-}
-
-function TitleBar({
-  version,
-  reminderCount,
-  onToggleReminders,
-  onOpenSettings,
-}: {
-  version: string;
-  reminderCount: number;
-  onToggleReminders: () => void;
-  onOpenSettings: () => void;
-}) {
-  const formationPath = useFormationStore((s) => s.formationPath);
-  return (
-    <header
-      data-tauri-drag-region
-      className="flex h-9 items-center justify-center border-b border-zinc-200 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
-    >
-      <span data-tauri-drag-region>Sediment</span>
-      <span data-tauri-drag-region className="ml-2 text-zinc-300 dark:text-zinc-600">
-        v{version || "…"}
-      </span>
-      {formationPath && (
-        <span data-tauri-drag-region className="ml-3 truncate text-zinc-400 dark:text-zinc-500">
-          · {formationPath}
-        </span>
-      )}
-      <IndexProgress />
-      <button
-        type="button"
-        onClick={onToggleReminders}
-        aria-label="Reminders"
-        className="relative ml-auto rounded px-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-      >
-        <span aria-hidden>🔔</span>
-        {reminderCount > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-medium text-white">
-            {reminderCount}
-          </span>
-        )}
-      </button>
-      <button
-        type="button"
-        onClick={onOpenSettings}
-        aria-label="Settings"
-        className="mr-2 ml-1 rounded px-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-      >
-        ⚙
-      </button>
-    </header>
   );
 }

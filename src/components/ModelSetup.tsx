@@ -1,3 +1,4 @@
+import { Icon } from "@/components/icons";
 import { type ModelProgress, type ModelReadiness, type ModelRequirement, tauri } from "@/lib/tauri";
 import { useState } from "react";
 
@@ -42,20 +43,18 @@ export function ModelSetup({
   }
 
   return (
-    <div className="flex h-full w-full items-center justify-center bg-zinc-50 dark:bg-zinc-950">
-      <div className="w-full max-w-lg space-y-5 rounded-lg border border-zinc-200 bg-white p-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="flex h-full w-full items-center justify-center bg-bg">
+      <div className="w-full max-w-lg space-y-5 rounded-lg border border-line bg-raised p-8 shadow-sm">
         <div>
-          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
-            Set up your models
-          </h1>
-          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+          <h1 className="font-serif text-xl font-semibold text-ink">Set up your models</h1>
+          <p className="mt-1 text-sm text-ink-soft">
             Sediment needs the local embedding model that powers note search. It runs entirely on
             your machine — Sediment downloads it once.
           </p>
         </div>
 
         {blockedOnOllama && (
-          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-300">
+          <p className="rounded-md border border-line px-3 py-2 text-xs text-gold bg-gold-tint">
             Ollama isn't installed — install it from{" "}
             <span className="font-mono">ollama.com/download</span> and relaunch to download the
             embedding model.
@@ -68,7 +67,7 @@ export function ModelSetup({
           ))}
         </ul>
 
-        {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+        {error && <p className="text-xs text-red-600">{error}</p>}
 
         <div className="flex items-start justify-between gap-3">
           <div className="flex flex-col gap-1">
@@ -76,11 +75,11 @@ export function ModelSetup({
               type="button"
               onClick={onComplete}
               disabled={running}
-              className="text-left text-xs text-zinc-400 hover:text-zinc-600 disabled:opacity-40 dark:text-zinc-500 dark:hover:text-zinc-300"
+              className="text-left text-xs text-muted hover:text-ink-soft disabled:opacity-40"
             >
               Skip — note search disabled
             </button>
-            <p className="max-w-xs text-[10px] leading-snug text-zinc-400 dark:text-zinc-600">
+            <p className="max-w-xs text-[10px] leading-snug text-faint">
               Without the embedding model, semantic search and the agent's note-search tool won't
               work. You can install it later from Settings.
             </p>
@@ -89,7 +88,7 @@ export function ModelSetup({
             <button
               type="button"
               onClick={onComplete}
-              className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+              className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-ink"
             >
               Continue
             </button>
@@ -98,7 +97,7 @@ export function ModelSetup({
               type="button"
               onClick={() => void downloadAll()}
               disabled={running || blockedOnOllama}
-              className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+              className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-ink disabled:opacity-40"
             >
               {running
                 ? "Downloading…"
@@ -125,27 +124,33 @@ function RequirementRow({
       : undefined;
 
   return (
-    <li className="rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+    <li className="rounded-md border border-line px-3 py-2">
       <div className="flex items-center justify-between text-sm">
-        <span className="flex items-center gap-2 text-zinc-800 dark:text-zinc-200">
-          <span aria-hidden className={installed ? "text-emerald-500" : "text-zinc-400"}>
-            {installed ? "✓" : "○"}
-          </span>
+        <span className="flex items-center gap-2 text-ink">
+          {installed ? (
+            <Icon.Check
+              aria-hidden
+              className={`h-3.5 w-3.5 shrink-0 ${installed ? "text-sage" : "text-faint"}`}
+            />
+          ) : (
+            <span
+              aria-hidden
+              className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-line-strong"
+            />
+          )}
           {req.label}
         </span>
-        <span className="text-xs text-zinc-400 dark:text-zinc-500">
-          {installed ? "ready" : req.size_hint}
-        </span>
+        <span className="text-xs text-muted">{installed ? "ready" : req.size_hint}</span>
       </div>
       {progress && !progress.done && (
         <div className="mt-1.5">
-          <div className="h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+          <div className="h-1 overflow-hidden rounded-full bg-bg-sunk">
             <div
-              className="h-full bg-zinc-900 transition-all dark:bg-zinc-100"
+              className="h-full bg-accent transition-all"
               style={{ width: percent !== undefined ? `${percent}%` : "33%" }}
             />
           </div>
-          <p className="mt-1 truncate text-[10px] text-zinc-400 dark:text-zinc-500">
+          <p className="mt-1 truncate text-[10px] text-muted">
             {progress.phase}
             {percent !== undefined ? ` · ${percent}%` : ""}
           </p>

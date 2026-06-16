@@ -1,50 +1,88 @@
-import { useRemindersStore } from "@/lib/store";
-import type { Task } from "@/lib/tauri";
+import { Icon } from "@/components/icons";
+import { useFormationStore, useRemindersStore, useWorkingSetStore } from "@/lib/store";
+import type { OpenLoop, Task } from "@/lib/tauri";
+import { useUiStore } from "@/lib/ui";
 
-/// Dropdown panel listing every reminder, opened from the title-bar bell.
-/// Open tasks come first (overdue, then soonest-due, then undated); completed
-/// tasks follow, dimmed. Each open task can be completed or snoozed a day.
+/// Dropdown panel listing tasks & reminders, opened from the title-bar bell.
+/// Open tasks come first (overdue, then soonest-due, then undated) under "Due
+/// soon"; each can be completed or snoozed a day. Below them, an "Open loops"
+/// section surfaces unresolved threads the agent noticed.
 export function RemindersPopover({ onClose }: { onClose: () => void }) {
   const tasks = useRemindersStore((s) => s.tasks);
+  const openLoops = useWorkingSetStore((s) => s.workingSet)?.openLoops ?? [];
+  const notes = useFormationStore((s) => s.notes);
+  const openNote = useFormationStore((s) => s.openNote);
   const open = tasks.filter((t) => t.status === "open").sort(byDue);
   const done = tasks.filter((t) => t.status === "done");
 
+  // "View all" opens the Tasks note, the canonical home of every task.
+  const tasksNote = notes.find((n) => n.relative_path.replace(/^.*\//, "") === "Tasks.md");
+  function viewAll() {
+    if (tasksNote) {
+      openNote(tasksNote.relative_path).catch(() => {});
+      onClose();
+    }
+  }
+
   return (
-    <div className="absolute top-9 right-2 z-50 w-80 overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
-      <header className="flex items-center justify-between border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
-        <span className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Reminders</span>
-        <button
-          type="button"
-          aria-label="Close reminders"
-          onClick={onClose}
-          className="rounded px-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-        >
-          ✕
-        </button>
+    <div className="absolute top-12 right-3 z-50 w-[344px] overflow-hidden rounded-2xl border border-line-strong bg-raised shadow-2xl">
+      <header className="flex items-center justify-between border-line border-b px-4 py-[13px]">
+        <b className="font-semibold text-[13px] text-ink">Tasks &amp; reminders</b>
+        <div className="flex items-center gap-1">
+          {tasksNote && (
+            <button
+              type="button"
+              onClick={viewAll}
+              className="cursor-pointer font-semibold text-[11.5px] text-accent-ink hover:underline"
+            >
+              View all
+            </button>
+          )}
+          <button
+            type="button"
+            aria-label="Close reminders"
+            onClick={onClose}
+            className="grid h-6 w-6 place-items-center rounded-md text-muted hover:bg-bg-sunk hover:text-ink"
+          >
+            <Icon.X className="h-4 w-4" />
+          </button>
+        </div>
       </header>
-      <div className="max-h-96 overflow-auto py-1">
-        {open.length === 0 && done.length === 0 ? (
-          <p className="px-3 py-4 text-xs text-zinc-400 dark:text-zinc-500">
+
+      <div className="max-h-[420px] overflow-y-auto px-2 pt-1.5 pb-2.5">
+        {open.length === 0 && done.length === 0 && openLoops.length === 0 ? (
+          <p className="px-3 py-4 text-muted text-xs">
             No reminders yet. When you mention a reminder in conversation, Sediment records it here.
           </p>
         ) : (
           <>
+            {(open.length > 0 || done.length > 0) && <SectionLabel>Due soon</SectionLabel>}
             {open.map((task) => (
               <ReminderRow key={task.id} task={task} />
             ))}
-            {done.length > 0 && (
-              <div className="mt-1 border-t border-zinc-100 pt-1 dark:border-zinc-800">
-                <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-zinc-400 dark:text-zinc-600">
-                  Completed
-                </p>
-                {done.map((task) => (
-                  <ReminderRow key={task.id} task={task} />
+            {done.map((task) => (
+              <ReminderRow key={task.id} task={task} />
+            ))}
+
+            {openLoops.length > 0 && (
+              <>
+                <SectionLabel>Open loops</SectionLabel>
+                {openLoops.map((loop) => (
+                  <OpenLoopRow key={loop.id} loop={loop} />
                 ))}
-              </div>
+              </>
             )}
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="px-3.5 pt-[11px] pb-1 font-bold text-[10px] text-faint uppercase tracking-[0.06em]">
+      {children}
     </div>
   );
 }
@@ -54,54 +92,79 @@ function ReminderRow({ task }: { task: Task }) {
   const snooze = useRemindersStore((s) => s.snooze);
   const due = dueInfo(task.due);
   const isDone = task.status === "done";
+  const soon = due ? due.overdue || due.soon : false;
 
   return (
-    <div className="flex items-start gap-2 px-3 py-1.5 hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
-      <span aria-hidden className="mt-0.5 text-xs text-zinc-400 dark:text-zinc-500">
-        {isDone ? "☑" : "☐"}
-      </span>
+    <div className="group flex gap-2.5 rounded-[9px] px-2.5 py-2 hover:bg-bg-sunk">
+      <button
+        type="button"
+        aria-label={isDone ? "Completed" : "Complete task"}
+        onClick={() => !isDone && void complete(task.id)}
+        disabled={isDone}
+        className={`mt-0.5 grid h-[17px] w-[17px] shrink-0 place-items-center rounded-md border ${
+          isDone
+            ? "border-sage bg-sage text-white"
+            : "border-line-strong bg-raised text-transparent"
+        }`}
+      >
+        <Icon.Check className="h-[11px] w-[11px]" strokeWidth={3} />
+      </button>
+
       <div className="min-w-0 flex-1">
-        <p
-          className={`truncate text-xs ${
-            isDone
-              ? "text-zinc-400 line-through dark:text-zinc-600"
-              : "text-zinc-700 dark:text-zinc-200"
-          }`}
-        >
+        <p className={`text-[13px] ${isDone ? "text-faint line-through" : "text-ink"}`}>
           {task.title}
         </p>
-        {due && (
-          <p
-            className={`text-[10px] ${
-              due.overdue && !isDone
-                ? "text-rose-600 dark:text-rose-400"
-                : "text-zinc-400 dark:text-zinc-500"
-            }`}
-          >
-            {due.overdue && !isDone ? `Overdue · ${due.label}` : `Due ${due.label}`}
-          </p>
-        )}
-      </div>
-      {!isDone && (
-        <div className="flex shrink-0 gap-1">
-          <button
-            type="button"
-            onClick={() => void complete(task.id)}
-            className="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-700"
-          >
-            Done
-          </button>
+        {!isDone && (
           <button
             type="button"
             onClick={() => void snooze(task.id, tomorrow())}
-            className="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-700"
+            className="mt-0.5 text-[11.5px] text-muted opacity-0 transition-opacity hover:text-accent-ink group-hover:opacity-100"
           >
             Snooze 1d
           </button>
-        </div>
+        )}
+      </div>
+
+      {due && !isDone && (
+        <span
+          className={`self-start whitespace-nowrap rounded-md px-2 py-0.5 font-mono text-[10.5px] font-medium ${
+            soon ? "bg-accent-tint text-accent-ink" : "bg-gold-tint text-gold"
+          }`}
+        >
+          {due.overdue ? `Overdue · ${due.label}` : due.label}
+        </span>
       )}
     </div>
   );
+}
+
+function OpenLoopRow({ loop }: { loop: OpenLoop }) {
+  const openSettings = useUiStore((s) => s.openSettings);
+  // The engine-selection loop deep-links to Settings; other loops are inert.
+  const isEngineLoop = /engine/i.test(loop.title);
+
+  const inner = (
+    <>
+      <span className="mt-0.5 grid h-[17px] w-[17px] shrink-0 place-items-center rounded-full border border-sage border-dashed" />
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] text-ink">{loop.title}</p>
+        {loop.context && <p className="mt-px text-[11.5px] text-muted">{loop.context}</p>}
+      </div>
+    </>
+  );
+
+  if (isEngineLoop) {
+    return (
+      <button
+        type="button"
+        onClick={openSettings}
+        className="flex w-full gap-2.5 rounded-[9px] px-2.5 py-2 text-left hover:bg-bg-sunk"
+      >
+        {inner}
+      </button>
+    );
+  }
+  return <div className="flex gap-2.5 rounded-[9px] px-2.5 py-2 hover:bg-bg-sunk">{inner}</div>;
 }
 
 /// Sort key for open tasks: dated tasks ascending (overdue → soonest), then
@@ -113,12 +176,15 @@ function byDue(a: Task, b: Task): number {
   return a.created.localeCompare(b.created);
 }
 
-function dueInfo(due: string | null): { label: string; overdue: boolean } | null {
+function dueInfo(due: string | null): { label: string; overdue: boolean; soon: boolean } | null {
   if (!due) return null;
   const date = new Date(due);
+  const ms = date.getTime() - Date.now();
   return {
     label: date.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-    overdue: date.getTime() < Date.now(),
+    overdue: ms < 0,
+    // "Soon" = due within the next two days; tinted with the accent.
+    soon: ms >= 0 && ms < 2 * 24 * 60 * 60 * 1000,
   };
 }
 

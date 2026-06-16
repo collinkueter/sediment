@@ -31,15 +31,12 @@ export function IndexProgress() {
   return (
     <span
       data-tauri-drag-region
-      className="ml-3 flex items-center gap-1.5 text-zinc-400 dark:text-zinc-500"
+      className="ml-3 flex items-center gap-1.5 text-[11px] text-muted"
       title={progress.current_path || "indexing"}
     >
-      <span
-        aria-hidden
-        className="h-1.5 w-16 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"
-      >
+      <span aria-hidden className="h-1.5 w-16 overflow-hidden rounded-full bg-line">
         <span
-          className="block h-full rounded-full bg-zinc-500 transition-[width] duration-200 dark:bg-zinc-400"
+          className="block h-full rounded-full bg-accent transition-[width] duration-200"
           style={{ width: `${pct}%` }}
         />
       </span>

@@ -118,6 +118,13 @@ body::after {
 
 .tb-spacer { flex: 1; }
 .tb-actions { display: flex; align-items: center; gap: 2px; -webkit-app-region: no-drag; }
+.theme-seg { display: flex; background: var(--bg-sunk); border-radius: 8px; padding: 2px; margin-right: 6px; }
+.theme-seg button {
+  border: none; background: transparent; font: inherit; font-size: 11.5px; font-weight: 600;
+  color: var(--muted); padding: 4px 11px; border-radius: 6px; cursor: pointer; transition: color .14s;
+}
+.theme-seg button.on { background: var(--raised); color: var(--ink); box-shadow: var(--shadow); }
+.theme-seg button:hover:not(.on) { color: var(--ink); }
 .iconbtn {
   width: 30px; height: 30px; border-radius: 8px; border: none; background: transparent;
   color: var(--muted); display: grid; place-items: center; cursor: pointer;
@@ -404,20 +411,23 @@ body::after {
 .send:hover { background: var(--accent-ink); transform: translateY(-1px); }
 .send svg { width: 14px; height: 14px; }
 
-/* ── Floating undo toast ───────────────────────────────────────────── */
-.toast {
-  position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 14px; padding: 10px 12px 10px 16px;
-  background: var(--raised); border: 1px solid var(--line-strong); border-radius: 12px;
-  box-shadow: var(--shadow-pop); z-index: 200; font-size: 13px; color: var(--ink-soft);
+/* ── Turn receipt — undo affordance attached to the turn it describes ── */
+.receipt {
+  display: flex; align-items: center; gap: 9px; margin-left: 39px; margin-top: 6px; max-width: 100%;
+  padding: 7px 9px 7px 13px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 10px; font-size: 12px; color: var(--muted);
 }
-.toast .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sage); }
-.toast b { color: var(--ink); font-weight: 600; }
-.toast button {
-  border: 1px solid var(--line-strong); background: var(--surface); color: var(--accent-ink);
-  font: inherit; font-weight: 600; font-size: 12px; padding: 5px 12px; border-radius: 8px; cursor: pointer;
+.receipt > svg { width: 14px; height: 14px; color: var(--sage); flex: 0 0 14px; }
+.receipt .txt { min-width: 0; }
+.receipt b { color: var(--ink-soft); font-weight: 600; }
+.receipt .cite-mini { color: var(--accent-ink); font-weight: 600; }
+.receipt .undo {
+  margin-left: auto; flex: 0 0 auto; border: 1px solid var(--line-strong); background: var(--raised);
+  color: var(--accent-ink); font: inherit; font-weight: 600; font-size: 11.5px; padding: 4px 13px;
+  border-radius: 7px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
 }
-.toast button:hover { background: var(--accent-tint); border-color: var(--accent); }
+.receipt .undo svg { width: 12px; height: 12px; }
+.receipt .undo:hover { background: var(--accent-tint); border-color: var(--accent); }
 
 /* ── Mockup chrome (not part of the app) ───────────────────────────── */
 .controls {
@@ -456,6 +466,10 @@ body::after {
     </div>
     <div class="tb-spacer"></div>
     <div class="tb-actions">
+      <div class="theme-seg">
+        <button class="on" data-theme-btn="paper" onclick="setTheme('paper')">Paper</button>
+        <button data-theme-btn="strata" onclick="setTheme('strata')">Strata</button>
+      </div>
       <button class="iconbtn" title="Search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
       </button>
@@ -604,7 +618,7 @@ body::after {
       <!-- Working set -->
       <section class="wset">
         <div class="wset-head">
-          <span class="t">In play</span>
+          <span class="t">In focus</span>
           <span class="live"><i></i> live</span>
           <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>
         </div>
@@ -656,6 +670,11 @@ body::after {
               <span class="q">She owes you a PM intro for the referral — want me to set the lease decision to depend on that, and nudge you Thursday?</span>
             </div>
           </div>
+          <div class="receipt">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+            <span class="txt">Recorded <b>2 facts</b> · updated <span class="cite-mini">Keaton Vale</span> · logged to today's daily note</span>
+            <button class="undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>Undo</button>
+          </div>
         </div>
       </div>
 
@@ -673,29 +692,13 @@ body::after {
   </div>
 </div>
 
-<!-- Quiet undo toast -->
-<div class="toast">
-  <span class="dot"></span>
-  <span>Recorded <b>2 facts</b> and updated <b>1 note</b></span>
-  <button>Undo</button>
-</div>
-
-<!-- Mockup controls (not part of the app) -->
-<div class="controls">
-  <button id="t-paper" class="on" onclick="setTheme('paper')">Paper</button>
-  <button id="t-strata" onclick="setTheme('strata')">Strata</button>
-</div>
-
 <script>
 function setTheme(t){
   document.documentElement.setAttribute('data-theme', t);
-  document.getElementById('t-paper').classList.toggle('on', t==='paper');
-  document.getElementById('t-strata').classList.toggle('on', t==='strata');
+  document.querySelectorAll('[data-theme-btn]').forEach(b => b.classList.toggle('on', b.dataset.themeBtn === t));
 }
 // Make the divider grips feel real on hover even though resize is mocked.
-document.querySelectorAll('.divider').forEach(d=>{
-  d.title = 'Drag to resize';
-});
+document.querySelectorAll('.divider').forEach(d => { d.title = 'Drag to resize'; });
 </script>
 </body>
 </html>

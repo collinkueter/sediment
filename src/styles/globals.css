@@ -1,10 +1,110 @@
+/* ──────────────────────────────────────────────────────────────────────
+   Sediment — "Strata" design system
+   Warm, archival, editorial. Paper (light) / Strata (dark), toggled via
+   data-theme on <html>. Fraunces (voice/reading) · Hanken Grotesk (chrome)
+   · IBM Plex Mono (trace/keys).
+   ────────────────────────────────────────────────────────────────────── */
+@import "@fontsource-variable/fraunces";
+@import "@fontsource-variable/hanken-grotesk";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/400-italic.css";
 @import "tailwindcss";
 
-@theme {
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Code", monospace;
+/* Manual theme: `dark:` utilities follow data-theme="strata" rather than the
+   OS preference, so the in-app toggle is the single source of truth. */
+@custom-variant dark (&:where([data-theme="strata"], [data-theme="strata"] *));
+
+/* ── Token layer ─────────────────────────────────────────────────────── */
+:root,
+:root[data-theme="paper"] {
+  --bg: #f4f1ea;
+  --bg-sunk: #ece7dd;
+  --surface: #fbf9f4;
+  --raised: #ffffff;
+  --ink: #2a241d;
+  --ink-soft: #5d5446;
+  --muted: #877d6c;
+  --faint: #b0a591;
+  --line: #e6dfd2;
+  --line-strong: #d8cfbd;
+  --accent: #b4552d;
+  --accent-ink: #8c3f1d;
+  --accent-tint: #f2e4d9;
+  --gold: #a87f33;
+  --gold-tint: #f1e7d2;
+  --sage: #5d7068;
+  --sage-tint: #e2e8e2;
+  --warn: #9a6a1f;
+  --warn-tint: #f3e8cf;
+  --danger: #ad3a2e;
+  --danger-tint: #f5e0db;
+  --user-bg: #2a241d;
+  --user-ink: #f6f2ea;
+  --grain-opacity: 0.035;
 }
 
+:root[data-theme="strata"] {
+  --bg: #1a1814;
+  --bg-sunk: #141210;
+  --surface: #211e19;
+  --raised: #2a261f;
+  --ink: #ece4d6;
+  --ink-soft: #b6ac98;
+  --muted: #897f6e;
+  --faint: #62594b;
+  --line: #322d25;
+  --line-strong: #3f382d;
+  --accent: #db7d50;
+  --accent-ink: #ef9468;
+  --accent-tint: #3a281d;
+  --gold: #cda35e;
+  --gold-tint: #34291a;
+  --sage: #8aa399;
+  --sage-tint: #243029;
+  --warn: #d2a356;
+  --warn-tint: #352a18;
+  --danger: #e08975;
+  --danger-tint: #3a241f;
+  --user-bg: #ece4d6;
+  --user-ink: #211e19;
+  --grain-opacity: 0.05;
+}
+
+/* Expose tokens as Tailwind utilities (bg-surface, text-ink, border-line,
+   text-accent, font-serif, …). `inline` keeps them as live var() references
+   so they react to data-theme at runtime. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-sunk: var(--bg-sunk);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-tint: var(--accent-tint);
+  --color-gold: var(--gold);
+  --color-gold-tint: var(--gold-tint);
+  --color-sage: var(--sage);
+  --color-sage-tint: var(--sage-tint);
+  --color-warn: var(--warn);
+  --color-warn-tint: var(--warn-tint);
+  --color-danger: var(--danger);
+  --color-danger-tint: var(--danger-tint);
+  --color-user-bg: var(--user-bg);
+  --color-user-ink: var(--user-ink);
+
+  --font-sans: "Hanken Grotesk Variable", system-ui, -apple-system, sans-serif;
+  --font-serif: "Fraunces Variable", Georgia, serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ── Base ────────────────────────────────────────────────────────────── */
 html,
 body,
 #root {
@@ -17,124 +117,216 @@ body,
 
 body {
   font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: var(--color-zinc-50);
-  color: var(--color-zinc-900);
+  background-color: var(--bg);
+  color: var(--ink);
 }
 
-@media (prefers-color-scheme: dark) {
-  body {
-    background-color: var(--color-zinc-950);
-    color: var(--color-zinc-100);
+::selection {
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+
+/* "live" dot pulse for the In-focus bar. */
+@keyframes infocus-pulse {
+  0%,
+  100% {
+    opacity: 1;
   }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Paper-grain atmosphere over the whole app. */
+#root::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Custom scrollbars — thin, warm, unobtrusive. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
    Note preview — Obsidian-style rendered markdown for the note viewer.
-   Scoped to `.note-prose` so it never leaks into other UI surfaces.
+   Scoped to `.note-prose`. Reading column, Fraunces body.
    ────────────────────────────────────────────────────────────────────── */
 .note-prose {
-  font-size: 0.95rem;
-  line-height: 1.65;
-  max-width: 48rem;
+  font-family: var(--font-serif);
+  font-size: 15px;
+  line-height: 1.62;
+  max-width: 42rem;
   margin: 0 auto;
-  color: var(--color-zinc-800);
-}
-@media (prefers-color-scheme: dark) {
-  .note-prose {
-    color: var(--color-zinc-200);
-  }
+  color: var(--ink-soft);
 }
 
-.note-prose h1,
-.note-prose h2,
+.note-prose h1 {
+  font-family: var(--font-serif);
+  font-size: 1.7rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  margin: 0 0 0.2em;
+  color: var(--ink);
+}
+.note-prose h2 {
+  font-family: var(--font-serif);
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--accent-ink);
+  margin: 1.6em 0 0.55em;
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+}
+.note-prose h2::before {
+  content: "";
+  width: 0.9em;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0.6;
+  flex: 0 0 auto;
+}
 .note-prose h3,
 .note-prose h4,
 .note-prose h5,
 .note-prose h6 {
+  font-family: var(--font-serif);
   font-weight: 600;
   line-height: 1.25;
-  margin-top: 1.6em;
-  margin-bottom: 0.5em;
-  color: var(--color-zinc-900);
-}
-@media (prefers-color-scheme: dark) {
-  .note-prose h1,
-  .note-prose h2,
-  .note-prose h3,
-  .note-prose h4,
-  .note-prose h5,
-  .note-prose h6 {
-    color: var(--color-zinc-50);
-  }
-}
-.note-prose h1 {
-  font-size: 1.75rem;
-}
-.note-prose h2 {
-  font-size: 1.4rem;
+  margin: 1.3em 0 0.45em;
+  color: var(--ink);
 }
 .note-prose h3 {
-  font-size: 1.18rem;
+  font-size: 1rem;
 }
 .note-prose h4 {
-  font-size: 1.05rem;
-}
-.note-prose h5 {
   font-size: 0.95rem;
 }
+.note-prose h5,
 .note-prose h6 {
   font-size: 0.9rem;
-  color: var(--color-zinc-500);
+  color: var(--muted);
 }
-
 .note-prose > :first-child {
   margin-top: 0;
 }
 
 .note-prose p {
-  margin: 0.75em 0;
+  margin: 0.7em 0;
 }
 
 .note-prose ul,
 .note-prose ol {
   margin: 0.5em 0;
-  padding-left: 1.6em;
-}
-.note-prose ul {
-  list-style: disc;
+  padding-left: 0;
+  list-style: none;
 }
 .note-prose ol {
-  list-style: decimal;
+  counter-reset: ol;
 }
 .note-prose li {
-  margin: 0.15em 0;
+  position: relative;
+  padding: 0.15em 0 0.15em 1.25em;
+  margin: 0.1em 0;
+}
+.note-prose ul > li::before {
+  content: "";
+  position: absolute;
+  left: 0.25em;
+  top: 0.78em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.note-prose ol > li {
+  counter-increment: ol;
+}
+.note-prose ol > li::before {
+  content: counter(ol) ".";
+  position: absolute;
+  left: 0;
+  top: 0.15em;
+  color: var(--muted);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
 }
 .note-prose li > ul,
 .note-prose li > ol {
-  margin: 0.15em 0;
+  margin: 0.1em 0;
 }
 
-/* GFM task list — checkboxes inside <li class="task-list-item"> */
+/* GFM task list — checkboxes inside <li class="task-list-item">. Custom
+   checkbox look matching the daily-note checklist in the mockup. */
 .note-prose li.task-list-item {
   list-style: none;
-  margin-left: -1.4em;
+  padding-left: 1.7em;
+}
+.note-prose li.task-list-item::before {
+  display: none;
 }
 .note-prose li.task-list-item > input[type="checkbox"] {
-  margin-right: 0.5em;
-  vertical-align: middle;
-  cursor: pointer;
-  accent-color: var(--color-zinc-700);
+  position: absolute;
+  left: 0;
+  top: 0.28em;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border-radius: 5px;
+  border: 1.5px solid var(--line-strong);
+  background: var(--raised);
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  place-content: center;
+  cursor: default;
 }
-@media (prefers-color-scheme: dark) {
-  .note-prose li.task-list-item > input[type="checkbox"] {
-    accent-color: var(--color-zinc-300);
-  }
+.note-prose li.task-list-item > input[type="checkbox"]::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  transform: scale(0);
+  transform-origin: center;
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  background: var(--raised);
+}
+.note-prose li.task-list-item > input[type="checkbox"]:checked {
+  background: var(--sage);
+  border-color: var(--sage);
+}
+.note-prose li.task-list-item > input[type="checkbox"]:checked::before {
+  transform: scale(1);
+}
+.note-prose li.task-list-item:has(> input:checked) {
+  color: var(--faint);
+  text-decoration: line-through;
+  text-decoration-color: var(--line-strong);
 }
 
 .note-prose a {
-  color: var(--color-blue-600);
+  color: var(--accent-ink);
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
@@ -143,74 +335,49 @@ body {
 .note-prose a:hover {
   text-decoration-thickness: 2px;
 }
-@media (prefers-color-scheme: dark) {
-  .note-prose a {
-    color: var(--color-blue-400);
-  }
-}
 
-/* Wiki-links — slightly different shade so they stand apart from external.
-   Rendered as <button> for accessibility (it's a click-action, not nav), so
-   the rule resets button defaults to keep the link-like appearance. */
+/* Wiki-links — rendered as <button> (a click-action, not nav). Accent family,
+   underline, so they read as connective tissue between notes. */
 .note-prose .wikilink,
 .note-prose .wikilink-broken {
   background: none;
   border: 0;
-  padding: 0;
+  padding: 0 1px;
   font: inherit;
   cursor: pointer;
 }
 .note-prose .wikilink {
-  color: var(--color-violet-600);
+  color: var(--accent-ink);
+  font-weight: 500;
   text-decoration: none;
-  border-bottom: 1px solid var(--color-violet-300);
+  border-bottom: 1px solid var(--accent-tint);
 }
 .note-prose .wikilink:hover {
-  background-color: var(--color-violet-50);
-  border-bottom-color: var(--color-violet-500);
-}
-@media (prefers-color-scheme: dark) {
-  .note-prose .wikilink {
-    color: var(--color-violet-400);
-    border-bottom-color: var(--color-violet-700);
-  }
-  .note-prose .wikilink:hover {
-    background-color: rgba(124, 58, 237, 0.12);
-    border-bottom-color: var(--color-violet-400);
-  }
+  background-color: var(--accent-tint);
+  border-bottom-color: var(--accent);
 }
 .note-prose .wikilink-broken {
-  color: var(--color-red-500);
+  color: var(--muted);
   text-decoration: none;
-  border-bottom: 1px dashed var(--color-red-400);
+  border-bottom: 1px dashed var(--line-strong);
   cursor: help;
-}
-@media (prefers-color-scheme: dark) {
-  .note-prose .wikilink-broken {
-    color: var(--color-red-400);
-    border-bottom-color: var(--color-red-700);
-  }
 }
 
 .note-prose code {
   font-family: var(--font-mono);
-  font-size: 0.875em;
-  background-color: var(--color-zinc-100);
-  padding: 0.15em 0.35em;
+  font-size: 0.84em;
+  background-color: var(--bg-sunk);
+  padding: 0.12em 0.35em;
   border-radius: 4px;
-}
-@media (prefers-color-scheme: dark) {
-  .note-prose code {
-    background-color: var(--color-zinc-800);
-  }
 }
 .note-prose pre {
   margin: 0.85em 0;
   padding: 0.85em 1em;
-  background-color: var(--color-zinc-100);
-  border-radius: 6px;
+  background-color: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: 8px;
   overflow-x: auto;
-  font-size: 0.875em;
+  font-size: 0.84em;
   line-height: 1.5;
 }
 .note-prose pre code {
@@ -219,65 +386,45 @@ body {
   font-size: 1em;
   border-radius: 0;
 }
-@media (prefers-color-scheme: dark) {
-  .note-prose pre {
-    background-color: var(--color-zinc-900);
-  }
-}
 
 .note-prose blockquote {
   margin: 0.85em 0;
   padding: 0.4em 1em;
-  border-left: 3px solid var(--color-zinc-300);
-  color: var(--color-zinc-600);
+  border-left: 2.5px solid var(--accent);
+  background: var(--accent-tint);
+  border-radius: 0 8px 8px 0;
+  color: var(--accent-ink);
   font-style: italic;
-}
-@media (prefers-color-scheme: dark) {
-  .note-prose blockquote {
-    border-left-color: var(--color-zinc-600);
-    color: var(--color-zinc-400);
-  }
 }
 
 .note-prose hr {
   margin: 1.6em 0;
   border: 0;
-  border-top: 1px solid var(--color-zinc-200);
-}
-@media (prefers-color-scheme: dark) {
-  .note-prose hr {
-    border-top-color: var(--color-zinc-800);
-  }
+  border-top: 1px solid var(--line);
 }
 
 .note-prose table {
   margin: 0.85em 0;
   border-collapse: collapse;
   width: 100%;
+  font-family: var(--font-sans);
   font-size: 0.9em;
 }
 .note-prose th,
 .note-prose td {
-  border: 1px solid var(--color-zinc-200);
+  border: 1px solid var(--line);
   padding: 0.4em 0.75em;
   text-align: left;
 }
 .note-prose th {
-  background-color: var(--color-zinc-50);
+  background-color: var(--surface);
   font-weight: 600;
-}
-@media (prefers-color-scheme: dark) {
-  .note-prose th,
-  .note-prose td {
-    border-color: var(--color-zinc-800);
-  }
-  .note-prose th {
-    background-color: var(--color-zinc-900);
-  }
+  color: var(--ink);
 }
 
 .note-prose strong {
   font-weight: 600;
+  color: var(--ink);
 }
 .note-prose em {
   font-style: italic;
@@ -285,9 +432,61 @@ body {
 .note-prose del {
   text-decoration: line-through;
 }
-
 .note-prose img {
   max-width: 100%;
   height: auto;
-  border-radius: 4px;
+  border-radius: 6px;
+}
+
+/* Frontmatter tag chips — rendered above the prose body by NotePreview. */
+.note-frontmatter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  max-width: 42rem;
+  margin: 0 auto 1.4rem;
+  padding-bottom: 1.2rem;
+  border-bottom: 1px solid var(--line);
+}
+.note-tag {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.note-tag .k {
+  color: var(--muted);
+}
+
+/* "just edited / from chat" provenance chip on agent-touched bullets. */
+.just-edited {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--sage);
+  background: var(--sage-tint);
+  padding: 2px 8px;
+  border-radius: 20px;
+  margin-left: 8px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* Backlinks slot — only rendered when data exists (deferred backend). */
+.note-backlinks {
+  max-width: 42rem;
+  margin: 2.5rem auto 0;
+  padding-top: 1.3rem;
+  border-top: 1px dashed var(--line-strong);
+  font-family: var(--font-sans);
 }

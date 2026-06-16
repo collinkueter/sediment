@@ -1,4 +1,19 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel, invoke as realInvoke } from "@tauri-apps/api/core";
+import { browserMock, isBrowserMock } from "./devMock";
+
+// In a plain browser dev session (no Tauri runtime) route commands to a mock so
+// the UI can be previewed with representative data. No-op in the real app and
+// stripped from production builds. See devMock.ts.
+const invoke: typeof realInvoke = isBrowserMock
+  ? (browserMock as unknown as typeof realInvoke)
+  : realInvoke;
+
+// Real `Channel` needs Tauri internals; under the browser mock use a plain
+// stand-in so streaming commands can be constructed (they resolve without
+// streaming). No effect in the real app.
+function makeChannel<T>(): Channel<T> {
+  return isBrowserMock ? ({ onmessage: undefined } as unknown as Channel<T>) : new Channel<T>();
+}
 
 export interface FormationNote {
   relative_path: string;
@@ -245,7 +260,7 @@ export const tauri = {
   checkModelReadiness: () => invoke<ModelReadiness>("check_model_readiness"),
   /** Pull an Ollama model, streaming progress through `onProgress`. */
   pullOllamaModel: (model: string, onProgress: (p: ModelProgress) => void) => {
-    const channel = new Channel<ModelProgress>();
+    const channel = makeChannel<ModelProgress>();
     channel.onmessage = onProgress;
     return invoke<void>("pull_ollama_model", { model, onProgress: channel });
   },
@@ -262,7 +277,7 @@ export const tauri = {
    * with the turn's authoritative outcome when it completes.
    */
   chatTurn: (message: string, sessionId: string, onEvent: (e: TurnEvent) => void) => {
-    const channel = new Channel<TurnEvent>();
+    const channel = makeChannel<TurnEvent>();
     channel.onmessage = onEvent;
     return invoke<ChatTurnResult>("chat_turn", { message, sessionId, onEvent: channel });
   },
