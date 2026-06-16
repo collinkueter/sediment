@@ -635,10 +635,8 @@ impl ConversationEngine for ClaudeCodeEngine {
         // Write the MCP config to a temp file. A NamedTempFile-style manual
         // temp path keeps the dependency surface small; it is removed in a
         // best-effort cleanup once the turn finishes.
-        let mcp_config_path = std::env::temp_dir().join(format!(
-            "sediment-mcp-{}.json",
-            uuid::Uuid::new_v4()
-        ));
+        let mcp_config_path =
+            std::env::temp_dir().join(format!("sediment-mcp-{}.json", uuid::Uuid::new_v4()));
         std::fs::write(&mcp_config_path, mcp_config_json(&self_exe, turn))
             .map_err(|e| AppError::other(format!("write MCP config: {e}")))?;
 
@@ -688,11 +686,8 @@ impl ConversationEngine for ClaudeCodeEngine {
 
         // Run the whole turn under a wall-clock cap. On expiry the child is
         // killed; the temp config is cleaned up on every exit path below.
-        let outcome = tokio::time::timeout(
-            TURN_TIMEOUT,
-            drive_turn(&mut child, &prompt, on_event),
-        )
-        .await;
+        let outcome =
+            tokio::time::timeout(TURN_TIMEOUT, drive_turn(&mut child, &prompt, on_event)).await;
 
         let _ = std::fs::remove_file(&mcp_config_path);
 
@@ -835,9 +830,7 @@ async fn drive_turn(
                 return Err(AppError::other(msg));
             }
             if !accumulator.is_empty() {
-                Ok(TurnOutcome {
-                    reply: accumulator,
-                })
+                Ok(TurnOutcome { reply: accumulator })
             } else {
                 Err(AppError::other(
                     "Claude Code exited without finishing the turn — make sure you are signed \
@@ -892,10 +885,7 @@ mod tests {
             r#"{"type":"result","subtype":"success","is_error":false,"result":"Sarah works at Acme.","session_id":"s1","total_cost_usd":0.01}"#,
         ];
 
-        let results: Vec<StreamLine> = transcript
-            .iter()
-            .map(|l| parse_stream_line(l))
-            .collect();
+        let results: Vec<StreamLine> = transcript.iter().map(|l| parse_stream_line(l)).collect();
 
         // thinking_delta line (index 4) → Other
         assert!(
@@ -937,7 +927,8 @@ mod tests {
     /// An error result line must surface as `Done { is_error: true, subtype: Some(...) }`.
     #[test]
     fn stream_line_error_result() {
-        let line = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":""}"#;
+        let line =
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":""}"#;
         assert!(
             matches!(
                 parse_stream_line(line),
@@ -958,12 +949,10 @@ mod tests {
     /// `status == "allowed"` → `Other`.
     #[test]
     fn stream_line_rate_limit() {
-        let rejected =
-            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}"#;
+        let rejected = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}"#;
         assert_eq!(parse_stream_line(rejected), StreamLine::RateLimited);
 
-        let allowed =
-            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}"#;
+        let allowed = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}"#;
         assert_eq!(parse_stream_line(allowed), StreamLine::Other);
     }
 
@@ -1025,8 +1014,7 @@ mod tests {
         let base = std::env::temp_dir();
         // Use a unique-ish name derived from the thread id to avoid collisions
         // when tests run in parallel.
-        let id = format!("{:?}", std::thread::current().id())
-            .replace(['(', ')', ' '], "_");
+        let id = format!("{:?}", std::thread::current().id()).replace(['(', ')', ' '], "_");
         let a = base.join(format!("sediment_test_{id}_a"));
         let b = base.join(format!("sediment_test_{id}_b"));
         let c = base.join(format!("sediment_test_{id}_c"));
@@ -1116,10 +1104,7 @@ mod tests {
             r#"{"type":"result","subtype":"success","is_error":false,"result":"Got it.","session_id":"s2"}"#,
         ];
 
-        let results: Vec<StreamLine> = transcript
-            .iter()
-            .map(|l| parse_stream_line(l))
-            .collect();
+        let results: Vec<StreamLine> = transcript.iter().map(|l| parse_stream_line(l)).collect();
 
         // partial content_block_start / input_json_delta (indices 2, 3) → Other
         assert!(
@@ -1384,8 +1369,7 @@ mod tests {
         });
 
         let turn = TurnRequest {
-            message: "Make a note that Maria likes hiking. Put it in People/Maria.md."
-                .to_string(),
+            message: "Make a note that Maria likes hiking. Put it in People/Maria.md.".to_string(),
             history: vec![],
             formation_root: root.clone(),
             source_chat_id: "chat_message:live".to_string(),

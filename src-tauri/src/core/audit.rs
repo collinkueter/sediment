@@ -213,8 +213,7 @@ pub fn snapshot_formation(formation_root: &Path, turn_id: &str) -> AppResult<Pat
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::copy(&src, &dst)
-            .map_err(|e| AppError::other(format!("snapshot {rel}: {e}")))?;
+        std::fs::copy(&src, &dst).map_err(|e| AppError::other(format!("snapshot {rel}: {e}")))?;
     }
     Ok(snapshot_dir)
 }
@@ -226,10 +225,7 @@ pub fn snapshot_formation(formation_root: &Path, turn_id: &str) -> AppResult<Pat
 /// A note present in the snapshot but now missing is *not* reported — the
 /// conversational agent does not delete note files, and an undo has nothing to
 /// restore-to for a deletion. Equal files are skipped.
-pub fn diff_formation(
-    formation_root: &Path,
-    snapshot_dir: &Path,
-) -> AppResult<Vec<ChangedNote>> {
+pub fn diff_formation(formation_root: &Path, snapshot_dir: &Path) -> AppResult<Vec<ChangedNote>> {
     let mut changed = Vec::new();
     for rel in walk_formation_files(formation_root)? {
         let current = formation_root.join(&rel);
@@ -242,8 +238,8 @@ pub fn diff_formation(
             continue;
         }
         // Both exist — compare bytes; only a real change is recorded.
-        let cur_bytes = std::fs::read(&current)
-            .map_err(|e| AppError::other(format!("read {rel}: {e}")))?;
+        let cur_bytes =
+            std::fs::read(&current).map_err(|e| AppError::other(format!("read {rel}: {e}")))?;
         let snap_bytes = std::fs::read(&snapshot)
             .map_err(|e| AppError::other(format!("read snapshot {rel}: {e}")))?;
         if cur_bytes != snap_bytes {
@@ -273,10 +269,7 @@ fn walk_formation_files(root: &Path) -> AppResult<Vec<String>> {
     for entry in WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| {
-            !(e.file_type().is_dir()
-                && SNAPSHOT_SKIP_DIRS
-                    .iter()
-                    .any(|d| e.file_name() == *d))
+            !(e.file_type().is_dir() && SNAPSHOT_SKIP_DIRS.iter().any(|d| e.file_name() == *d))
         })
         .flatten()
     {
@@ -332,8 +325,8 @@ pub fn write_task_completion(
 /// Read one audit entry by id. Errors if the file is missing or corrupt.
 pub fn read_audit(formation_root: &Path, entry_id: &str) -> AppResult<AuditEntry> {
     let path = audit_file(formation_root, entry_id);
-    let bytes = std::fs::read(&path)
-        .map_err(|e| AppError::other(format!("read audit {entry_id}: {e}")))?;
+    let bytes =
+        std::fs::read(&path).map_err(|e| AppError::other(format!("read audit {entry_id}: {e}")))?;
     Ok(serde_json::from_slice(&bytes)?)
 }
 
@@ -410,11 +403,7 @@ pub fn prune_old(formation_root: &Path, keep: usize) -> AppResult<()> {
 ///
 /// Refuses if the entry is not a `ChatTurn` — `TaskCompletion` entries have
 /// their own undo path.
-pub async fn undo_turn(
-    formation_root: &Path,
-    store: &MemoryStore,
-    turn_id: &str,
-) -> AppResult<()> {
+pub async fn undo_turn(formation_root: &Path, store: &MemoryStore, turn_id: &str) -> AppResult<()> {
     let entry = read_audit(formation_root, turn_id)?;
     let AuditEntry::ChatTurn(entry) = entry else {
         return Err(AppError::other(format!(
@@ -438,9 +427,8 @@ pub async fn undo_turn(
                 }
             }
         } else {
-            let bytes = std::fs::read(snapshot_dir.join(&note.path)).map_err(|e| {
-                AppError::other(format!("undo: read snapshot {}: {e}", note.path))
-            })?;
+            let bytes = std::fs::read(snapshot_dir.join(&note.path))
+                .map_err(|e| AppError::other(format!("undo: read snapshot {}: {e}", note.path)))?;
             atomic_write(&target, &bytes)?;
         }
     }
@@ -791,8 +779,7 @@ mod tests {
         undo_turn(&root, &store, &turn_id).await.expect("undo");
 
         // Josh is restored to the pre-turn bullet; Devon's note is gone.
-        let josh_after =
-            std::fs::read_to_string(root.join("People/Josh.md")).expect("Josh note");
+        let josh_after = std::fs::read_to_string(root.join("People/Josh.md")).expect("Josh note");
         assert_eq!(josh_after, "## Facts\n\n- Likes Rust\n", "Josh restored");
         assert!(
             !root.join("People/Devon.md").exists(),
@@ -1005,7 +992,9 @@ mod tests {
             format!("{err}").contains("not a chat-turn"),
             "undo_turn rejects task-completion: {err}"
         );
-        let err = undo_fact(&root, &store, &entry_id, "fact:bar").await.unwrap_err();
+        let err = undo_fact(&root, &store, &entry_id, "fact:bar")
+            .await
+            .unwrap_err();
         assert!(
             format!("{err}").contains("not a chat-turn"),
             "undo_fact rejects task-completion: {err}"

@@ -362,9 +362,7 @@ impl CopilotSession {
                             };
                             let _ = writer_tx.send(ndjson_line(&reply));
                         }
-                        Incoming::Notification { method, params }
-                            if method == "session/update" =>
-                        {
+                        Incoming::Notification { method, params } if method == "session/update" => {
                             if let Some(tx) = active.lock().await.as_ref() {
                                 let _ = tx.send(params);
                             }
@@ -438,7 +436,11 @@ impl CopilotSession {
         let (resp_tx, resp_rx) = oneshot::channel::<Result<Value, String>>();
         self.pending.lock().await.insert(id, resp_tx);
         self.writer_tx
-            .send(ndjson_line(&session_prompt_msg(id, &self.session_id, prompt_text)))
+            .send(ndjson_line(&session_prompt_msg(
+                id,
+                &self.session_id,
+                prompt_text,
+            )))
             .map_err(|_| AppError::other("copilot: writer closed"))?;
 
         let mut reply = String::new();
@@ -521,7 +523,9 @@ impl CopilotEngineHandle {
         model: &str,
     ) -> AppResult<TurnOutcome> {
         let binary = locate().ok_or_else(|| {
-            AppError::other("GitHub Copilot CLI not found. Install with `npm install -g @github/copilot`.")
+            AppError::other(
+                "GitHub Copilot CLI not found. Install with `npm install -g @github/copilot`.",
+            )
         })?;
 
         let mut guard = self.inner.lock().await;
@@ -707,12 +711,18 @@ mod tests {
             injected_context: Some("## Currently in play".to_string()),
         };
         let first = render_copilot_prompt(&turn, true);
-        assert!(first.contains("conversational agent"), "persona on first turn");
+        assert!(
+            first.contains("conversational agent"),
+            "persona on first turn"
+        );
         assert!(first.contains("# What you already know"));
         assert!(first.trim_end().ends_with("Josh joined Stripe."));
 
         let later = render_copilot_prompt(&turn, false);
-        assert!(!later.contains("conversational agent"), "no persona after first turn");
+        assert!(
+            !later.contains("conversational agent"),
+            "no persona after first turn"
+        );
         assert!(later.contains("# What you already know"));
     }
 

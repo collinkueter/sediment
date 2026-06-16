@@ -139,9 +139,7 @@ fn ensure_daily_template(formation_root: &Path) -> AppResult<String> {
 /// without having to insert a heading.
 fn render_initial_daily_note(template_body: &str) -> String {
     let checklist = template_body.trim_end_matches('\n');
-    format!(
-        "{CHECKLIST_HEADING}\n\n{checklist}\n\n{DID_HEADING}\n\n{NOTES_HEADING}\n"
-    )
+    format!("{CHECKLIST_HEADING}\n\n{checklist}\n\n{DID_HEADING}\n\n{NOTES_HEADING}\n")
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -163,10 +161,7 @@ fn render_initial_daily_note(template_body: &str) -> String {
 pub fn append_did_bullet(daily_note_abs: &Path, bullet: &str) -> AppResult<()> {
     let bullet_line = bullet.trim_end_matches('\n').to_string();
     let content = std::fs::read_to_string(daily_note_abs).map_err(|e| {
-        AppError::other(format!(
-            "read daily note {}: {e}",
-            daily_note_abs.display()
-        ))
+        AppError::other(format!("read daily note {}: {e}", daily_note_abs.display()))
     })?;
 
     let updated = match splice_did_append(&content, &bullet_line) {
@@ -400,7 +395,10 @@ mod tests {
         );
 
         let body = std::fs::read_to_string(&abs).unwrap();
-        assert!(body.starts_with("## Checklist"), "starts with the checklist");
+        assert!(
+            body.starts_with("## Checklist"),
+            "starts with the checklist"
+        );
         assert!(body.contains("- [ ] Take vitamins"), "default seeded");
         assert!(body.contains("## Did"), "## Did heading exists");
         assert!(body.contains("## Notes"), "## Notes heading exists");
@@ -552,10 +550,7 @@ mod tests {
         let outcome = remove_did_bullet(&abs, "- Called the dentist").expect("remove");
         assert_eq!(outcome, RemoveResult::Removed);
         let body = std::fs::read_to_string(&abs).unwrap();
-        assert!(
-            !body.contains("- Called the dentist"),
-            "the bullet is gone"
-        );
+        assert!(!body.contains("- Called the dentist"), "the bullet is gone");
 
         // Now log a bullet, mutate it, attempt to remove the original — refused.
         append_did_bullet(&abs, "- Watched a youtube video").unwrap();

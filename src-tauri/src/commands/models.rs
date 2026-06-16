@@ -21,7 +21,9 @@ use tauri::State;
 /// `<models_dir>/ollama` when a shared models directory is configured, else
 /// `None` so Ollama keeps its own default location.
 pub(crate) fn ollama_models_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
-    AppConfig::load(app).models_dir.map(|dir| dir.join("ollama"))
+    AppConfig::load(app)
+        .models_dir
+        .map(|dir| dir.join("ollama"))
 }
 
 /// One model Sediment needs locally, and whether it is installed.

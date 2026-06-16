@@ -69,11 +69,7 @@ impl FormationMcp {
 /// schema that is somehow not an object is a programming error in
 /// `tool_schemas`, so we fall back to an empty object rather than panic.
 fn to_rmcp_tool(schema: &formation_tools::ToolSchema) -> Tool {
-    let input_schema: JsonObject = schema
-        .parameters
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    let input_schema: JsonObject = schema.parameters.as_object().cloned().unwrap_or_default();
     Tool::new(schema.name, schema.description, Arc::new(input_schema))
 }
 
@@ -278,13 +274,10 @@ mod tests {
         assert!(recorded["fact_id"].as_str().unwrap().starts_with("fact:"));
 
         // find_entity via dispatch resolves the subject and its current fact.
-        let found = formation_tools::dispatch(
-            &server.ctx,
-            "find_entity",
-            json!({ "name": "Josh" }),
-        )
-        .await
-        .expect("find_entity");
+        let found =
+            formation_tools::dispatch(&server.ctx, "find_entity", json!({ "name": "Josh" }))
+                .await
+                .expect("find_entity");
         assert_eq!(found["found"], true);
         let facts = found["current_facts"].as_array().unwrap();
         assert_eq!(facts.len(), 1);
@@ -307,9 +300,7 @@ mod tests {
         assert!(err.is_err(), "unknown tool errors at the dispatch layer");
 
         // The handler turns that Err into an error CallToolResult.
-        let result = CallToolResult::error(vec![Content::text(
-            err.unwrap_err().to_string(),
-        )]);
+        let result = CallToolResult::error(vec![Content::text(err.unwrap_err().to_string())]);
         assert_eq!(result.is_error, Some(true));
         assert!(!result.content.is_empty());
 

@@ -97,7 +97,9 @@ pub fn set_conversation_engine(
     cfg.conversation_engine = Some(engine.to_string());
     // Trim the model; an empty string means "use the default". The model targets
     // the selected engine's own field.
-    let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+    let model = model
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty());
     match engine {
         "copilot" => cfg.copilot_model = model,
         _ => cfg.claude_code_model = model,

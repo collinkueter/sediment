@@ -203,7 +203,11 @@ impl MemoryStore {
     /// superseding any contradicting current fact. Thin wrapper over
     /// `relate_fact_with` with supersession on.
     pub async fn relate_fact(&self, fact: FactWriteInput) -> AppResult<String> {
-        Ok(self.relate_fact_with(fact, true).await?.fact_id().to_string())
+        Ok(self
+            .relate_fact_with(fact, true)
+            .await?
+            .fact_id()
+            .to_string())
     }
 
     /// Write a bi-temporal fact edge, controlling supersession.
@@ -1059,15 +1063,24 @@ mod tests {
         let store = MemoryStore::open(&dir).await.expect("open store");
 
         let id = store
-            .record_open_loop("Decide on the vendor", Some("Acme vs Beta"), "chat_message:1")
+            .record_open_loop(
+                "Decide on the vendor",
+                Some("Acme vs Beta"),
+                "chat_message:1",
+            )
             .await
             .unwrap();
         let active = store.list_active_open_loops(10, 14).await.unwrap();
-        assert!(active.iter().any(|l| l.id == id && l.title == "Decide on the vendor"));
+        assert!(active
+            .iter()
+            .any(|l| l.id == id && l.title == "Decide on the vendor"));
 
         store.close_open_loop(&id).await.unwrap();
         let active = store.list_active_open_loops(10, 14).await.unwrap();
-        assert!(!active.iter().any(|l| l.id == id), "closed loop is not active");
+        assert!(
+            !active.iter().any(|l| l.id == id),
+            "closed loop is not active"
+        );
 
         // A loop aged past the window falls out (back-date `created` directly).
         let stale = store
@@ -1083,7 +1096,10 @@ mod tests {
             .await
             .unwrap();
         let active = store.list_active_open_loops(10, 14).await.unwrap();
-        assert!(!active.iter().any(|l| l.id == stale), "decayed loop excluded");
+        assert!(
+            !active.iter().any(|l| l.id == stale),
+            "decayed loop excluded"
+        );
     }
 
     /// Round-trip a bi-temporal employment change. Verifies:
@@ -1856,5 +1872,4 @@ mod tests {
         assert_eq!(slugify("  leading and trailing  "), "leading_and_trailing");
         assert_eq!(slugify("---"), "");
     }
-
 }

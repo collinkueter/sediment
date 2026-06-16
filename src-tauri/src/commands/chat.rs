@@ -9,10 +9,10 @@
 use crate::commands::formation::APP_DIR;
 use crate::core::audit::{self, AuditEntry, ChangedNote, ChatTurnEntry};
 use crate::core::claude_code::{self, ClaudeCodeEngine};
-use crate::core::copilot::{self, CopilotEngineHandle};
 use crate::core::conversation::{
     ConversationEngine, TranscriptTurn, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest,
 };
+use crate::core::copilot::{self, CopilotEngineHandle};
 use crate::core::formation_state::{AppConfig, FormationState};
 use crate::core::memory::MemoryHandle;
 use crate::core::ollama_sidecar::OllamaSidecar;
@@ -229,7 +229,9 @@ pub async fn get_working_set(
     memory: State<'_, MemoryHandle>,
 ) -> AppResult<WorkingSet> {
     let root = formation.require()?;
-    let store = memory.get_or_init(&root.join(APP_DIR).join("memory")).await?;
+    let store = memory
+        .get_or_init(&root.join(APP_DIR).join("memory"))
+        .await?;
     Ok(working_set::derive_working_set(store).await)
 }
 
@@ -242,7 +244,9 @@ pub async fn dismiss_open_loop(
     memory: State<'_, MemoryHandle>,
 ) -> AppResult<()> {
     let root = formation.require()?;
-    let store = memory.get_or_init(&root.join(APP_DIR).join("memory")).await?;
+    let store = memory
+        .get_or_init(&root.join(APP_DIR).join("memory"))
+        .await?;
     store.close_open_loop(&loop_id).await
 }
 
@@ -298,14 +302,20 @@ mod tests {
         let out = assemble_grounding(&[Some(a.clone()), Some(b.clone()), Some(c)], 204).unwrap();
         assert!(out.contains(&a), "highest-priority section kept");
         assert!(out.contains(&b), "second section kept");
-        assert!(!out.contains('C'), "overflowing lower-priority section dropped");
+        assert!(
+            !out.contains('C'),
+            "overflowing lower-priority section dropped"
+        );
 
         // Nothing to inject.
         assert!(assemble_grounding(&[None, None], 1000).is_none());
 
         // A single oversize section is truncated, not dropped.
         let out = assemble_grounding(&[Some("X".repeat(1000))], 100).unwrap();
-        assert!(out.len() <= 100, "truncated within budget including the ellipsis");
+        assert!(
+            out.len() <= 100,
+            "truncated within budget including the ellipsis"
+        );
         assert!(out.ends_with('…'));
     }
 }

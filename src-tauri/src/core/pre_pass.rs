@@ -191,7 +191,10 @@ async fn related_notes(
 /// Render a current/historical Fact as a short `predicate object` line.
 fn render_fact(f: &FactRow) -> String {
     let obj = record_id_to_string(&f.object);
-    let obj = obj.strip_prefix("entity:").unwrap_or(&obj).replace('_', " ");
+    let obj = obj
+        .strip_prefix("entity:")
+        .unwrap_or(&obj)
+        .replace('_', " ");
     let mut s = format!("{} {}", f.predicate, obj);
     if let Some(to) = f.valid_to {
         s.push_str(&format!(" (until {})", to.format("%Y-%m-%d")));
@@ -205,10 +208,52 @@ fn render_fact(f: &FactRow) -> String {
 /// agent resolves the rest itself.
 fn candidate_names(message: &str) -> Vec<String> {
     const SKIP: &[&str] = &[
-        "The", "A", "An", "I", "He", "She", "It", "They", "We", "You", "My", "His", "Her", "Their",
-        "Our", "Your", "This", "That", "These", "Those", "When", "What", "Who", "Where", "Why",
-        "How", "Is", "Are", "Was", "Were", "Do", "Does", "Did", "If", "And", "But", "Or", "So",
-        "Then", "Now", "Today", "Yesterday", "Tomorrow", "Maybe", "Also", "Just",
+        "The",
+        "A",
+        "An",
+        "I",
+        "He",
+        "She",
+        "It",
+        "They",
+        "We",
+        "You",
+        "My",
+        "His",
+        "Her",
+        "Their",
+        "Our",
+        "Your",
+        "This",
+        "That",
+        "These",
+        "Those",
+        "When",
+        "What",
+        "Who",
+        "Where",
+        "Why",
+        "How",
+        "Is",
+        "Are",
+        "Was",
+        "Were",
+        "Do",
+        "Does",
+        "Did",
+        "If",
+        "And",
+        "But",
+        "Or",
+        "So",
+        "Then",
+        "Now",
+        "Today",
+        "Yesterday",
+        "Tomorrow",
+        "Maybe",
+        "Also",
+        "Just",
     ];
     let words: Vec<&str> = message
         .split(|c: char| !(c.is_alphanumeric() || c == '\''))
@@ -272,8 +317,14 @@ mod tests {
         let c = candidate_names("Did Josh move to Cloudflare? He told Sarah Chen.");
         assert!(c.contains(&"Josh".to_string()));
         assert!(c.contains(&"Cloudflare".to_string()));
-        assert!(c.contains(&"Sarah Chen".to_string()), "adjacent pair captured");
-        assert!(!c.iter().any(|w| w == "Did" || w == "He"), "pronouns/openers skipped");
+        assert!(
+            c.contains(&"Sarah Chen".to_string()),
+            "adjacent pair captured"
+        );
+        assert!(
+            !c.iter().any(|w| w == "Did" || w == "He"),
+            "pronouns/openers skipped"
+        );
     }
 
     #[test]
@@ -323,7 +374,9 @@ mod tests {
             "current fact surfaced for the agent to judge against"
         );
 
-        let md = ctx.render_entities_markdown().expect("entities grounding rendered");
+        let md = ctx
+            .render_entities_markdown()
+            .expect("entities grounding rendered");
         assert!(md.contains("Josh"));
         assert!(md.contains("do not create duplicates"));
     }

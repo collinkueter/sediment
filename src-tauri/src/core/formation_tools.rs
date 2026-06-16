@@ -316,8 +316,14 @@ async fn record_fact(ctx: &ToolContext, args: Value) -> AppResult<Value> {
         None => None,
     };
 
-    let subject_entity = ctx.store.upsert_entity(&subject, &subject_type, Vec::new()).await?;
-    let object_entity = ctx.store.upsert_entity(&object, &object_type, Vec::new()).await?;
+    let subject_entity = ctx
+        .store
+        .upsert_entity(&subject, &subject_type, Vec::new())
+        .await?;
+    let object_entity = ctx
+        .store
+        .upsert_entity(&object, &object_type, Vec::new())
+        .await?;
 
     let fact_id = ctx
         .store
@@ -360,8 +366,11 @@ async fn record_task(ctx: &ToolContext, args: Value) -> AppResult<Value> {
     }
     let due: Option<NaiveDate> = match opt_str(&args, "due") {
         Some(s) => Some(
-            NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
-                .map_err(|_| AppError::other(format!("record_task: bad due date {s:?} (expected YYYY-MM-DD)")))?,
+            NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").map_err(|_| {
+                AppError::other(format!(
+                    "record_task: bad due date {s:?} (expected YYYY-MM-DD)"
+                ))
+            })?,
         ),
         None => None,
     };
@@ -551,20 +560,31 @@ mod tests {
     #[tokio::test]
     async fn open_loop_record_and_close_via_dispatch() {
         let (ctx, root) = ctx().await;
-        let created = dispatch(&ctx, "record_open_loop", json!({ "title": "Decide on vendor" }))
-            .await
-            .expect("record_open_loop");
+        let created = dispatch(
+            &ctx,
+            "record_open_loop",
+            json!({ "title": "Decide on vendor" }),
+        )
+        .await
+        .expect("record_open_loop");
         let loop_id = created["loop_id"].as_str().expect("loop_id").to_string();
         assert!(loop_id.starts_with("open_loop:"));
         let active = ctx.store.list_active_open_loops(10, 14).await.unwrap();
         assert!(active.iter().any(|l| l.id == loop_id), "loop is active");
 
-        let closed = dispatch(&ctx, "close_open_loop", json!({ "loop_id": loop_id.clone() }))
-            .await
-            .expect("close_open_loop");
+        let closed = dispatch(
+            &ctx,
+            "close_open_loop",
+            json!({ "loop_id": loop_id.clone() }),
+        )
+        .await
+        .expect("close_open_loop");
         assert_eq!(closed["closed"], true);
         let active = ctx.store.list_active_open_loops(10, 14).await.unwrap();
-        assert!(!active.iter().any(|l| l.id == loop_id), "closed loop is gone");
+        assert!(
+            !active.iter().any(|l| l.id == loop_id),
+            "closed loop is gone"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
