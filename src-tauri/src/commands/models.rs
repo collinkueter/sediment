@@ -8,6 +8,7 @@
 //! The UI runs `check_model_readiness` on launch and, if the embedding model is
 //! missing, shows a one-click setup screen that drives `pull_ollama_model`.
 
+use crate::core::embedding::EmbeddingProvider;
 use crate::core::formation_state::AppConfig;
 use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
 use crate::error::{AppError, AppResult};
@@ -66,6 +67,18 @@ pub async fn check_model_readiness(
     sidecar: State<'_, OllamaSidecar>,
     app: tauri::AppHandle,
 ) -> AppResult<ModelReadiness> {
+    // Keyword (BM25) search needs no local model — report ready and skip the
+    // Ollama probe entirely so the setup gate never blocks that mode.
+    let provider =
+        EmbeddingProvider::from_config(AppConfig::load(&app).embedding_provider.as_deref());
+    if !provider.is_semantic() {
+        return Ok(ModelReadiness {
+            ollama_installed: false,
+            requirements: Vec::new(),
+            all_present: true,
+        });
+    }
+
     // Ollama: probe install, ensure the daemon is up (best-effort), then list.
     let status = sidecar.status().await;
     let local: Vec<String> = if status.installed {

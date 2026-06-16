@@ -10,7 +10,8 @@
 
 use crate::core::audit;
 use crate::core::daily_note;
-use crate::core::formation_state::FormationState;
+use crate::core::embedding::EmbeddingProvider;
+use crate::core::formation_state::{AppConfig, FormationState};
 use crate::core::memory::{MemoryHandle, MemoryStore, NoteChunkInput};
 use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
 use crate::core::tasks::TaskCompletionEvent;
@@ -119,12 +120,14 @@ async fn index_in_app(app: &AppHandle, relative_path: &str) -> AppResult<usize> 
     let sidecar = app.state::<OllamaSidecar>();
 
     let formation_root = formation.require()?;
+    let provider =
+        EmbeddingProvider::from_config(AppConfig::load(app).embedding_provider.as_deref());
     let memory_dir = formation_root.join(".chat-notes").join("memory");
     let store = memory.get_or_init(&memory_dir).await?;
     let IndexOutcome {
         chunk_count,
         task_completions,
-    } = index_note_path(&formation_root, store, &sidecar, relative_path).await?;
+    } = index_note_path(&formation_root, store, &sidecar, provider, relative_path).await?;
     if !task_completions.is_empty() {
         apply_task_completions(app, &formation_root, &task_completions);
     }
@@ -239,6 +242,7 @@ pub async fn index_note_path(
     formation_root: &Path,
     store: &MemoryStore,
     sidecar: &OllamaSidecar,
+    provider: EmbeddingProvider,
     relative_path: &str,
 ) -> AppResult<IndexOutcome> {
     let abs = formation_root.join(relative_path);
@@ -260,7 +264,13 @@ pub async fn index_note_path(
     let chunks = chunk_markdown(&content);
     let mut inputs = Vec::with_capacity(chunks.len());
     for (idx, text) in chunks.iter().enumerate() {
-        let embedding = sidecar.embed(DEFAULT_EMBED_MODEL, text).await?;
+        // In keyword mode (no local model) we store text-only chunks; the BM25
+        // full-text index makes them searchable without any embedding.
+        let embedding = if provider.is_semantic() {
+            Some(sidecar.embed(DEFAULT_EMBED_MODEL, text).await?)
+        } else {
+            None
+        };
         inputs.push(NoteChunkInput {
             note_path: relative_path.to_string(),
             chunk_idx: idx as i64,

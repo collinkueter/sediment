@@ -13,6 +13,7 @@ use crate::core::conversation::{
     ConversationEngine, TranscriptTurn, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest,
 };
 use crate::core::copilot::{self, CopilotEngineHandle};
+use crate::core::embedding::EmbeddingProvider;
 use crate::core::formation_state::{AppConfig, FormationState};
 use crate::core::memory::MemoryHandle;
 use crate::core::ollama_sidecar::OllamaSidecar;
@@ -117,13 +118,20 @@ pub async fn chat_turn(
     // 4. Run the engine. The Tauri `Channel` is wrapped in a `TurnEventSink`
     //    closure at this edge so the engine layer never depends on Tauri IPC.
     let cfg = AppConfig::load(&app);
+    let embedding_provider = EmbeddingProvider::from_config(cfg.embedding_provider.as_deref());
     // ADR-0011 §2–§3, §6: deterministic pre-pass + Working Set, pushed into the
     // turn so grounding never depends on the agent choosing to search. Assembled
     // in priority order under a budget (§6): resolved identity + Facts first (the
     // reliability fix), then the Working Set, then related-note excerpts (the
     // first droppable thing). Best-effort — a failing signal degrades to less
     // grounding, never a failed turn.
-    let pre = pre_pass::build_pre_pass(store, &OllamaSidecar::default(), &message).await;
+    let pre = pre_pass::build_pre_pass(
+        store,
+        &OllamaSidecar::default(),
+        embedding_provider,
+        &message,
+    )
+    .await;
     let working_set = working_set::derive_working_set(store).await;
     let injected_context = assemble_grounding(
         &[
@@ -139,6 +147,7 @@ pub async fn chat_turn(
         history,
         formation_root: formation_root.clone(),
         source_chat_id: source_chat_id.clone(),
+        embedding_provider: embedding_provider.as_str().to_string(),
         injected_context,
     };
     let sink: TurnEventSink = {

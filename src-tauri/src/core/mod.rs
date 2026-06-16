@@ -4,6 +4,7 @@ pub mod claude_code;
 pub mod conversation;
 pub mod copilot;
 pub mod daily_note;
+pub mod embedding;
 pub mod formation_mcp;
 pub mod formation_state;
 pub mod formation_tools;

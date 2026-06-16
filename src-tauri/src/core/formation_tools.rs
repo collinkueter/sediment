@@ -12,6 +12,7 @@
 //! transport-agnostic — M2 (`core/formation_mcp.rs`) wraps it in a stdio MCP
 //! server, and it is unit-tested here without one.
 
+use crate::core::embedding::EmbeddingProvider;
 use crate::core::formation_state::atomic_write;
 use crate::core::memory::{record_id_to_string, slugify, FactRow, FactWriteInput, MemoryStore};
 use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
@@ -47,6 +48,8 @@ pub struct ToolContext {
     pub store: MemoryStore,
     pub formation_root: PathBuf,
     pub sidecar: OllamaSidecar,
+    /// How `search_notes` retrieves: semantic (Ollama) or keyword (BM25).
+    pub embedding_provider: EmbeddingProvider,
     /// The current turn's user `chat_message` id. Stamped as `source_chat_id`
     /// on every Fact recorded this turn (provenance — tech-spec principle #4).
     pub source_chat_id: String,
@@ -213,8 +216,12 @@ async fn search_notes(ctx: &ToolContext, args: Value) -> AppResult<Value> {
         .map(|n| n as usize)
         .unwrap_or(DEFAULT_SEARCH_K);
 
-    let embedding = ctx.sidecar.embed(DEFAULT_EMBED_MODEL, &query).await?;
-    let hits = ctx.store.search_chunks(embedding, k).await?;
+    let hits = if ctx.embedding_provider.is_semantic() {
+        let embedding = ctx.sidecar.embed(DEFAULT_EMBED_MODEL, &query).await?;
+        ctx.store.search_chunks(embedding, k).await?
+    } else {
+        ctx.store.search_chunks_text(&query, k).await?
+    };
     let results: Vec<Value> = hits
         .into_iter()
         .map(|h| {
@@ -518,6 +525,7 @@ mod tests {
             store,
             formation_root: root.clone(),
             sidecar: OllamaSidecar::default(),
+            embedding_provider: EmbeddingProvider::Ollama,
             source_chat_id: "chat_message:test".to_string(),
         };
         (ctx, root)

@@ -7,6 +7,7 @@ import { type Theme, useThemeStore } from "@/lib/theme";
 import { useEffect, useRef, useState } from "react";
 
 type Engine = "claude-code" | "copilot";
+type SearchMode = "ollama" | "none";
 
 /** The Claude Code model aliases offered in the model selector. */
 const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
@@ -32,6 +33,7 @@ export function SettingsModal({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searchMode, setSearchMode] = useState<SearchMode>("ollama");
   const dialogRef = useRef<HTMLDivElement>(null);
 
   const { theme, setTheme } = useThemeStore();
@@ -39,13 +41,14 @@ export function SettingsModal({
   const pickFormation = useFormationStore((s) => s.pick);
 
   useEffect(() => {
-    Promise.all([tauri.getModelsDir(), tauri.getConversationEngine()])
-      .then(([dir, ce]) => {
+    Promise.all([tauri.getModelsDir(), tauri.getConversationEngine(), tauri.getEmbeddingProvider()])
+      .then(([dir, ce, provider]) => {
         setModelsDir(dir);
         setInitialModelsDir(dir);
         setEngine((ce.engine as Engine) ?? "claude-code");
         setClaudeCodeModel(ce.claude_code_model ?? "sonnet");
         setCopilotModel(ce.copilot_model ?? "");
+        setSearchMode(provider === "none" ? "none" : "ollama");
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
@@ -109,6 +112,19 @@ export function SettingsModal({
   }, [onClose]);
 
   const modelsDirChanged = modelsDir !== initialModelsDir;
+
+  // The search mode applies immediately (independent of Save): it changes
+  // whether launches require the embedding model, so re-running the readiness
+  // check via onModelConfigChanged keeps the setup gate in sync.
+  async function changeSearchMode(mode: SearchMode) {
+    setSearchMode(mode);
+    try {
+      await tauri.setEmbeddingProvider(mode);
+      onModelConfigChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function chooseFolder() {
     try {
@@ -360,6 +376,32 @@ export function SettingsModal({
                 options={[
                   { value: "paper", label: "Paper" },
                   { value: "strata", label: "Strata" },
+                ]}
+              />
+            </div>
+          </section>
+
+          {/* ── Note search ── */}
+          <section className="mb-[26px]">
+            <p className="mb-[11px] text-[11px] font-bold uppercase tracking-[.06em] text-faint">
+              Note search
+            </p>
+            <div className="flex items-center justify-between border-b border-line py-[11px]">
+              <div className="min-w-0 flex-1 pr-4">
+                <p className="text-[13.5px] font-medium text-ink">Retrieval</p>
+                <p className="mt-0.5 text-[11.5px] text-muted">
+                  {searchMode === "ollama"
+                    ? "Semantic search via a local embedding model (Ollama)."
+                    : "Keyword search — no model, fully offline. Re-index to apply."}
+                </p>
+              </div>
+              <Segmented<SearchMode>
+                value={searchMode}
+                onChange={(m) => void changeSearchMode(m)}
+                ariaLabel="Note search mode"
+                options={[
+                  { value: "ollama", label: "Semantic" },
+                  { value: "none", label: "Keyword" },
                 ]}
               />
             </div>

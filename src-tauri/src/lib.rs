@@ -75,6 +75,12 @@ pub fn run_mcp_stdio() -> std::process::ExitCode {
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "chat_message:mcp".to_string());
 
+    // Which search backend `search_notes` uses (semantic vs keyword), forwarded
+    // by the engine's MCP env block. Defaults to semantic (Ollama).
+    let embedding_provider = core::embedding::EmbeddingProvider::from_config(
+        std::env::var("SEDIMENT_EMBEDDING_PROVIDER").ok().as_deref(),
+    );
+
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -83,7 +89,11 @@ pub fn run_mcp_stdio() -> std::process::ExitCode {
         }
     };
 
-    match runtime.block_on(core::formation_mcp::serve_stdio(formation, source_chat_id)) {
+    match runtime.block_on(core::formation_mcp::serve_stdio(
+        formation,
+        source_chat_id,
+        embedding_provider,
+    )) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("sediment --mcp-stdio: {e}");
@@ -145,6 +155,8 @@ pub fn run() {
             commands::models::pull_ollama_model,
             commands::settings::get_models_dir,
             commands::settings::set_models_dir,
+            commands::settings::get_embedding_provider,
+            commands::settings::set_embedding_provider,
             commands::settings::detect_claude_code,
             commands::settings::detect_copilot,
             commands::settings::get_conversation_engine,

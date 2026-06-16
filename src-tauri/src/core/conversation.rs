@@ -50,6 +50,10 @@ pub struct TurnRequest {
     /// The user message's `chat_message` id — stamped as provenance on every
     /// graph Fact the turn records (passed to the MCP server via env var).
     pub source_chat_id: String,
+    /// The note-search backend (`"ollama"` or `"none"`), forwarded to the MCP
+    /// subprocess via `SEDIMENT_EMBEDDING_PROVIDER` so `search_notes` matches
+    /// the user's choice. See `core::embedding::EmbeddingProvider`.
+    pub embedding_provider: String,
     /// Deterministic grounding the orchestrator pushes into the turn *before* the
     /// agent runs (ADR-0011): resolved entities + their current facts, the top
     /// related notes, and the Working Set — pre-rendered as one Markdown block.

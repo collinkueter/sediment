@@ -7,7 +7,8 @@
 //! `remind_at` is a scheduling field the markdown does not express.
 
 use crate::commands::formation::APP_DIR;
-use crate::core::formation_state::{atomic_write, FormationState};
+use crate::core::embedding::EmbeddingProvider;
+use crate::core::formation_state::{atomic_write, AppConfig, FormationState};
 use crate::core::indexer::{apply_task_completions, index_note_path};
 use crate::core::memory::MemoryHandle;
 use crate::core::ollama_sidecar::OllamaSidecar;
@@ -87,7 +88,9 @@ pub async fn complete_task(
     // Re-index Tasks.md: the reconcile flips the row to Done and returns the
     // open→done transition; routing it through apply_task_completions lands
     // the daily-note bullet, the audit entry, and the toast event.
-    match index_note_path(&root, store, &sidecar, TASKS_NOTE_PATH).await {
+    let provider =
+        EmbeddingProvider::from_config(AppConfig::load(&app).embedding_provider.as_deref());
+    match index_note_path(&root, store, &sidecar, provider, TASKS_NOTE_PATH).await {
         Ok(out) if !out.task_completions.is_empty() => {
             apply_task_completions(&app, &root, &out.task_completions);
         }

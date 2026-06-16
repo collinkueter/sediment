@@ -28,6 +28,7 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServiceExt};
 
 use crate::commands::formation::APP_DIR;
+use crate::core::embedding::EmbeddingProvider;
 use crate::core::formation_tools::{self, ToolContext};
 use crate::core::memory::MemoryStore;
 use crate::core::ollama_sidecar::OllamaSidecar;
@@ -50,12 +51,17 @@ struct FormationMcp {
 
 impl FormationMcp {
     /// Open the graph store and assemble the tool context.
-    async fn new(formation_root: PathBuf, source_chat_id: String) -> AppResult<Self> {
+    async fn new(
+        formation_root: PathBuf,
+        source_chat_id: String,
+        embedding_provider: EmbeddingProvider,
+    ) -> AppResult<Self> {
         let store = MemoryStore::open(&memory_dir(&formation_root)).await?;
         let ctx = ToolContext {
             store,
             formation_root,
             sidecar: OllamaSidecar::default(),
+            embedding_provider,
             source_chat_id,
         };
         Ok(Self { ctx })
@@ -144,8 +150,12 @@ impl ServerHandler for FormationMcp {
 /// the nine `formation_tools`, and serves JSON-RPC over stdin/stdout. Returns
 /// when the peer closes the connection. `source_chat_id` is stamped as
 /// provenance on every Fact recorded during the session.
-pub async fn serve_stdio(formation_root: PathBuf, source_chat_id: String) -> AppResult<()> {
-    let server = FormationMcp::new(formation_root, source_chat_id).await?;
+pub async fn serve_stdio(
+    formation_root: PathBuf,
+    source_chat_id: String,
+    embedding_provider: EmbeddingProvider,
+) -> AppResult<()> {
+    let server = FormationMcp::new(formation_root, source_chat_id, embedding_provider).await?;
 
     let running = server
         .serve(rmcp::transport::stdio())
@@ -238,9 +248,13 @@ mod tests {
     #[tokio::test]
     async fn server_info_enables_tools_capability() {
         let root = tempdir();
-        let server = FormationMcp::new(root.clone(), "chat_message:test".to_string())
-            .await
-            .expect("build server");
+        let server = FormationMcp::new(
+            root.clone(),
+            "chat_message:test".to_string(),
+            EmbeddingProvider::Ollama,
+        )
+        .await
+        .expect("build server");
         let info = server.get_info();
         assert!(
             info.capabilities.tools.is_some(),
@@ -255,9 +269,13 @@ mod tests {
     #[tokio::test]
     async fn call_tool_routes_record_and_find_through_dispatch() {
         let root = tempdir();
-        let server = FormationMcp::new(root.clone(), "chat_message:test".to_string())
-            .await
-            .expect("build server");
+        let server = FormationMcp::new(
+            root.clone(),
+            "chat_message:test".to_string(),
+            EmbeddingProvider::Ollama,
+        )
+        .await
+        .expect("build server");
 
         // record_fact via dispatch (the exact path call_tool takes).
         let recorded = formation_tools::dispatch(
@@ -291,9 +309,13 @@ mod tests {
     #[tokio::test]
     async fn call_tool_error_path_returns_an_error_result() {
         let root = tempdir();
-        let server = FormationMcp::new(root.clone(), "chat_message:test".to_string())
-            .await
-            .expect("build server");
+        let server = FormationMcp::new(
+            root.clone(),
+            "chat_message:test".to_string(),
+            EmbeddingProvider::Ollama,
+        )
+        .await
+        .expect("build server");
 
         // An unknown tool name is an Err from dispatch.
         let err = formation_tools::dispatch(&server.ctx, "no_such_tool", json!({})).await;
@@ -313,9 +335,13 @@ mod tests {
     #[ignore]
     async fn serve_stdio_runs() {
         let root = tempdir();
-        serve_stdio(root.clone(), "chat_message:mcp".to_string())
-            .await
-            .expect("serve_stdio");
+        serve_stdio(
+            root.clone(),
+            "chat_message:mcp".to_string(),
+            EmbeddingProvider::Ollama,
+        )
+        .await
+        .expect("serve_stdio");
         std::fs::remove_dir_all(root).ok();
     }
 }

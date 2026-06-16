@@ -67,21 +67,26 @@ export function ModelSetup({
           ))}
         </ul>
 
-        {error && <p className="text-xs text-red-600">{error}</p>}
+        {error && <p className="text-xs text-danger">{error}</p>}
 
         <div className="flex items-start justify-between gap-3">
           <div className="flex flex-col gap-1">
             <button
               type="button"
-              onClick={onComplete}
+              onClick={() => {
+                tauri
+                  .setEmbeddingProvider("none")
+                  .catch(() => {})
+                  .finally(onComplete);
+              }}
               disabled={running}
-              className="text-left text-xs text-muted hover:text-ink-soft disabled:opacity-40"
+              className="text-left text-xs font-medium text-accent-ink hover:underline disabled:opacity-40"
             >
-              Skip — note search disabled
+              Use keyword search instead
             </button>
             <p className="max-w-xs text-[10px] leading-snug text-faint">
-              Without the embedding model, semantic search and the agent's note-search tool won't
-              work. You can install it later from Settings.
+              Skip the download and search notes by keyword — fully offline, no model. You can
+              switch to semantic search anytime from Settings.
             </p>
           </div>
           {missing.length === 0 ? (

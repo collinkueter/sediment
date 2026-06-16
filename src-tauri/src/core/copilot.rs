@@ -542,7 +542,11 @@ impl CopilotEngineHandle {
             if let Some(old) = guard.take() {
                 old.session.shutdown().await;
             }
-            let mcp_path = write_mcp_config(&turn.formation_root, &turn.source_chat_id)?;
+            let mcp_path = write_mcp_config(
+                &turn.formation_root,
+                &turn.source_chat_id,
+                &turn.embedding_provider,
+            )?;
             let session =
                 CopilotSession::spawn(&binary, &turn.formation_root, model, &mcp_path).await?;
             *guard = Some(ResidentEngine {
@@ -604,7 +608,11 @@ fn render_copilot_prompt(turn: &TurnRequest, first: bool) -> String {
 /// Points the `sediment` server at this same binary re-invoked with
 /// `--mcp-stdio` (the existing graph-only MCP server), threading the formation
 /// and provenance through env vars — mirrors the Claude Code engine's MCP config.
-fn write_mcp_config(formation: &Path, source_chat_id: &str) -> AppResult<PathBuf> {
+fn write_mcp_config(
+    formation: &Path,
+    source_chat_id: &str,
+    embedding_provider: &str,
+) -> AppResult<PathBuf> {
     let self_exe =
         std::env::current_exe().map_err(|e| AppError::other(format!("current_exe: {e}")))?;
     let cfg = json!({"mcpServers":{"sediment":{
@@ -614,6 +622,7 @@ fn write_mcp_config(formation: &Path, source_chat_id: &str) -> AppResult<PathBuf
         "env":{
             "SEDIMENT_FORMATION": formation.to_string_lossy(),
             "SEDIMENT_SOURCE_CHAT_ID": source_chat_id,
+            "SEDIMENT_EMBEDDING_PROVIDER": embedding_provider,
         },
         "tools":["*"]
     }}});
@@ -708,6 +717,7 @@ mod tests {
             history: vec![],
             formation_root: PathBuf::from("/f"),
             source_chat_id: "chat_message:1".to_string(),
+            embedding_provider: "ollama".to_string(),
             injected_context: Some("## Currently in play".to_string()),
         };
         let first = render_copilot_prompt(&turn, true);

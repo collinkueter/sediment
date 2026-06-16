@@ -695,6 +695,57 @@ impl MemoryStore {
         Ok(hits)
     }
 
+    /// Top-K keyword search over `note_chunk.text` — the no-embedding-model path
+    /// (EmbeddingProvider::None). Case-insensitive substring term matching: a
+    /// chunk matches if its text contains any query term, ranked by how many
+    /// distinct terms it contains. `distance` carries the negated match count so
+    /// "lower is more relevant" stays consistent with the cosine path. No
+    /// full-text index is needed, which keeps it portable across DB versions and
+    /// is plenty for personal-scale formations.
+    pub async fn search_chunks_text(&self, query: &str, k: usize) -> AppResult<Vec<ChunkHit>> {
+        // Tokenise into lowercase alphanumeric terms (drop 1-char noise).
+        let terms: Vec<String> = query
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| t.len() >= 2)
+            .map(str::to_string)
+            .collect();
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Candidate chunks: any chunk whose lowercased text contains ≥1 term.
+        // Terms are bound as params ($t0, $t1, …) so the query stays injection-safe.
+        let where_clause = (0..terms.len())
+            .map(|i| format!("string::lowercase(text) CONTAINS $t{i}"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let sql = format!(
+            "SELECT note_path, chunk_idx, text, 0.0f AS distance \
+             FROM note_chunk WHERE {where_clause};"
+        );
+        let mut q = self.db.query(sql);
+        for (i, term) in terms.iter().enumerate() {
+            q = q.bind((format!("t{i}"), term.clone()));
+        }
+        let mut res = q
+            .await
+            .map_err(|e| AppError::other(format!("text search: {e}")))?;
+        let mut hits: Vec<ChunkHit> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("take text hits: {e}")))?;
+
+        // Rank by distinct-term match count; encode it as a negative distance.
+        for hit in &mut hits {
+            let lower = hit.text.to_lowercase();
+            let matches = terms.iter().filter(|t| lower.contains(*t)).count();
+            hit.distance = -(matches as f32);
+        }
+        hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+        hits.truncate(k.clamp(1, 100));
+        Ok(hits)
+    }
+
     /// Record that `note_path` was indexed at file-mtime `mtime_secs`. Used to
     /// skip unchanged files on a formation-wide re-index. Replaces any prior row.
     pub async fn record_index_state(&self, note_path: &str, mtime_secs: i64) -> AppResult<()> {
@@ -744,7 +795,9 @@ pub struct NoteChunkInput {
     pub note_path: String,
     pub chunk_idx: i64,
     pub text: String,
-    pub embedding: Vec<f32>,
+    /// The chunk's embedding, or `None` in keyword-search mode (no model) —
+    /// stored as SurrealDB `NULL`, which the HNSW index simply skips.
+    pub embedding: Option<Vec<f32>>,
 }
 
 /// SurrealValue lets `Response::take` deserialise rows directly into this shape
@@ -979,14 +1032,20 @@ DEFINE FIELD IF NOT EXISTS created_at     ON fact TYPE datetime VALUE time::now(
 DEFINE INDEX IF NOT EXISTS fact_validity  ON fact FIELDS valid_from, valid_to;
 DEFINE INDEX IF NOT EXISTS fact_predicate ON fact FIELDS predicate;
 
--- Note chunks for semantic retrieval.
+-- Note chunks for retrieval. `embedding` is optional: the no-local-model
+-- search mode (EmbeddingProvider::None) stores text-only chunks and searches
+-- them with the BM25 full-text index below. OVERWRITE (not IF NOT EXISTS) so
+-- formations created under the old required-`array<float>` schema migrate to
+-- the optional type — a safe widening that leaves existing vectors intact.
 DEFINE TABLE IF NOT EXISTS note_chunk SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS note_path ON note_chunk TYPE string;
 DEFINE FIELD IF NOT EXISTS chunk_idx ON note_chunk TYPE int;
 DEFINE FIELD IF NOT EXISTS text      ON note_chunk TYPE string;
-DEFINE FIELD IF NOT EXISTS embedding ON note_chunk TYPE array<float>;
+DEFINE FIELD OVERWRITE     embedding ON note_chunk TYPE option<array<float>>;
 DEFINE INDEX IF NOT EXISTS chunk_embedding ON note_chunk FIELDS embedding
     HNSW DIMENSION 768 DIST COSINE;
+-- The no-embedding-model path searches `text` with case-insensitive term
+-- matching (see `search_chunks_text`); no full-text index is required.
 
 -- Per-note index state: lets a formation-wide re-index skip unchanged files.
 DEFINE TABLE IF NOT EXISTS note_index_state SCHEMAFULL;
@@ -1207,13 +1266,13 @@ mod tests {
                         note_path: "People/John.md".into(),
                         chunk_idx: 0,
                         text: "John works at Acme.".into(),
-                        embedding: vec_a.clone(),
+                        embedding: Some(vec_a.clone()),
                     },
                     NoteChunkInput {
                         note_path: "People/John.md".into(),
                         chunk_idx: 1,
                         text: "His kid plays baseball.".into(),
-                        embedding: vec_b.clone(),
+                        embedding: Some(vec_b.clone()),
                     },
                 ],
             )
@@ -1227,6 +1286,48 @@ mod tests {
             hits[0].chunk_idx, 0,
             "expected chunk 0 (matching vec_a) first; got {:?}",
             hits
+        );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Keyword/BM25 fallback: store text-only chunks (no embeddings, the
+    /// no-local-model mode) and verify `search_chunks_text` ranks the chunk
+    /// containing the query term first.
+    #[tokio::test]
+    async fn note_chunk_text_search_round_trip() {
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open");
+
+        store
+            .replace_note_chunks(
+                "People/John.md",
+                vec![
+                    NoteChunkInput {
+                        note_path: "People/John.md".into(),
+                        chunk_idx: 0,
+                        text: "John works at Acme as an engineer.".into(),
+                        embedding: None,
+                    },
+                    NoteChunkInput {
+                        note_path: "People/John.md".into(),
+                        chunk_idx: 1,
+                        text: "His kid plays baseball on weekends.".into(),
+                        embedding: None,
+                    },
+                ],
+            )
+            .await
+            .expect("insert text-only chunks");
+
+        let hits = store
+            .search_chunks_text("baseball", 5)
+            .await
+            .expect("text search");
+        assert!(!hits.is_empty(), "expected a keyword hit, got none");
+        assert_eq!(
+            hits[0].chunk_idx, 1,
+            "expected the baseball chunk first; got {hits:?}"
         );
 
         std::fs::remove_dir_all(dir).ok();

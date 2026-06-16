@@ -307,6 +307,10 @@ export const tauri = {
   getModelsDir: () => invoke<string | null>("get_models_dir"),
   /** Set the shared models directory; null/empty clears it back to default. */
   setModelsDir: (dir: string | null) => invoke<void>("set_models_dir", { dir }),
+  /** Note-search backend: "ollama" (semantic, default) or "none" (keyword/BM25). */
+  getEmbeddingProvider: () => invoke<string>("get_embedding_provider"),
+  /** Persist the note-search backend ("ollama" | "none"). */
+  setEmbeddingProvider: (provider: string) => invoke<void>("set_embedding_provider", { provider }),
 
   // Tasks & reminders (ADR-0007)
   listTasks: () => invoke<Task[]>("list_tasks"),

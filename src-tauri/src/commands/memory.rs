@@ -4,7 +4,8 @@
 //! (`core/formation_mcp.rs`), so there is no need to expose them to JS.
 
 use crate::commands::formation::APP_DIR;
-use crate::core::formation_state::FormationState;
+use crate::core::embedding::EmbeddingProvider;
+use crate::core::formation_state::{AppConfig, FormationState};
 use crate::core::indexer::{apply_task_completions, index_note_path};
 use crate::core::memory::MemoryHandle;
 use crate::core::ollama_sidecar::OllamaSidecar;
@@ -41,6 +42,8 @@ pub async fn index_formation(
     use tauri::Emitter;
 
     let formation_root = formation.require()?;
+    let provider =
+        EmbeddingProvider::from_config(AppConfig::load(&app).embedding_provider.as_deref());
     let memory_dir = formation_root.join(APP_DIR).join("memory");
     let store = memory.get_or_init(&memory_dir).await?;
 
@@ -68,7 +71,15 @@ pub async fn index_formation(
                 current_path: note.relative_path.clone(),
             },
         );
-        match index_note_path(&formation_root, store, &sidecar, &note.relative_path).await {
+        match index_note_path(
+            &formation_root,
+            store,
+            &sidecar,
+            provider,
+            &note.relative_path,
+        )
+        .await
+        {
             Ok(out) => {
                 indexed += 1;
                 // A formation-wide re-index may discover `Tasks.md` open→done

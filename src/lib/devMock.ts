@@ -151,6 +151,8 @@ const RESPONSES: Record<string, unknown> = {
   list_audit: [],
   list_tasks: TASKS,
   get_models_dir: "/Users/you/.sediment/models",
+  get_embedding_provider: "ollama",
+  set_embedding_provider: null,
   get_conversation_engine: {
     engine: "claude-code",
     claude_code_model: "sonnet",

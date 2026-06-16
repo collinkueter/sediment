@@ -54,6 +54,11 @@ pub struct AppConfig {
     /// …). `None` falls back to `core::copilot::DEFAULT_MODEL` (ADR-0012).
     #[serde(default)]
     pub copilot_model: Option<String>,
+    /// How note search is powered: `"ollama"` (default — semantic search via the
+    /// local embedding model) or `"none"` (keyword/BM25 search, no local model).
+    /// `None` resolves to `"ollama"`. See `core::embedding::EmbeddingProvider`.
+    #[serde(default)]
+    pub embedding_provider: Option<String>,
 }
 
 impl AppConfig {

@@ -607,6 +607,7 @@ fn mcp_config_json(self_exe: &Path, turn: &TurnRequest) -> String {
                 "env": {
                     "SEDIMENT_FORMATION": turn.formation_root.to_string_lossy(),
                     "SEDIMENT_SOURCE_CHAT_ID": turn.source_chat_id,
+                    "SEDIMENT_EMBEDDING_PROVIDER": turn.embedding_provider,
                 }
             }
         }
@@ -1218,6 +1219,7 @@ mod tests {
             history: vec![],
             formation_root: PathBuf::from("/f"),
             source_chat_id: "chat_message:1".to_string(),
+            embedding_provider: "ollama".to_string(),
             injected_context: None,
         };
         let p = render_turn_prompt(&turn);
@@ -1246,6 +1248,7 @@ mod tests {
             ],
             formation_root: PathBuf::from("/f"),
             source_chat_id: "chat_message:2".to_string(),
+            embedding_provider: "ollama".to_string(),
             injected_context: None,
         };
         let p = render_turn_prompt(&turn);
@@ -1266,6 +1269,7 @@ mod tests {
             history: vec![],
             formation_root: PathBuf::from("/f"),
             source_chat_id: "chat_message:3".to_string(),
+            embedding_provider: "ollama".to_string(),
             injected_context: Some("Josh → People/Josh.md (works_at Cloudflare)".to_string()),
         };
         let p = render_turn_prompt(&with);
@@ -1295,6 +1299,7 @@ mod tests {
             history: vec![],
             formation_root: PathBuf::from("/Users/x/formation"),
             source_chat_id: "chat_message:42".to_string(),
+            embedding_provider: "ollama".to_string(),
             injected_context: None,
         };
         let raw = mcp_config_json(Path::new("/Apps/Sediment.app/sediment"), &turn);
@@ -1373,6 +1378,7 @@ mod tests {
             history: vec![],
             formation_root: root.clone(),
             source_chat_id: "chat_message:live".to_string(),
+            embedding_provider: "ollama".to_string(),
             injected_context: None,
         };
 

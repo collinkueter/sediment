@@ -3,6 +3,7 @@
 //! directory.
 
 use crate::core::claude_code;
+use crate::core::embedding::EmbeddingProvider;
 use crate::core::formation_state::AppConfig;
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
@@ -26,6 +27,36 @@ pub fn set_models_dir(dir: Option<String>, app: tauri::AppHandle) -> AppResult<(
         .map(|d| d.trim().to_string())
         .filter(|d| !d.is_empty())
         .map(PathBuf::from);
+    cfg.save(&app)
+}
+
+// ---- Note-search backend: local embedding model vs keyword (BM25) ----------
+
+/// The configured note-search backend: `"ollama"` (semantic, the default) or
+/// `"none"` (keyword/BM25 — no local model). The settings UI reads this to show
+/// the current mode and to decide whether the embedding-model setup is needed.
+#[tauri::command]
+pub fn get_embedding_provider(app: tauri::AppHandle) -> String {
+    EmbeddingProvider::from_config(AppConfig::load(&app).embedding_provider.as_deref())
+        .as_str()
+        .to_string()
+}
+
+/// Persist the note-search backend. Accepts `"ollama"` / `"none"` (or
+/// `"keyword"` as an alias for `"none"`); anything else is rejected.
+#[tauri::command]
+pub fn set_embedding_provider(provider: String, app: tauri::AppHandle) -> AppResult<()> {
+    let normalized = match provider.trim() {
+        "ollama" => "ollama",
+        "none" | "keyword" => "none",
+        other => {
+            return Err(AppError::other(format!(
+                "unknown embedding provider: {other} (expected \"ollama\" or \"none\")"
+            )));
+        }
+    };
+    let mut cfg = AppConfig::load(&app);
+    cfg.embedding_provider = Some(normalized.to_string());
     cfg.save(&app)
 }
 

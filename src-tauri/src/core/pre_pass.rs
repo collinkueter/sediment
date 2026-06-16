@@ -18,6 +18,7 @@
 //! relationship parsed from the message — that stays the agent's job (GLiNER is
 //! retired); the pre-pass only hands it the current Facts to judge against.
 
+use crate::core::embedding::EmbeddingProvider;
 use crate::core::memory::{record_id_to_string, FactRow, MemoryStore};
 use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
 use std::collections::HashSet;
@@ -99,11 +100,12 @@ impl PrePassContext {
 pub async fn build_pre_pass(
     store: &MemoryStore,
     sidecar: &OllamaSidecar,
+    provider: EmbeddingProvider,
     message: &str,
 ) -> PrePassContext {
     PrePassContext {
         resolved_entities: resolve_entities(store, message).await,
-        related_notes: related_notes(store, sidecar, message).await,
+        related_notes: related_notes(store, sidecar, provider, message).await,
     }
 }
 
@@ -155,27 +157,40 @@ async fn resolve_entities(store: &MemoryStore, message: &str) -> Vec<ResolvedEnt
     out
 }
 
-/// Embed the message and pull the nearest note chunks, de-duplicated by note.
+/// Pull the note chunks most related to the message, de-duplicated by note.
+/// Uses vector search when an embedding model is configured, else BM25 keyword
+/// search — either way best-effort: any failure yields no related-notes section.
 async fn related_notes(
     store: &MemoryStore,
     sidecar: &OllamaSidecar,
+    provider: EmbeddingProvider,
     message: &str,
 ) -> Vec<RelatedNote> {
     if message.trim().is_empty() {
         return Vec::new();
     }
-    let embedding = match sidecar.embed(DEFAULT_EMBED_MODEL, message).await {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::warn!("pre_pass: embed failed, skipping related notes: {e}");
-            return Vec::new();
+    let hits = if provider.is_semantic() {
+        let embedding = match sidecar.embed(DEFAULT_EMBED_MODEL, message).await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("pre_pass: embed failed, skipping related notes: {e}");
+                return Vec::new();
+            }
+        };
+        match store.search_chunks(embedding, RELATED_K).await {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!("pre_pass: search_chunks failed: {e}");
+                return Vec::new();
+            }
         }
-    };
-    let hits = match store.search_chunks(embedding, RELATED_K).await {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::warn!("pre_pass: search_chunks failed: {e}");
-            return Vec::new();
+    } else {
+        match store.search_chunks_text(message, RELATED_K).await {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!("pre_pass: text search failed: {e}");
+                return Vec::new();
+            }
         }
     };
     let mut seen = HashSet::new();
@@ -362,7 +377,13 @@ mod tests {
 
         // Embedding is offline in unit tests; related-notes degrades to empty,
         // and entity resolution still works.
-        let ctx = build_pre_pass(&store, &OllamaSidecar::default(), "Did Josh change jobs?").await;
+        let ctx = build_pre_pass(
+            &store,
+            &OllamaSidecar::default(),
+            EmbeddingProvider::Ollama,
+            "Did Josh change jobs?",
+        )
+        .await;
 
         let josh_e = ctx
             .resolved_entities
