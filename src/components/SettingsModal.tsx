@@ -7,7 +7,13 @@ import { type Theme, useThemeStore } from "@/lib/theme";
 import { useEffect, useRef, useState } from "react";
 
 type Engine = "claude-code" | "copilot";
-type SearchMode = "ollama" | "none";
+type SearchMode = "bundled" | "ollama" | "none";
+
+const SEARCH_MODE_DESCRIPTIONS: Record<SearchMode, string> = {
+  bundled: "On-device semantic search — runs in the app, no Ollama. Downloads ~80 MB once.",
+  ollama: "Semantic search via a local Ollama embedding model (needs the Ollama daemon).",
+  none: "Keyword search — no model, fully offline.",
+};
 
 /** The Claude Code model aliases offered in the model selector. */
 const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
@@ -48,7 +54,7 @@ export function SettingsModal({
         setEngine((ce.engine as Engine) ?? "claude-code");
         setClaudeCodeModel(ce.claude_code_model ?? "sonnet");
         setCopilotModel(ce.copilot_model ?? "");
-        setSearchMode(provider === "none" ? "none" : "ollama");
+        setSearchMode(provider === "none" ? "none" : provider === "bundled" ? "bundled" : "ollama");
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
@@ -121,6 +127,9 @@ export function SettingsModal({
     try {
       await tauri.setEmbeddingProvider(mode);
       onModelConfigChanged();
+      // Pre-load the in-process model in the background so the first on-device
+      // search doesn't pay the download/load cost.
+      if (mode === "bundled") tauri.warmupEmbeddingModel().catch(() => {});
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -386,13 +395,11 @@ export function SettingsModal({
             <p className="mb-[11px] text-[11px] font-bold uppercase tracking-[.06em] text-faint">
               Note search
             </p>
-            <div className="flex items-center justify-between border-b border-line py-[11px]">
-              <div className="min-w-0 flex-1 pr-4">
+            <div className="flex items-center justify-between gap-4 border-b border-line py-[11px]">
+              <div className="min-w-0 flex-1">
                 <p className="text-[13.5px] font-medium text-ink">Retrieval</p>
                 <p className="mt-0.5 text-[11.5px] text-muted">
-                  {searchMode === "ollama"
-                    ? "Semantic search via a local embedding model (Ollama)."
-                    : "Keyword search — no model, fully offline. Re-index to apply."}
+                  {SEARCH_MODE_DESCRIPTIONS[searchMode]} Re-index to apply.
                 </p>
               </div>
               <Segmented<SearchMode>
@@ -400,7 +407,8 @@ export function SettingsModal({
                 onChange={(m) => void changeSearchMode(m)}
                 ariaLabel="Note search mode"
                 options={[
-                  { value: "ollama", label: "Semantic" },
+                  { value: "bundled", label: "On-device" },
+                  { value: "ollama", label: "Ollama" },
                   { value: "none", label: "Keyword" },
                 ]}
               />

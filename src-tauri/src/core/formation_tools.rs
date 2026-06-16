@@ -12,10 +12,10 @@
 //! transport-agnostic — M2 (`core/formation_mcp.rs`) wraps it in a stdio MCP
 //! server, and it is unit-tested here without one.
 
-use crate::core::embedding::EmbeddingProvider;
+use crate::core::embedding::{embed_query, EmbeddingProvider};
 use crate::core::formation_state::atomic_write;
 use crate::core::memory::{record_id_to_string, slugify, FactRow, FactWriteInput, MemoryStore};
-use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
+use crate::core::ollama_sidecar::OllamaSidecar;
 use crate::core::task_note::{parse_tasks_section, render_tasks_note, ChecklistLine};
 use crate::core::tasks::{due_at, put_task, task_key, Task, TaskStatus, TASKS_NOTE_PATH};
 use crate::error::{AppError, AppResult};
@@ -216,11 +216,9 @@ async fn search_notes(ctx: &ToolContext, args: Value) -> AppResult<Value> {
         .map(|n| n as usize)
         .unwrap_or(DEFAULT_SEARCH_K);
 
-    let hits = if ctx.embedding_provider.is_semantic() {
-        let embedding = ctx.sidecar.embed(DEFAULT_EMBED_MODEL, &query).await?;
-        ctx.store.search_chunks(embedding, k).await?
-    } else {
-        ctx.store.search_chunks_text(&query, k).await?
+    let hits = match embed_query(ctx.embedding_provider, &ctx.sidecar, &query).await? {
+        Some(embedding) => ctx.store.search_chunks(embedding, k).await?,
+        None => ctx.store.search_chunks_text(&query, k).await?,
     };
     let results: Vec<Value> = hits
         .into_iter()

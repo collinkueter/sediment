@@ -14,7 +14,22 @@ export function ModelSetup({
   const [readiness, setReadiness] = useState(initial);
   const [progress, setProgress] = useState<Record<string, ModelProgress>>({});
   const [running, setRunning] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Switch to the in-process model (no Ollama) and pre-load it before entering.
+  async function useOnDevice() {
+    setPreparing(true);
+    setError(null);
+    try {
+      await tauri.setEmbeddingProvider("bundled");
+      await tauri.warmupEmbeddingModel();
+      onComplete();
+    } catch (e) {
+      setError(`On-device model — ${e instanceof Error ? e.message : String(e)}`);
+      setPreparing(false);
+    }
+  }
 
   const missing = readiness.requirements.filter((r) => !r.present);
   // The embedding model can't be pulled until Ollama itself is installed.
@@ -70,7 +85,15 @@ export function ModelSetup({
         {error && <p className="text-xs text-danger">{error}</p>}
 
         <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-1.5">
+            <button
+              type="button"
+              onClick={() => void useOnDevice()}
+              disabled={running || preparing}
+              className="text-left text-xs font-semibold text-accent-ink hover:underline disabled:opacity-40"
+            >
+              {preparing ? "Preparing on-device model…" : "Use on-device search (no Ollama)"}
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -79,14 +102,14 @@ export function ModelSetup({
                   .catch(() => {})
                   .finally(onComplete);
               }}
-              disabled={running}
-              className="text-left text-xs font-medium text-accent-ink hover:underline disabled:opacity-40"
+              disabled={running || preparing}
+              className="text-left text-xs font-medium text-muted hover:text-ink-soft disabled:opacity-40"
             >
-              Use keyword search instead
+              Or use keyword search
             </button>
             <p className="max-w-xs text-[10px] leading-snug text-faint">
-              Skip the download and search notes by keyword — fully offline, no model. You can
-              switch to semantic search anytime from Settings.
+              On-device runs the embedding model inside Sediment (one ~80 MB download, no Ollama).
+              Keyword search needs no model at all. Change anytime in Settings.
             </p>
           </div>
           {missing.length === 0 ? (
@@ -101,7 +124,7 @@ export function ModelSetup({
             <button
               type="button"
               onClick={() => void downloadAll()}
-              disabled={running || blockedOnOllama}
+              disabled={running || preparing || blockedOnOllama}
               className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-ink disabled:opacity-40"
             >
               {running

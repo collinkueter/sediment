@@ -67,11 +67,12 @@ pub async fn check_model_readiness(
     sidecar: State<'_, OllamaSidecar>,
     app: tauri::AppHandle,
 ) -> AppResult<ModelReadiness> {
-    // Keyword (BM25) search needs no local model — report ready and skip the
-    // Ollama probe entirely so the setup gate never blocks that mode.
+    // Only the Ollama provider needs this launch-time download gate. Keyword
+    // search needs no model, and the bundled (in-process) model downloads lazily
+    // on first use — both report ready and skip the Ollama probe entirely.
     let provider =
         EmbeddingProvider::from_config(AppConfig::load(&app).embedding_provider.as_deref());
-    if !provider.is_semantic() {
+    if !matches!(provider, EmbeddingProvider::Ollama) {
         return Ok(ModelReadiness {
             ollama_installed: false,
             requirements: Vec::new(),

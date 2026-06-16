@@ -42,22 +42,36 @@ pub fn get_embedding_provider(app: tauri::AppHandle) -> String {
         .to_string()
 }
 
-/// Persist the note-search backend. Accepts `"ollama"` / `"none"` (or
-/// `"keyword"` as an alias for `"none"`); anything else is rejected.
+/// Persist the note-search backend. Accepts `"ollama"`, `"bundled"`, or
+/// `"none"` (with `"keyword"` as an alias for `"none"`); else rejected.
 #[tauri::command]
 pub fn set_embedding_provider(provider: String, app: tauri::AppHandle) -> AppResult<()> {
     let normalized = match provider.trim() {
         "ollama" => "ollama",
+        "bundled" => "bundled",
         "none" | "keyword" => "none",
         other => {
             return Err(AppError::other(format!(
-                "unknown embedding provider: {other} (expected \"ollama\" or \"none\")"
+                "unknown embedding provider: {other} (expected \"ollama\", \"bundled\", or \"none\")"
             )));
         }
     };
     let mut cfg = AppConfig::load(&app);
     cfg.embedding_provider = Some(normalized.to_string());
     cfg.save(&app)
+}
+
+/// Eagerly load (and download if needed) the in-process embedding model, so the
+/// first on-device search doesn't pay the cost. A no-op unless the bundled
+/// provider is selected. The UI calls this after switching to on-device search.
+#[tauri::command]
+pub async fn warmup_embedding_model(app: tauri::AppHandle) -> AppResult<()> {
+    let provider =
+        EmbeddingProvider::from_config(AppConfig::load(&app).embedding_provider.as_deref());
+    if matches!(provider, EmbeddingProvider::Bundled) {
+        crate::core::bundled_embed::warmup().await?;
+    }
+    Ok(())
 }
 
 // ---- ADR-0009: the conversational-agent engine selector --------------------

@@ -10,10 +10,10 @@
 
 use crate::core::audit;
 use crate::core::daily_note;
-use crate::core::embedding::EmbeddingProvider;
+use crate::core::embedding::{embed_query, EmbeddingProvider};
 use crate::core::formation_state::{AppConfig, FormationState};
 use crate::core::memory::{MemoryHandle, MemoryStore, NoteChunkInput};
-use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
+use crate::core::ollama_sidecar::OllamaSidecar;
 use crate::core::tasks::TaskCompletionEvent;
 use crate::core::watcher::FormationWatcher;
 use crate::error::{AppError, AppResult};
@@ -264,13 +264,9 @@ pub async fn index_note_path(
     let chunks = chunk_markdown(&content);
     let mut inputs = Vec::with_capacity(chunks.len());
     for (idx, text) in chunks.iter().enumerate() {
-        // In keyword mode (no local model) we store text-only chunks; the BM25
-        // full-text index makes them searchable without any embedding.
-        let embedding = if provider.is_semantic() {
-            Some(sidecar.embed(DEFAULT_EMBED_MODEL, text).await?)
-        } else {
-            None
-        };
+        // In keyword mode (no local model) `embed_query` returns `None` and we
+        // store text-only chunks; the keyword search makes them findable.
+        let embedding = embed_query(provider, sidecar, text).await?;
         inputs.push(NoteChunkInput {
             note_path: relative_path.to_string(),
             chunk_idx: idx as i64,

@@ -1,5 +1,6 @@
 // Core module: long-lived state and subsystems.
 pub mod audit;
+pub mod bundled_embed;
 pub mod claude_code;
 pub mod conversation;
 pub mod copilot;

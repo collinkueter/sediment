@@ -52,6 +52,12 @@ surrealdb = { version = "3.0", default-features = false, features = ["kv-surreal
 ollama-rs = { version = "0.2", features = ["stream"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
+# --- Bundled in-process embedder (ADR-0014) — local semantic search with no
+# Ollama daemon. fastembed runs an ONNX model in-process via `ort`; weights are
+# fetched once to a cache dir on first use. nomic-embed-text-v1.5 = 768-d, which
+# matches the existing HNSW index dimension.
+fastembed = "4"
+
 # --- Utility ---
 uuid = { version = "1", features = ["v4", "serde"] }
 futures = "0.3"

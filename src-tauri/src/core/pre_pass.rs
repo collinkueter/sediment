@@ -18,9 +18,9 @@
 //! relationship parsed from the message — that stays the agent's job (GLiNER is
 //! retired); the pre-pass only hands it the current Facts to judge against.
 
-use crate::core::embedding::EmbeddingProvider;
+use crate::core::embedding::{embed_query, EmbeddingProvider};
 use crate::core::memory::{record_id_to_string, FactRow, MemoryStore};
-use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
+use crate::core::ollama_sidecar::OllamaSidecar;
 use std::collections::HashSet;
 
 /// How many related note excerpts to pull.
@@ -169,28 +169,26 @@ async fn related_notes(
     if message.trim().is_empty() {
         return Vec::new();
     }
-    let hits = if provider.is_semantic() {
-        let embedding = match sidecar.embed(DEFAULT_EMBED_MODEL, message).await {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("pre_pass: embed failed, skipping related notes: {e}");
-                return Vec::new();
-            }
-        };
-        match store.search_chunks(embedding, RELATED_K).await {
+    let hits = match embed_query(provider, sidecar, message).await {
+        // Semantic providers — vector search over the embedding.
+        Ok(Some(embedding)) => match store.search_chunks(embedding, RELATED_K).await {
             Ok(h) => h,
             Err(e) => {
                 tracing::warn!("pre_pass: search_chunks failed: {e}");
                 return Vec::new();
             }
-        }
-    } else {
-        match store.search_chunks_text(message, RELATED_K).await {
+        },
+        // Keyword mode — text search over the message.
+        Ok(None) => match store.search_chunks_text(message, RELATED_K).await {
             Ok(h) => h,
             Err(e) => {
                 tracing::warn!("pre_pass: text search failed: {e}");
                 return Vec::new();
             }
+        },
+        Err(e) => {
+            tracing::warn!("pre_pass: embed failed, skipping related notes: {e}");
+            return Vec::new();
         }
     };
     let mut seen = HashSet::new();

@@ -7,21 +7,28 @@
 //! call sites take — indexing, the deterministic pre-pass, and the agent's
 //! `search_notes` tool.
 
+use crate::core::ollama_sidecar::{OllamaSidecar, DEFAULT_EMBED_MODEL};
+use crate::error::AppResult;
+
 /// The note-search backend the user has chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddingProvider {
-    /// Local Ollama embedding model — semantic (vector) search.
+    /// Local Ollama embedding model — semantic (vector) search via a daemon.
     Ollama,
-    /// No embedding model — keyword/BM25 search only.
+    /// In-process embedding model (fastembed) — semantic search, no daemon.
+    Bundled,
+    /// No embedding model — keyword search only.
     None,
 }
 
 impl EmbeddingProvider {
     /// Parse the persisted `AppConfig.embedding_provider` string. `None`/unknown
-    /// resolves to the default (`Ollama`); `"none"`/`"keyword"` selects keyword.
+    /// resolves to the default (`Ollama`); `"none"`/`"keyword"` selects keyword;
+    /// `"bundled"` selects the in-process model.
     pub fn from_config(value: Option<&str>) -> Self {
         match value.map(str::trim) {
             Some("none") | Some("keyword") => Self::None,
+            Some("bundled") => Self::Bundled,
             _ => Self::Ollama,
         }
     }
@@ -30,13 +37,24 @@ impl EmbeddingProvider {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ollama => "ollama",
+            Self::Bundled => "bundled",
             Self::None => "none",
         }
     }
+}
 
-    /// True when this provider uses the local embedding model (vector search).
-    pub fn is_semantic(self) -> bool {
-        matches!(self, Self::Ollama)
+/// Embed `text` for the given provider. Returns `Some(vector)` for the semantic
+/// providers and `None` for keyword mode (the caller then uses a text search).
+/// The single place the Ollama-vs-bundled choice is made.
+pub async fn embed_query(
+    provider: EmbeddingProvider,
+    sidecar: &OllamaSidecar,
+    text: &str,
+) -> AppResult<Option<Vec<f32>>> {
+    match provider {
+        EmbeddingProvider::Ollama => Ok(Some(sidecar.embed(DEFAULT_EMBED_MODEL, text).await?)),
+        EmbeddingProvider::Bundled => Ok(Some(crate::core::bundled_embed::embed(text).await?)),
+        EmbeddingProvider::None => Ok(None),
     }
 }
 
@@ -62,6 +80,10 @@ mod tests {
             EmbeddingProvider::from_config(Some("keyword")),
             EmbeddingProvider::None
         );
+        assert_eq!(
+            EmbeddingProvider::from_config(Some("bundled")),
+            EmbeddingProvider::Bundled
+        );
         // Unknown values fall back to the semantic default.
         assert_eq!(
             EmbeddingProvider::from_config(Some("banana")),
@@ -72,8 +94,7 @@ mod tests {
     #[test]
     fn round_trips_as_str() {
         assert_eq!(EmbeddingProvider::Ollama.as_str(), "ollama");
+        assert_eq!(EmbeddingProvider::Bundled.as_str(), "bundled");
         assert_eq!(EmbeddingProvider::None.as_str(), "none");
-        assert!(EmbeddingProvider::Ollama.is_semantic());
-        assert!(!EmbeddingProvider::None.is_semantic());
     }
 }
