@@ -15,6 +15,7 @@ pub mod memory;
 pub mod ollama_sidecar;
 pub mod pre_pass;
 pub mod reminders;
+pub mod self_model;
 pub mod task_note;
 pub mod tasks;
 pub mod watcher;

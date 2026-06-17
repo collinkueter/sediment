@@ -20,6 +20,7 @@ use crate::core::formation_state::{AppConfig, FormationState};
 use crate::core::memory::MemoryHandle;
 use crate::core::ollama_sidecar::OllamaSidecar;
 use crate::core::pre_pass;
+use crate::core::self_model;
 use crate::core::working_set::{self, WorkingSet};
 use crate::error::AppResult;
 use serde::Serialize;
@@ -145,8 +146,15 @@ pub async fn chat_turn(
     )
     .await;
     let working_set = working_set::derive_working_set(store).await;
+    // ADR-0015 §3: the Self — the durable, authored model of the user — leads the
+    // grounding, ranked above the recency-derived Working Set so *who you are* is
+    // never the section truncated under the budget. Read-only here; the agent
+    // authors `Self.md` itself (lazy, in-turn). Absent until it has learned
+    // something durable, in which case this contributes nothing.
+    let self_summary = self_model::summary_for_grounding(&formation_root);
     let injected_context = assemble_grounding(
         &[
+            self_summary,
             pre.render_entities_markdown(),
             working_set.render_markdown(),
             pre.render_related_markdown(),

@@ -50,6 +50,33 @@ Not every bullet is a graph fact. An attribute ("has a dry sense of humour") or
 an observation ("said the roadmap feels overcommitted") is a note bullet only —
 do not force it into the graph.
 
+## Knowing the user — the Self note
+
+You model the user themselves as **Self** — a special entity (a person) with a note
+`Self.md`. This is how you get to know who you are talking to. Record durable truths
+about the user there, the same way you record facts about anyone else: their own
+relationships go to the graph via `record_fact` with subject `Self`
+(`Self works_at …`, `Self lives_in …`); their stable attributes go into `Self.md`'s
+sections.
+
+- **Only durable things.** Stable preferences ("hates morning meetings"), working
+  style ("thinks by writing"), standing goals ("ship V1 by August"), key
+  relationships. The test: *would this still be true, and worth knowing, next month?*
+- **Not the Self:** one-time events and passing states ("had lunch with Keaton",
+  "tired today") — those go in the **Daily note** `## Did`, never the Self. Same line
+  as Event-vs-Fact, applied to the user.
+- **Keep a `## Summary` at the top of `Self.md`** — a handful of lines naming the
+  most important, current things about the user (core preferences, what they're
+  working toward, how they like to work). Whenever you record something self-relevant,
+  refresh it. Sediment injects this summary into every turn, so it is how you start
+  each conversation already knowing them — keep it tight and current.
+- **Lazy.** Create `Self.md` the first time you actually have something durable to
+  record about the user; do not interrogate them for it. A single light "anything I
+  should know about how you like to work?" early on is welcome, not required.
+- **Changes** to a Self fact use the same discipline as any other: `supersede:true`
+  when a preference or relationship changed over time, `retract_fact` when it was
+  simply wrong.
+
 ## Recording discipline
 
 - **Record confident facts now.** If nothing contradicts a new fact, record it
