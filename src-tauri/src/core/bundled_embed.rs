@@ -19,7 +19,11 @@ static MODEL: OnceLock<Mutex<TextEmbedding>> = OnceLock::new();
 /// Where fastembed caches the ONNX weights + tokenizer. Fixed and app-owned so
 /// the main process and the MCP subprocess share one ~80 MB download.
 fn cache_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    // `HOME` on macOS/Linux; `USERPROFILE` on Windows (where `HOME` is usually
+    // unset). The MCP subprocess and the main process resolve the same dir.
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".sediment").join("fastembed")
 }
 

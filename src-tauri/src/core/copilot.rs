@@ -52,6 +52,14 @@ const MAX_TURNS_PER_PROCESS: usize = 40;
 /// nvm-versioned path, so the login-shell probe is the reliable resolver. A few
 /// common prefixes are tried first.
 pub fn locate() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return locate_windows();
+    }
+    locate_unix()
+}
+
+/// macOS / Linux resolver: common prefixes, then a login-shell `command -v`.
+fn locate_unix() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(home) = std::env::var("HOME") {
         candidates.push(PathBuf::from(home).join(".local/bin/copilot"));
@@ -62,6 +70,75 @@ pub fn locate() -> Option<PathBuf> {
         return Some(found);
     }
     login_shell_which("copilot")
+}
+
+/// Windows resolver. The npm global is a `copilot.cmd` shim (no `.exe`); prefer a
+/// real `.exe`, then the `.cmd`, and never the extensionless bash shim — which
+/// `CreateProcess` rejects with `os error 193`. `%APPDATA%\npm` is the npm-global
+/// dir (also where nvm-windows links globals); `where` covers anything else on PATH.
+fn locate_windows() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let npm = PathBuf::from(appdata).join("npm");
+        candidates.push(npm.join("copilot.exe"));
+        candidates.push(npm.join("copilot.cmd"));
+    }
+    if let Some(found) = candidates.into_iter().find(|c| c.is_file()) {
+        return Some(found);
+    }
+    where_which("copilot")
+}
+
+/// `where <bin>` (Windows), returning the most-launchable match: a `.exe` first,
+/// then `.cmd` / `.bat`, and the extensionless shim last.
+fn where_which(bin: &str) -> Option<PathBuf> {
+    let out = std::process::Command::new("where").arg(bin).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut paths: Vec<PathBuf> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    paths.sort_by_key(|p| {
+        match p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("exe") => 0u8,
+            Some("cmd") => 1,
+            Some("bat") => 2,
+            _ => 3,
+        }
+    });
+    paths.into_iter().next()
+}
+
+/// Build the `Command` that launches the located `copilot` with `args`. On Windows
+/// the resolved path is usually a `copilot.cmd` shim (or a bare bash script), which
+/// `CreateProcess` cannot execute directly (`os error 193`); those are run through
+/// `cmd /C`. A real `.exe`, and every macOS / Linux path, is spawned directly. The
+/// caller configures stdio and cwd on the returned `Command`.
+fn copilot_command(binary: &Path, args: &[&str]) -> Command {
+    let needs_cmd_shim = cfg!(windows)
+        && binary
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| !e.eq_ignore_ascii_case("exe"))
+            .unwrap_or(true);
+    if needs_cmd_shim {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(binary).args(args);
+        return c;
+    }
+    let mut c = Command::new(binary);
+    c.args(args);
+    c
 }
 
 /// `$SHELL -lc "command -v <bin>"` — sources the user's shell rc so an
@@ -134,12 +211,13 @@ pub struct CopilotModels {
 /// UI can fall back to a free-text model field.
 pub async fn fetch_models(cwd: &Path) -> AppResult<CopilotModels> {
     let binary = locate().ok_or_else(|| AppError::other("copilot binary not found"))?;
-    let mut child = Command::new(&binary)
-        .args(["--acp", "--add-dir", &cwd.to_string_lossy()])
-        .current_dir(cwd)
+    let cwd_arg = cwd.to_string_lossy().into_owned();
+    let mut cmd = copilot_command(&binary, &["--acp", "--add-dir", &cwd_arg]);
+    cmd.current_dir(cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = cmd
         .spawn()
         .map_err(|e| AppError::other(format!("spawn copilot --acp: {e}")))?;
 
@@ -428,23 +506,28 @@ impl CopilotSession {
         model: &str,
         mcp_config_path: &Path,
     ) -> AppResult<Self> {
-        let mut child = Command::new(binary)
-            .args([
+        let dir_arg = formation.to_string_lossy().into_owned();
+        let mcp_arg = format!("@{}", mcp_config_path.to_string_lossy());
+        let mut cmd = copilot_command(
+            binary,
+            &[
                 "--acp",
                 "--disable-builtin-mcps",
                 "--allow-all-tools",
                 "--no-custom-instructions",
                 "--add-dir",
-                &formation.to_string_lossy(),
+                &dir_arg,
                 "--additional-mcp-config",
-                &format!("@{}", mcp_config_path.to_string_lossy()),
+                &mcp_arg,
                 "--model",
                 model,
-            ])
-            .current_dir(formation)
+            ],
+        );
+        cmd.current_dir(formation)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd
             .spawn()
             .map_err(|e| AppError::other(format!("spawn copilot --acp: {e}")))?;
 
