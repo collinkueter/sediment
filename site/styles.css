@@ -233,6 +233,12 @@ code {
 }
 .strata__note { font-size: 0.84rem; color: var(--ink); text-align: right; }
 
+/* On phones, stack the band so the note isn't cramped beside its tag. */
+@media (max-width: 560px) {
+  .strata__band { flex-direction: column; align-items: flex-start; gap: 3px; }
+  .strata__note { text-align: left; }
+}
+
 /* ============================================================
    PILLARS
    ============================================================ */
