@@ -106,12 +106,42 @@ Self-grounding logic as a tidy module (e.g. `self_model::summary_for_grounding`)
 introduce a trait only when a real *second local* provider exists to shape it — the
 way `ConversationEngine` earned its seam from two real engines (ADR-0008/0012).
 
+### 7. The reflection rider — in-reply, prompt-only (resolves Open question 1)
+
+Synthesis — *noticing patterns the user never stated* — arrives as an **in-reply
+rider**, never a daemon, driven entirely by the behaviour prompt with **no new code
+or state**:
+
+- **In-turn only.** The agent synthesizes from what is already grounded this turn
+  (the Self summary, the Working Set, related notes, the transcript window). It
+  catches in-the-moment patterns, not deep cross-session trends; depth accretes as
+  each quiet recording enriches the injected summary, not via a batch pass. No
+  "recent-activity digest" is injected — that would creep back toward the pass §2
+  declined.
+- **Quiet by default.** A confident, durable, *evidenced* pattern is recorded
+  silently as a tentative observation bullet in a **quarantined `## Patterns`
+  section** of `Self.md` — an observation, never a `record_fact`. It **graduates**
+  into the always-injected `## Summary` only once stable and confident, so a wrong
+  guess never reaches the top-priority slot and is one edit/undo from gone.
+- **Surface rarely, within the existing budget.** Saying a pattern out loud is a
+  proactive surfacing and **shares ADR-0011 §4's single one-beat-per-turn slot** with
+  the clarifying question and the open-loop rider — tentative, dismissable, never
+  twice in a row. No persisted self-observation cooldown in V1 (the transcript window
+  plus prompt discipline carry non-repetition); add state only if measured nagging
+  appears.
+
+This keeps "quiet" the default — defusing the "I notice you always…" failure mode —
+and stays wholly inside ADR-0011's grain: no daemon, no new surface, no new budget.
+
 ## Consequences
 
 - **Positive** — the assistant gains a durable, *authored* model of the user (the
   "gets to know you" capability) inside the single conversation, with **no daemon and
   no new surface**. Reuses entities, Facts, notes, and the audit/undo machinery
   wholesale.
+- **Positive** — the reflection rider (§7) adds the "notices patterns you didn't
+  state" half with **zero new code or state** — pure behaviour-prompt discipline over
+  P1's `Self.md` and ADR-0011 §4's existing one-beat budget.
 - **Positive** — identity is never crowded out by recency; the always-on Self slot is
   small and fixed-cost, and ranked first under the §2 budget.
 - **Positive** — fully **local and transparent**: the Self is plain Markdown,
@@ -132,11 +162,11 @@ way `ConversationEngine` earned its seam from two real engines (ADR-0008/0012).
 
 ## Open questions
 
-1. **Reflection-as-in-reply-rider.** Is there a bounded *in-reply* form of synthesis —
-   at most one derived observation about the user per turn, disciplined exactly like
-   the one-Open-Loop-per-turn rider (ADR-0011 §4) — that adds the "patterns you didn't
-   state" value without a daemon? Deferred; first measure whether in-turn authoring
-   alone already feels like it knows you.
+1. ~~**Reflection-as-in-reply-rider.**~~ **Resolved (2026-06-17) — see §7.** Yes: a
+   prompt-only in-reply rider that records confident, evidenced patterns quietly into
+   a quarantined `## Patterns` section (graduating to `## Summary` when sure) and
+   surfaces one only by winning ADR-0011 §4's existing single proactive beat. No
+   daemon, no new code or state.
 2. **Summary maintenance.** Should `## Summary` be agent-authored prose, or
    deterministically rendered from `Self.md`'s sections? Start agent-authored; revisit
    if it drifts or bloats.
