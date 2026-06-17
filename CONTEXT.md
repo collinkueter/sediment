@@ -24,6 +24,15 @@ _Avoid_: heading, region, block.
 A person, organization, project, meeting, or topic — a node in the knowledge graph.
 _Avoid_: object, item, record.
 
+**Self**:
+The user themselves, modeled as a first-class **Entity** (a person) with a **Note**
+(`Self.md`) whose **Sections** hold their stable attributes — preferences, working
+style, goals, ongoing threads — and **Facts** for their genuine relationships. The
+**Agent**'s durable, *authored* model of who the user is: the counterpart to the
+*derived* **Working Set** (which knows what the user recently *touched*, not who they
+*are*). Not a new store — the existing Entity/Note/Fact model aimed at the user.
+_Avoid_: peer card, profile, user model, memory.
+
 **Fact**:
 A relationship between two entities, carrying a bi-temporal validity window — an
 edge in the knowledge graph. Only relationship-shaped bullets are Facts; an
@@ -85,6 +94,8 @@ _Avoid_: weekly journal, week summary.
 - A **Note** is organized into **Sections**; a **Section** is a list of bullets
 - Most **Entities** have a **Note**; some **Notes** are not **Entities** (e.g. `Tasks.md`, **Daily notes**, **Weekly notes**)
 - A **Fact** connects two **Entities**
+- The **Self** is the user's own **Entity**; its **Note** (`Self.md`) and **Facts**
+  are the **Agent**'s durable, *authored* model of the user, injected into every turn
 - The **Agent** reads the **Formation** and writes **Notes** and **Facts**
 - The **Agent** reads the **Working Set** each turn; it is *derived* from recent activity across the **Formation**, the graph, and the conversation — never authored
 - A **Daily note** captures one calendar day; a **Weekly note** captures one ISO week
@@ -117,6 +128,14 @@ _Avoid_: weekly journal, week summary.
   the **Working Set** is the *short-term* working memory the **Agent** holds for the
   current moment (derived, never stored). Use the specific term; avoid bare "memory"
   in domain conversation.
+- **Self** vs **Daily note** — resolved: durable facts and traits about the user
+  (stable preferences, working style, standing goals, the user's own
+  relationship-**Facts**) live in `Self.md` and the graph; one-time events and
+  transient states about the user stay in the **Daily note** `## Did` only. The same
+  **Event**-vs-**Fact** line, applied to the user. Threshold for the **Self**: "would
+  this still be true, and worth knowing, next month?" The **Self** is the *authored*
+  durable model; the **Working Set** is the *derived* recency view — they complement,
+  never compete.
 - **Open Loop** vs **Task** — resolved: a **Task** is a schedulable action the user
   wants done and alerted (ADR-0007 — `Tasks.md` + the `task` table + notification);
   an **Open Loop** is an unresolved question or decision the **Agent** noticed and
