@@ -120,7 +120,10 @@ pub fn tool_schemas() -> Vec<ToolSchema> {
             name: "record_fact",
             description: "Record a relationship between two entities as a bi-temporal graph \
                           Fact. Use only for genuine entity→entity relationships; ordinary \
-                          note details belong in the note text, not here.",
+                          note details belong in the note text, not here. If the new \
+                          relationship would replace a conflicting current Fact (same subject \
+                          and predicate, different object), the write is REFUSED unless you \
+                          pass supersede:true — resolve the contradiction with the user first.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -130,7 +133,8 @@ pub fn tool_schemas() -> Vec<ToolSchema> {
                     "object": str_prop("The entity on the other end."),
                     "object_type": str_prop("One of: person, organization, meeting, project, task, topic, location, date, event."),
                     "valid_from": str_prop("When the relationship began (YYYY-MM-DD or RFC3339). Defaults to now."),
-                    "valid_to": str_prop("When the relationship ended, if it is historical (YYYY-MM-DD or RFC3339).")
+                    "valid_to": str_prop("When the relationship ended, if it is historical (YYYY-MM-DD or RFC3339)."),
+                    "supersede": { "type": "boolean", "description": "Set true to replace a conflicting current Fact (the relationship changed over time; the prior Fact keeps its history). Required to overwrite an existing relationship — without it a conflicting write is refused." }
                 },
                 "required": ["subject", "subject_type", "predicate", "object", "object_type"]
             }),
@@ -320,6 +324,54 @@ async fn record_fact(ctx: &ToolContext, args: Value) -> AppResult<Value> {
         Some(s) => Some(parse_dt(&s)?),
         None => None,
     };
+    let supersede = args
+        .get("supersede")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    // Contradiction interlock (ADR-0009 §6, hardened): recording a *current*
+    // relationship (no `valid_to`) that conflicts with an existing current Fact —
+    // same subject and predicate, a different object — is refused unless the agent
+    // explicitly passes `supersede:true`. This makes "ask before overwriting" a
+    // code guarantee, not only a prompt instruction: a conflicting write cannot
+    // silently supersede the prior Fact. The check uses lookups (not upserts) so a
+    // refused write never pollutes the graph with half-created entities.
+    if valid_to.is_none() && !supersede {
+        if let Some(subject_entity) = ctx.store.lookup_entity(&subject).await? {
+            let object_id = match ctx.store.lookup_entity(&object).await? {
+                Some(e) => e.id,
+                None => format!("entity:{}", slugify(&object)),
+            };
+            let conflicts = ctx
+                .store
+                .find_conflicts(&subject_entity.id, &predicate, &object_id)
+                .await?;
+            if !conflicts.is_empty() {
+                let existing: Vec<Value> = conflicts
+                    .iter()
+                    .map(|c| {
+                        json!({
+                            "predicate": c.predicate,
+                            "existing_object": c.object_name,
+                            "since": c.valid_from.to_rfc3339(),
+                        })
+                    })
+                    .collect();
+                return Ok(json!({
+                    "recorded": false,
+                    "needs_resolution": true,
+                    "conflicts": existing,
+                    "message": format!(
+                        "Not recorded — \"{subject} {predicate} {object}\" contradicts an \
+                         existing current Fact. Resolve it with the user first, then either: \
+                         call record_fact again with supersede:true to replace it (the prior \
+                         Fact keeps its history), call retract_fact if the old Fact was never \
+                         true, or set valid_to to record this as a historical relationship."
+                    ),
+                }));
+            }
+        }
+    }
 
     let subject_entity = ctx
         .store
@@ -697,6 +749,88 @@ mod tests {
         .await
         .expect("find_contradiction unknown");
         assert!(unknown["contradictions"].as_array().unwrap().is_empty());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The contradiction interlock: a conflicting CURRENT write is refused
+    /// without `supersede:true` (and creates no entities), then goes through —
+    /// superseding the prior Fact — once `supersede:true` is passed.
+    #[tokio::test]
+    async fn record_fact_refuses_conflicting_write_without_supersede() {
+        let (ctx, root) = ctx().await;
+
+        // Seed the current employer.
+        dispatch(
+            &ctx,
+            "record_fact",
+            json!({
+                "subject": "Josh", "subject_type": "person",
+                "predicate": "works_at",
+                "object": "Cloudflare", "object_type": "organization"
+            }),
+        )
+        .await
+        .expect("seed fact");
+
+        // A conflicting current write WITHOUT supersede is refused — nothing written.
+        let refused = dispatch(
+            &ctx,
+            "record_fact",
+            json!({
+                "subject": "Josh", "subject_type": "person",
+                "predicate": "works_at",
+                "object": "Stripe", "object_type": "organization"
+            }),
+        )
+        .await
+        .expect("dispatch ok");
+        assert_eq!(
+            refused["recorded"], false,
+            "the conflicting write is refused"
+        );
+        assert_eq!(refused["needs_resolution"], true);
+
+        // Cloudflare is still the only current employer; Stripe was not created.
+        let found = dispatch(&ctx, "find_entity", json!({ "name": "Josh" }))
+            .await
+            .unwrap();
+        assert_eq!(
+            found["current_facts"].as_array().unwrap().len(),
+            1,
+            "no fact recorded on a refused write"
+        );
+        let stripe = dispatch(&ctx, "find_entity", json!({ "name": "Stripe" }))
+            .await
+            .unwrap();
+        assert_eq!(
+            stripe["found"], false,
+            "a refused write does not create the object entity"
+        );
+
+        // With supersede:true the write goes through and supersedes Cloudflare.
+        let ok = dispatch(
+            &ctx,
+            "record_fact",
+            json!({
+                "subject": "Josh", "subject_type": "person",
+                "predicate": "works_at",
+                "object": "Stripe", "object_type": "organization",
+                "supersede": true
+            }),
+        )
+        .await
+        .expect("supersede");
+        assert!(ok["fact_id"].as_str().unwrap().starts_with("fact:"));
+        let found = dispatch(&ctx, "find_entity", json!({ "name": "Josh" }))
+            .await
+            .unwrap();
+        let facts = found["current_facts"].as_array().unwrap();
+        assert_eq!(
+            facts.len(),
+            1,
+            "exactly one current fact after supersede (Cloudflare became historical)"
+        );
 
         std::fs::remove_dir_all(root).ok();
     }
