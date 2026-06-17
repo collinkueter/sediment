@@ -471,6 +471,11 @@ interface RemindersState {
 interface WorkingSetState {
   workingSet: WorkingSet | null;
   setWorkingSet: (ws: WorkingSet) => void;
+  /** The Self summary — the agent's durable model of the user (ADR-0015 §5). Held
+   *  alongside the Working Set but kept separate: the Self is authored, the
+   *  Working Set is derived. `null` until the agent has learned something durable. */
+  selfSummary: string | null;
+  setSelfSummary: (summary: string | null) => void;
   /** Optimistically remove a dismissed open loop without waiting for a refresh. */
   removeOpenLoop: (loopId: string) => void;
 }
@@ -478,6 +483,8 @@ interface WorkingSetState {
 export const useWorkingSetStore = create<WorkingSetState>((set) => ({
   workingSet: null,
   setWorkingSet: (ws) => set({ workingSet: ws }),
+  selfSummary: null,
+  setSelfSummary: (summary) => set({ selfSummary: summary }),
   removeOpenLoop: (loopId) =>
     set((state) => {
       if (!state.workingSet) return state;

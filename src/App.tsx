@@ -51,6 +51,7 @@ export default function App() {
   const refreshAudit = useAuditStore((s) => s.refresh);
   const setupAudit = useAuditStore((s) => s.setup);
   const setWorkingSet = useWorkingSetStore((s) => s.setWorkingSet);
+  const setSelfSummary = useWorkingSetStore((s) => s.setSelfSummary);
   const [modelReadiness, setModelReadiness] = useState<ModelReadiness | null>(null);
   const [modelsChecked, setModelsChecked] = useState(false);
   const refreshReminders = useRemindersStore((s) => s.refresh);
@@ -120,7 +121,11 @@ export default function App() {
       .getWorkingSet()
       .then(setWorkingSet)
       .catch(() => {});
-  }, [formationPath, setWorkingSet]);
+    tauri
+      .getSelfSummary()
+      .then(setSelfSummary)
+      .catch(() => {});
+  }, [formationPath, setWorkingSet, setSelfSummary]);
 
   // Global shortcuts: ⌘K command palette, ⌘\ toggle note pane, Esc closes overlays.
   useEffect(() => {

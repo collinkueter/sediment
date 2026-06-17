@@ -148,6 +148,7 @@ const RESPONSES: Record<string, unknown> = {
   },
   list_notes: NOTES,
   get_working_set: WORKING_SET,
+  get_self_summary: "- Prefers async over meetings\n- Shipping Sediment V1 by August",
   list_audit: [],
   list_tasks: TASKS,
   get_models_dir: "/Users/you/.sediment/models",

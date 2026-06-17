@@ -283,6 +283,8 @@ export const tauri = {
   },
   /** The current Working Set for the "what's in play" panel (ADR-0011 §3). */
   getWorkingSet: () => invoke<WorkingSet>("get_working_set"),
+  /** The Self summary for the "in focus" panel — `## Summary` of `Self.md` (ADR-0015 §5). */
+  getSelfSummary: () => invoke<string | null>("get_self_summary"),
   /** Dismiss an open loop so it stops surfacing (ADR-0011 §5). */
   dismissOpenLoop: (loopId: string) => invoke<void>("dismiss_open_loop", { loopId }),
 

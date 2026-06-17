@@ -138,6 +138,7 @@ pub fn run() {
             commands::memory::index_formation,
             commands::chat::chat_turn,
             commands::chat::get_working_set,
+            commands::chat::get_self_summary,
             commands::chat::dismiss_open_loop,
             commands::audit::list_audit,
             commands::audit::undo_turn,

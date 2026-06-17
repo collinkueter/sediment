@@ -179,20 +179,51 @@ function LoopPill({
   );
 }
 
+// The Self chip — the agent's durable model of the user (ADR-0015 §5). Opens
+// `Self.md` so you can see and edit exactly what it knows about you. Distinct from
+// the derived entity chips: the Self is authored, always you.
+function SelfChip({ summary }: { summary: string }) {
+  const openNote = useFormationStore((s) => s.openNote);
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        openNote("Self.md").catch(() => {});
+      }}
+      aria-label="Open your Self note — what the agent knows about you"
+      title={summary}
+      className={[
+        "inline-flex items-center gap-1.5 rounded-full border border-line bg-raised px-2.5 py-1",
+        "text-[12.5px] font-medium text-ink shadow-sm transition-[border-color,transform] duration-150",
+        "cursor-pointer hover:-translate-y-px hover:border-accent",
+      ].join(" ")}
+    >
+      <span
+        className="inline-block h-[7px] w-[7px] flex-none rounded-full bg-[var(--accent)]"
+        aria-hidden="true"
+      />
+      <span>You</span>
+    </button>
+  );
+}
+
 // ── Main component ───────────────────────────────────────────────────────────
 
 export function InFocusBar() {
   const workingSet = useWorkingSetStore((s) => s.workingSet);
+  const selfSummary = useWorkingSetStore((s) => s.selfSummary);
   const removeOpenLoop = useWorkingSetStore((s) => s.removeOpenLoop);
   const toggleReminders = useUiStore((s) => s.toggleReminders);
 
   const today = new Date();
 
-  if (!workingSet) return null;
-
-  const { activeEntities, openTasks, openLoops } = workingSet;
+  const activeEntities = workingSet?.activeEntities ?? [];
+  const openTasks = workingSet?.openTasks ?? [];
+  const openLoops = workingSet?.openLoops ?? [];
   const hasContent = activeEntities.length > 0 || openTasks.length > 0 || openLoops.length > 0;
-  if (!hasContent) return null;
+  // The bar shows if the agent knows you (Self) OR there's recent activity.
+  if (!selfSummary && !hasContent) return null;
 
   // Visible entity chips (capped)
   const visibleEntities = activeEntities.slice(0, MAX_ENTITIES);
@@ -227,6 +258,12 @@ export function InFocusBar() {
         />
         In focus
       </span>
+
+      {/* Self chip — what the agent knows about you (ADR-0015 §5) */}
+      {selfSummary && <SelfChip summary={selfSummary} />}
+      {selfSummary && hasContent && (
+        <span className="h-[18px] w-px flex-none bg-line-strong" aria-hidden="true" />
+      )}
 
       {/* Entity chips */}
       {visibleEntities.map((e) => (

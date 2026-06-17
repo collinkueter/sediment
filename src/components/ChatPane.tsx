@@ -62,6 +62,11 @@ export function ChatPane() {
       );
       // Refresh the Working Set panel with the authoritative state from this turn.
       useWorkingSetStore.getState().setWorkingSet(result.workingSet);
+      // The turn may have updated Self.md — refresh the Self summary too (ADR-0015 §5).
+      tauri
+        .getSelfSummary()
+        .then((s) => useWorkingSetStore.getState().setSelfSummary(s))
+        .catch(() => {});
       // The turn edited notes on disk and may have recorded a task — refresh
       // the file list, the audit log, and the reminders list.
       await useFormationStore.getState().refreshNotes();

@@ -32,18 +32,27 @@ const SELF_SUMMARY_BUDGET: usize = 1200;
 /// no `Self.md`, no `## Summary`, or the section is empty — i.e. the agent has not
 /// yet learned anything durable about the user.
 pub fn summary_for_grounding(formation_root: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(formation_root.join(SELF_NOTE_PATH)).ok()?;
-    let summary = extract_section(&content, SUMMARY_HEADING)?;
-    let summary = summary.trim();
-    if summary.is_empty() {
-        return None;
-    }
-    let summary = truncate_chars(summary, SELF_SUMMARY_BUDGET);
+    let summary = truncate_chars(&summary_text(formation_root)?, SELF_SUMMARY_BUDGET);
     Some(format!(
         "## About you\n\
          The durable model of the person you are talking to — treat it as current.\n\n\
          {summary}"
     ))
+}
+
+/// The raw `## Summary` body of `Self.md` — the agent's stated identity, trimmed.
+/// `None` when there is no Self note, no `## Summary`, or the section is empty. For
+/// *display* (the "in focus" panel, ADR-0015 §5); the grounding form is
+/// [`summary_for_grounding`].
+pub fn summary_text(formation_root: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(formation_root.join(SELF_NOTE_PATH)).ok()?;
+    let summary = extract_section(&content, SUMMARY_HEADING)?;
+    let summary = summary.trim();
+    if summary.is_empty() {
+        None
+    } else {
+        Some(summary.to_string())
+    }
 }
 
 /// The body of the `## <heading>` section — every line between the heading and the

@@ -267,6 +267,15 @@ pub async fn get_working_set(
     Ok(working_set::derive_working_set(store).await)
 }
 
+/// The Self summary for the "in focus" panel — the `## Summary` of `Self.md`
+/// (ADR-0015 §5). `None` until the agent has learned something durable about the
+/// user. Read-only and cheap; the agent authors `Self.md` itself.
+#[tauri::command]
+pub fn get_self_summary(formation: State<'_, FormationState>) -> AppResult<Option<String>> {
+    let root = formation.require()?;
+    Ok(self_model::summary_text(&root))
+}
+
 /// Dismiss an Open Loop from the UI — archives it so it stops surfacing
 /// (ADR-0011 §5). The one-tap companion to the agent's `close_open_loop`.
 #[tauri::command]
