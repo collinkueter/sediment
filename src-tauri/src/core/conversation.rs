@@ -3,9 +3,11 @@
 //! ADR-0009 collapses the old Write/Ask command bus into a single
 //! conversational **agent loop**. Each turn the agent grounds itself, records
 //! what it learns, and replies. *Who runs that loop* is abstracted behind the
-//! [`ConversationEngine`] trait so V1 can ship one engine — the Claude Code CLI
-//! ([`crate::core::claude_code::ClaudeCodeEngine`]) — while leaving room for the
-//! Gemini CLI (M6) and HTTP API engines later.
+//! [`ConversationEngine`] trait. The cold-spawn engines implement it directly —
+//! V1 ships the Claude Code CLI ([`crate::core::claude_code::ClaudeCodeEngine`]).
+//! The warm GitHub Copilot ACP engine (ADR-0012) holds a resident session across
+//! turns ([`crate::core::copilot::CopilotEngineHandle`]) and so lives in Tauri
+//! state and is routed separately by `chat_turn` rather than through this trait.
 //!
 //! The trait is deliberately **Tauri-agnostic**: streamed events flow through a
 //! plain [`TurnEventSink`] closure, not a `tauri::ipc::Channel`. M4's `chat_turn`
@@ -59,6 +61,11 @@ pub struct TurnRequest {
     /// related notes, and the Working Set — pre-rendered as one Markdown block.
     /// The engine splices it into the prompt; `None` means no pre-pass ran.
     pub injected_context: Option<String>,
+    /// The Agent's conversational tone (`"stoic"` / `"warm"` / `"sassy"`),
+    /// parsed by `core::agent_tone::AgentTone::from_config` and spliced into the
+    /// behaviour prompt's `## Tone` section. An empty string means the default
+    /// (warm). Reply wording only — never affects what the turn records.
+    pub tone: String,
 }
 
 /// A streamed event during a turn.
@@ -109,7 +116,9 @@ pub struct TurnOutcome {
 
 /// Runs the agent loop for one conversational turn.
 ///
-/// V1's only implementor is [`crate::core::claude_code::ClaudeCodeEngine`].
+/// Implemented by the cold-spawn engines — V1's is
+/// [`crate::core::claude_code::ClaudeCodeEngine`]. The warm Copilot engine
+/// (ADR-0012) is routed separately by `chat_turn`, not through this trait.
 /// `run_turn` is `&self` so an engine can be shared across turns; per-turn
 /// state lives entirely in the [`TurnRequest`].
 #[async_trait]

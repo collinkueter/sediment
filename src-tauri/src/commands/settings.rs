@@ -2,6 +2,7 @@
 //! ADR-0012 — Claude Code CLI or GitHub Copilot CLI) and the shared models
 //! directory.
 
+use crate::core::agent_tone::AgentTone;
 use crate::core::claude_code;
 use crate::core::embedding::EmbeddingProvider;
 use crate::core::formation_state::AppConfig;
@@ -149,5 +150,38 @@ pub fn set_conversation_engine(
         "copilot" => cfg.copilot_model = model,
         _ => cfg.claude_code_model = model,
     }
+    cfg.save(&app)
+}
+
+// ---- ADR-0009 §8: the Agent's conversational tone -------------------------
+
+/// The Agent's configured tone: `"stoic"`, `"warm"` (default), or `"sassy"`.
+/// A parameter of the one behaviour prompt — it changes reply wording only,
+/// never what the Agent records. `None`/unrecognised resolves to `"warm"`.
+#[tauri::command]
+pub fn get_agent_tone(app: tauri::AppHandle) -> String {
+    AgentTone::from_config(AppConfig::load(&app).agent_tone.as_deref())
+        .as_str()
+        .to_string()
+}
+
+/// Persist the Agent's tone. Accepts `"stoic"`, `"warm"`, or `"sassy"`; any
+/// other value is rejected. The change takes effect on the next turn — Claude
+/// re-sends the system prompt each turn, and the warm Copilot session recycles
+/// when the tone changes (see `core::copilot`).
+#[tauri::command]
+pub fn set_agent_tone(tone: String, app: tauri::AppHandle) -> AppResult<()> {
+    let normalized = match tone.trim() {
+        "stoic" => "stoic",
+        "warm" => "warm",
+        "sassy" => "sassy",
+        other => {
+            return Err(AppError::other(format!(
+                "unknown agent tone: {other} (expected \"stoic\", \"warm\", or \"sassy\")"
+            )));
+        }
+    };
+    let mut cfg = AppConfig::load(&app);
+    cfg.agent_tone = Some(normalized.to_string());
     cfg.save(&app)
 }

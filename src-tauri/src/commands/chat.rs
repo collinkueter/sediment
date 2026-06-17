@@ -7,12 +7,14 @@
 //! audit log, not a blocking queue.
 
 use crate::commands::formation::APP_DIR;
+use crate::core::agent_tone;
 use crate::core::audit::{self, AuditEntry, ChangedNote, ChatTurnEntry};
 use crate::core::claude_code::{self, ClaudeCodeEngine};
 use crate::core::conversation::{
     ConversationEngine, TranscriptTurn, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest,
 };
 use crate::core::copilot::{self, CopilotEngineHandle};
+use crate::core::daily_note;
 use crate::core::embedding::EmbeddingProvider;
 use crate::core::formation_state::{AppConfig, FormationState};
 use crate::core::memory::MemoryHandle;
@@ -109,6 +111,16 @@ pub async fn chat_turn(
         .map(|(role, content)| TranscriptTurn { role, content })
         .collect();
 
+    // Materialise today's daily note BEFORE the snapshot so the "first turn each
+    //    day" guarantee is enforced in code rather than left to the agent.
+    //    Idempotent (a no-op once today's note exists), and best-effort — a
+    //    failure here must never fail the turn. Creating it pre-snapshot keeps
+    //    the skeleton out of this turn's diff; only the agent's own edits to it
+    //    surface as changes.
+    if let Err(e) = daily_note::ensure_daily_note(&formation_root, daily_note::today_local()) {
+        tracing::warn!("chat_turn: ensure daily note failed: {e}");
+    }
+
     // 3. Snapshot the whole formation BEFORE the turn. The agent edits notes
     //    with its own file tools, so the diff is how the audit log learns what
     //    changed (ADR-0009 §6).
@@ -149,6 +161,9 @@ pub async fn chat_turn(
         source_chat_id: source_chat_id.clone(),
         embedding_provider: embedding_provider.as_str().to_string(),
         injected_context,
+        tone: agent_tone::AgentTone::from_config(cfg.agent_tone.as_deref())
+            .as_str()
+            .to_string(),
     };
     let sink: TurnEventSink = {
         let channel = on_event.clone();

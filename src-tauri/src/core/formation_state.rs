@@ -59,6 +59,12 @@ pub struct AppConfig {
     /// `None` resolves to `"ollama"`. See `core::embedding::EmbeddingProvider`.
     #[serde(default)]
     pub embedding_provider: Option<String>,
+    /// The Agent's conversational tone: `"stoic"`, `"warm"` (default), or
+    /// `"sassy"`. A parameter of the one behaviour prompt — it changes reply
+    /// wording only, never what gets recorded. `None` resolves to `"warm"`.
+    /// See `core::agent_tone::AgentTone`.
+    #[serde(default)]
+    pub agent_tone: Option<String>,
 }
 
 impl AppConfig {

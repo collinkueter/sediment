@@ -2,8 +2,9 @@
 //!
 //! Sediment defaults to semantic search via a local Ollama embedding model
 //! (`nomic-embed-text`), but supports a fully local, no-model alternative:
-//! keyword/BM25 search over the same `note_chunk.text` (SurrealDB's built-in
-//! full-text index). The provider selects which path the three embedding
+//! keyword search (substring term-matching over the same `note_chunk.text` —
+//! ADR-0013 §Negative notes BM25 index syntax was unavailable). The provider
+//! selects which path the three embedding
 //! call sites take — indexing, the deterministic pre-pass, and the agent's
 //! `search_notes` tool.
 

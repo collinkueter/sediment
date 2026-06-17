@@ -1,4 +1,5 @@
 // Core module: long-lived state and subsystems.
+pub mod agent_tone;
 pub mod audit;
 pub mod bundled_embed;
 pub mod claude_code;

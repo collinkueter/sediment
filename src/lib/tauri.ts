@@ -303,6 +303,10 @@ export const tauri = {
   getConversationEngine: () => invoke<ConversationEngineConfig>("get_conversation_engine"),
   setConversationEngine: (engine: string, model: string | null) =>
     invoke<void>("set_conversation_engine", { engine, model }),
+  /** The Agent's conversational tone: "stoic" | "warm" | "sassy". */
+  getAgentTone: () => invoke<string>("get_agent_tone"),
+  /** Persist the Agent's tone ("stoic" | "warm" | "sassy"); applies next turn. */
+  setAgentTone: (tone: string) => invoke<void>("set_agent_tone", { tone }),
   /** The shared models directory, or null for Ollama's default. */
   getModelsDir: () => invoke<string | null>("get_models_dir"),
   /** Set the shared models directory; null/empty clears it back to default. */

@@ -8,6 +8,13 @@ import { useEffect, useRef, useState } from "react";
 
 type Engine = "claude-code" | "copilot";
 type SearchMode = "bundled" | "ollama" | "none";
+type Tone = "stoic" | "warm" | "sassy";
+
+const TONE_DESCRIPTIONS: Record<Tone, string> = {
+  stoic: "Factual and terse — just what was recorded, no warmth or filler.",
+  warm: "Warm, concise, direct — a thinking partner. The default.",
+  sassy: "Warm with a bit of edge — the occasional light zinger.",
+};
 
 const SEARCH_MODE_DESCRIPTIONS: Record<SearchMode, string> = {
   bundled: "On-device semantic search — runs in the app, no Ollama. Downloads ~80 MB once.",
@@ -40,6 +47,7 @@ export function SettingsModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchMode, setSearchMode] = useState<SearchMode>("ollama");
+  const [tone, setTone] = useState<Tone>("warm");
   const dialogRef = useRef<HTMLDivElement>(null);
 
   const { theme, setTheme } = useThemeStore();
@@ -47,14 +55,20 @@ export function SettingsModal({
   const pickFormation = useFormationStore((s) => s.pick);
 
   useEffect(() => {
-    Promise.all([tauri.getModelsDir(), tauri.getConversationEngine(), tauri.getEmbeddingProvider()])
-      .then(([dir, ce, provider]) => {
+    Promise.all([
+      tauri.getModelsDir(),
+      tauri.getConversationEngine(),
+      tauri.getEmbeddingProvider(),
+      tauri.getAgentTone(),
+    ])
+      .then(([dir, ce, provider, agentTone]) => {
         setModelsDir(dir);
         setInitialModelsDir(dir);
         setEngine((ce.engine as Engine) ?? "claude-code");
         setClaudeCodeModel(ce.claude_code_model ?? "sonnet");
         setCopilotModel(ce.copilot_model ?? "");
         setSearchMode(provider === "none" ? "none" : provider === "bundled" ? "bundled" : "ollama");
+        setTone(agentTone === "stoic" || agentTone === "sassy" ? agentTone : "warm");
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
@@ -131,6 +145,20 @@ export function SettingsModal({
       // search doesn't pay the download/load cost.
       if (mode === "bundled") tauri.warmupEmbeddingModel().catch(() => {});
     } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // Tone applies immediately (independent of Save): it only changes reply
+  // wording, takes effect on the next turn, and recycles the warm Copilot
+  // session server-side — nothing else in the form depends on it.
+  async function changeTone(next: Tone) {
+    const prev = tone;
+    setTone(next);
+    try {
+      await tauri.setAgentTone(next);
+    } catch (e) {
+      setTone(prev);
       setError(e instanceof Error ? e.message : String(e));
     }
   }
@@ -360,6 +388,24 @@ export function SettingsModal({
                     </span>
                   </label>
                 )}
+
+                {/* Tone — a parameter of the one behaviour prompt; applies next turn */}
+                <div className="mt-3 flex items-center justify-between gap-4 border-t border-line pt-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13.5px] font-medium text-ink">Tone</p>
+                    <p className="mt-0.5 text-[11.5px] text-muted">{TONE_DESCRIPTIONS[tone]}</p>
+                  </div>
+                  <Segmented<Tone>
+                    value={tone}
+                    onChange={(t) => void changeTone(t)}
+                    ariaLabel="Agent tone"
+                    options={[
+                      { value: "stoic", label: "Stoic" },
+                      { value: "warm", label: "Warm" },
+                      { value: "sassy", label: "Sassy" },
+                    ]}
+                  />
+                </div>
               </>
             )}
 

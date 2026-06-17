@@ -162,6 +162,8 @@ pub fn run() {
             commands::settings::detect_copilot,
             commands::settings::get_conversation_engine,
             commands::settings::set_conversation_engine,
+            commands::settings::get_agent_tone,
+            commands::settings::set_agent_tone,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sediment");

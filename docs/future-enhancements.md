@@ -7,7 +7,17 @@ Promote an item to an ADR (if it is a real, hard-to-reverse decision) or a plan
 
 ---
 
-## Configurable assistant tone ("banter level")
+## Configurable assistant tone ("banter level") — **shipped**
+
+Built as a three-preset tone setting (**Stoic · Warm · Sassy**), Settings-only
+for v1. Tone is a *parameter* of the one behaviour prompt (ADR-0009 §8): the
+selected preset's body is spliced into the prompt's `## Tone` section at turn
+time — it changes reply wording only, never what the Agent records. Lives in
+`core/agent_tone.rs` (the presets + `render_system_prompt`), `AppConfig.agent_tone`,
+the `get/set_agent_tone` commands, and the Tone control in `SettingsModal.tsx`.
+The warm Copilot session recycles on a tone change so the new persona applies
+next turn (`core/copilot.rs`). Deferred to a later pass: mid-conversation tuning
+(*"dial it down"* in chat) and a continuous slider. Original sketch below.
 
 **What.** Let the user dial the **Agent**'s conversational personality along a
 spectrum — from factual / stoic, through warm (today's default), to sassy /

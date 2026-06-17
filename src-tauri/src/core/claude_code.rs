@@ -33,6 +33,7 @@
 //! outcome. A `rate_limit_event` with a non-`"allowed"` status surfaces a
 //! quota-exhausted error rather than an opaque one.
 
+use crate::core::agent_tone;
 use crate::core::conversation::{
     ConversationEngine, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest,
 };
@@ -649,11 +650,19 @@ impl ConversationEngine for ClaudeCodeEngine {
 
         let prompt = render_turn_prompt(turn);
 
+        // Tone is a parameter of the one behaviour prompt (ADR-0009 §8): splice
+        // the selected tone into its `## Tone` section. Claude re-sends the
+        // system prompt every turn, so a tone change applies on the next turn.
+        let system_prompt = agent_tone::render_system_prompt(
+            CONVERSATION_AGENT_PROMPT,
+            agent_tone::AgentTone::from_config(Some(&turn.tone)),
+        );
+
         let spawn_result = Command::new(&binary)
             .args([
                 "-p",
                 "--system-prompt",
-                CONVERSATION_AGENT_PROMPT,
+                system_prompt.as_str(),
                 "--output-format",
                 "stream-json",
                 "--include-partial-messages",
@@ -1221,6 +1230,7 @@ mod tests {
             source_chat_id: "chat_message:1".to_string(),
             embedding_provider: "ollama".to_string(),
             injected_context: None,
+            tone: String::new(),
         };
         let p = render_turn_prompt(&turn);
         assert!(p.contains("# Your formation"));
@@ -1250,6 +1260,7 @@ mod tests {
             source_chat_id: "chat_message:2".to_string(),
             embedding_provider: "ollama".to_string(),
             injected_context: None,
+            tone: String::new(),
         };
         let p = render_turn_prompt(&turn);
         assert!(p.contains("# Your formation"));
@@ -1271,6 +1282,7 @@ mod tests {
             source_chat_id: "chat_message:3".to_string(),
             embedding_provider: "ollama".to_string(),
             injected_context: Some("Josh → People/Josh.md (works_at Cloudflare)".to_string()),
+            tone: String::new(),
         };
         let p = render_turn_prompt(&with);
         assert!(p.contains("# What you already know"));
@@ -1301,6 +1313,7 @@ mod tests {
             source_chat_id: "chat_message:42".to_string(),
             embedding_provider: "ollama".to_string(),
             injected_context: None,
+            tone: String::new(),
         };
         let raw = mcp_config_json(Path::new("/Apps/Sediment.app/sediment"), &turn);
         let v: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
@@ -1380,6 +1393,7 @@ mod tests {
             source_chat_id: "chat_message:live".to_string(),
             embedding_provider: "ollama".to_string(),
             injected_context: None,
+            tone: String::new(),
         };
 
         let engine = ClaudeCodeEngine::new(DEFAULT_MODEL);

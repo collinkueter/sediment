@@ -16,6 +16,7 @@
 //! - **[`CopilotEngineHandle`]** — Tauri state holding the warm session, created
 //!   lazily per formation and recycled on error or degradation (#2755).
 
+use crate::core::agent_tone;
 use crate::core::conversation::{TurnEvent, TurnEventSink, TurnOutcome, TurnRequest};
 use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
@@ -502,6 +503,10 @@ struct ResidentEngine {
     session: CopilotSession,
     formation: PathBuf,
     model: String,
+    /// The tone the persona was sent with. The warm session caches the persona
+    /// on its first turn, so a tone change in Settings only takes effect by
+    /// recycling the session — mirrors how a model change is handled.
+    tone: String,
 }
 
 /// Tauri state holding the warm Copilot session. Lazily created per formation,
@@ -535,6 +540,7 @@ impl CopilotEngineHandle {
             Some(re) => {
                 re.formation != turn.formation_root
                     || re.model != model
+                    || re.tone != turn.tone
                     || re.session.turns.load(Ordering::SeqCst) >= MAX_TURNS_PER_PROCESS
             }
         };
@@ -553,6 +559,7 @@ impl CopilotEngineHandle {
                 session,
                 formation: turn.formation_root.clone(),
                 model: model.to_string(),
+                tone: turn.tone.clone(),
             });
         }
 
@@ -583,7 +590,15 @@ impl CopilotEngineHandle {
 fn render_copilot_prompt(turn: &TurnRequest, first: bool) -> String {
     let mut out = String::new();
     if first {
-        out.push_str(CONVERSATION_AGENT_PROMPT);
+        // Tone is a parameter of the one behaviour prompt (ADR-0009 §8). The
+        // persona is sent only on the first turn of a warm session; a tone
+        // change recycles the session (see `need_new`) so the new persona is
+        // sent next turn.
+        let persona = agent_tone::render_system_prompt(
+            CONVERSATION_AGENT_PROMPT,
+            agent_tone::AgentTone::from_config(Some(&turn.tone)),
+        );
+        out.push_str(&persona);
         out.push_str("\n\n# Your formation\n\n");
         out.push_str(
             "Read and write notes only inside this folder, using absolute paths under it:\n",
@@ -719,6 +734,7 @@ mod tests {
             source_chat_id: "chat_message:1".to_string(),
             embedding_provider: "ollama".to_string(),
             injected_context: Some("## Currently in play".to_string()),
+            tone: String::new(),
         };
         let first = render_copilot_prompt(&turn, true);
         assert!(
