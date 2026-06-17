@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sediment — Talk. It remembers.</title>
+    <meta
+      name="description"
+      content="Sediment is a desktop note-taking app where you think out loud. An AI agent grounds itself in your notes, records what it learns, and questions you when something is unclear — all on-device, in plain Markdown."
+    />
+    <meta name="theme-color" content="#f4efe4" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Sediment — Talk. It remembers." />
+    <meta
+      property="og:description"
+      content="A desktop note-taking app where the primary input is conversation. You talk; it records, organizes, and sharpens your thinking — on-device, in plain Markdown."
+    />
+    <meta property="og:url" content="https://collinkueter.github.io/sediment/" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..600&family=Hanken+Grotesk:wght@300..700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+
+    <!-- ───────────────────────── NAV ───────────────────────── -->
+    <header class="nav" id="nav">
+      <a class="nav__brand" href="#top" aria-label="Sediment home">
+        <span class="mark" aria-hidden="true">
+          <span class="mark__layer"></span>
+          <span class="mark__layer"></span>
+          <span class="mark__layer"></span>
+        </span>
+        <span class="nav__wordmark">Sediment</span>
+      </a>
+      <nav class="nav__links" aria-label="Primary">
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#name">The name</a>
+      </nav>
+      <a class="btn btn--small" href="#download">Download</a>
+    </header>
+
+    <main id="top">
+      <!-- ──────────────────────── HERO ──────────────────────── -->
+      <section class="hero">
+        <div class="hero__copy">
+          <p class="eyebrow reveal">A desktop app for thinking</p>
+          <h1 class="hero__title reveal">
+            Talk.<br />It listens,<br /><em>records</em>, and asks.
+          </h1>
+          <p class="hero__lede reveal">
+            Sediment is a note-taking app where the primary input is
+            conversation. You think out loud; an AI agent grounds itself in
+            what you already know, writes down what it learns, and questions
+            you when something is unclear — or contradicts itself.
+          </p>
+          <div class="hero__cta reveal">
+            <a class="btn btn--primary" href="#download">Download for macOS</a>
+            <a class="btn btn--ghost" href="https://github.com/collinkueter/sediment" target="_blank" rel="noopener">
+              View source
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 11L11 3M11 3H5M11 3V9" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </a>
+          </div>
+          <p class="hero__fineprint reveal">
+            macOS · Apple Silicon · runs on your own Claude Code or Copilot subscription
+          </p>
+        </div>
+
+        <!-- Signature visual: a conversational turn settling into strata -->
+        <div class="hero__stage reveal" aria-hidden="true">
+          <div class="stage" data-parallax-root>
+            <div class="chat" data-parallax="6">
+              <div class="chat__msg chat__msg--you">
+                Josh moved from Cloudflare to Stripe last month.
+              </div>
+              <div class="chat__msg chat__msg--agent">
+                Got it — I'd recorded Josh at Cloudflare since March. I'll
+                supersede that and keep the history. Same team, or a new role?
+              </div>
+            </div>
+
+            <div class="strata" data-parallax="-4">
+              <div class="strata__band">
+                <span class="strata__tag">People / Josh.md</span>
+                <span class="strata__note">Works at <b>Stripe</b> — Payments</span>
+              </div>
+              <div class="strata__band">
+                <span class="strata__tag">Fact · superseded</span>
+                <span class="strata__note">Cloudflare <s>→ now</s> Stripe</span>
+              </div>
+              <div class="strata__band">
+                <span class="strata__tag">Open loop</span>
+                <span class="strata__note">New role, or same team?</span>
+              </div>
+              <div class="strata__band strata__band--deep">
+                <span class="strata__tag">Daily Notes / 2026-06-17</span>
+                <span class="strata__note">## Did — talked through Josh's move</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─────────────────────── PILLARS ─────────────────────── -->
+      <section class="pillars" aria-label="What makes Sediment different">
+        <div class="pillar reveal">
+          <p class="pillar__k">On your machine</p>
+          <p class="pillar__d">
+            Notes, search, and the knowledge graph stay on-device. Nothing is
+            uploaded to a Sediment server, because there isn't one.
+          </p>
+        </div>
+        <div class="pillar reveal">
+          <p class="pillar__k">Plain Markdown</p>
+          <p class="pillar__d">
+            Your formation is an ordinary folder of <code>.md</code> files —
+            Obsidian-compatible, yours to keep, edit, and version forever.
+          </p>
+        </div>
+        <div class="pillar reveal">
+          <p class="pillar__k">Your own agent</p>
+          <p class="pillar__d">
+            Runs on the Claude Code or GitHub Copilot CLI you already pay for.
+            Bring your subscription; Sediment never resells access.
+          </p>
+        </div>
+      </section>
+
+      <!-- ──────────────────── HOW IT WORKS ───────────────────── -->
+      <section class="how" id="how">
+        <header class="section-head reveal">
+          <p class="eyebrow">One conversational turn</p>
+          <h2>Every message is a small act of organization.</h2>
+          <p class="section-head__lede">
+            There are no modes to switch between — no “write” here and “ask”
+            there. Recording and answering happen in the same breath.
+          </p>
+        </header>
+
+        <ol class="steps">
+          <li class="step reveal">
+            <span class="step__n">01</span>
+            <h3>You say it plainly</h3>
+            <p>
+              Type the way you'd tell a colleague. Sediment snapshots the whole
+              formation first, so any change is reversible from the very next
+              second.
+            </p>
+          </li>
+          <li class="step reveal">
+            <span class="step__n">02</span>
+            <h3>It grounds before it acts</h3>
+            <p>
+              The people and things you named are resolved to their notes and
+              current facts. A <b>Working Set</b> of what's in play is handed to
+              the agent — so it never starts a turn guessing.
+            </p>
+          </li>
+          <li class="step reveal">
+            <span class="step__n">03</span>
+            <h3>It records — and pushes back</h3>
+            <p>
+              Facts are written into your notes and the knowledge graph. If
+              something is vague or collides with what it already knows, the
+              agent asks before committing.
+            </p>
+          </li>
+          <li class="step reveal">
+            <span class="step__n">04</span>
+            <h3>Everything is revertable</h3>
+            <p>
+              The audit log lists every turn's changes. Undo a whole turn or a
+              single fact, with a quiet ten-second undo for the small stuff.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <!-- ─────────────────── FEATURE SPOTLIGHT ────────────────── -->
+      <section class="spotlight">
+        <div class="spotlight__media reveal" aria-hidden="true">
+          <div class="graph">
+            <svg viewBox="0 0 420 300" class="graph__svg">
+              <defs>
+                <marker id="dot" markerWidth="6" markerHeight="6" refX="3" refY="3">
+                  <circle cx="3" cy="3" r="2.2" fill="var(--clay)" />
+                </marker>
+              </defs>
+              <line class="graph__edge" x1="210" y1="150" x2="90" y2="70"/>
+              <line class="graph__edge" x1="210" y1="150" x2="330" y2="80"/>
+              <line class="graph__edge" x1="210" y1="150" x2="120" y2="240"/>
+              <line class="graph__edge graph__edge--retracted" x1="210" y1="150" x2="340" y2="225"/>
+            </svg>
+            <span class="node node--hub" style="--x:50%;--y:50%">Josh</span>
+            <span class="node" style="--x:21.4%;--y:23.3%">Stripe</span>
+            <span class="node" style="--x:78.6%;--y:26.7%">Keaton</span>
+            <span class="node" style="--x:28.6%;--y:80%">Payments</span>
+            <span class="node node--gone" style="--x:81%;--y:75%">Cloudflare</span>
+          </div>
+        </div>
+        <div class="spotlight__copy reveal">
+          <p class="eyebrow">A bi-temporal knowledge graph</p>
+          <h2>It knows when things were true.</h2>
+          <p>
+            Underneath the notes is a graph of <b>facts</b> — relationships
+            between people, organizations, and projects, each carrying a
+            validity window. When a fact changes, the old edge keeps its
+            history; when a fact was simply wrong, it's retracted as if it never
+            was.
+          </p>
+          <p>
+            That's what lets the agent notice a contradiction instead of
+            silently overwriting you — and what makes “what did I think last
+            spring?” a question with an answer.
+          </p>
+        </div>
+      </section>
+
+      <!-- ──────────────────────── FEATURES ───────────────────── -->
+      <section class="features" id="features">
+        <header class="section-head reveal">
+          <p class="eyebrow">The whole surface</p>
+          <h2>Built for the way understanding accrues.</h2>
+        </header>
+
+        <div class="grid">
+          <article class="card reveal">
+            <span class="card__n">01</span>
+            <h3>Conversational capture</h3>
+            <p>Talk; the agent files it into the right note, in the right section, in your own words.</p>
+          </article>
+          <article class="card reveal">
+            <span class="card__n">02</span>
+            <h3>The Working Set</h3>
+            <p>A derived view of what's in play right now — entities, tasks, and the most related notes — recomputed each turn.</p>
+          </article>
+          <article class="card reveal">
+            <span class="card__n">03</span>
+            <h3>Contradiction detection</h3>
+            <p>Say something that conflicts with a recorded fact and the agent flags it, then asks how to resolve.</p>
+          </article>
+          <article class="card reveal">
+            <span class="card__n">04</span>
+            <h3>Audit log &amp; undo</h3>
+            <p>Every turn's applied change is browsable and revertable — per turn or per single fact.</p>
+          </article>
+          <article class="card reveal">
+            <span class="card__n">05</span>
+            <h3>Open loops</h3>
+            <p>Unresolved questions and stated-but-unfulfilled intentions are noticed and nudged in conversation — never alarmed.</p>
+          </article>
+          <article class="card reveal">
+            <span class="card__n">06</span>
+            <h3>Tasks &amp; reminders</h3>
+            <p>File a reminder into an Obsidian-Tasks-compatible list; a scheduler raises an OS notification when it's due.</p>
+          </article>
+          <article class="card reveal">
+            <span class="card__n">07</span>
+            <h3>On-device search</h3>
+            <p>Semantic note search runs locally on a small embedding model. Your formation never leaves the machine.</p>
+          </article>
+          <article class="card reveal">
+            <span class="card__n">08</span>
+            <h3>Daily &amp; weekly notes</h3>
+            <p>The day's events, habits, and reflections are captured automatically, with backlinks that wire it all together.</p>
+          </article>
+          <article class="card reveal">
+            <span class="card__n">09</span>
+            <h3>Obsidian-compatible</h3>
+            <p>Plain Markdown with <code>[[wikilinks]]</code>. Open the same folder in Obsidian; edit outside and it re-indexes in seconds.</p>
+          </article>
+          <article class="card card--wide reveal">
+            <div class="card__lead">
+              <span class="card__n">10</span>
+              <h3>Bring your own engine</h3>
+              <p>Swap between Claude Code and Copilot in Settings. Same agent, same questioning discipline — your subscription, your binary. Sediment never resells access or routes anyone through someone else's login.</p>
+            </div>
+            <div class="card__chips" aria-hidden="true">
+              <span class="chip"><span class="chip__dot"></span>Claude Code</span>
+              <span class="chip"><span class="chip__dot chip__dot--alt"></span>GitHub Copilot</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- ──────────────────────── PRIVACY ────────────────────── -->
+      <section class="privacy" id="privacy">
+        <div class="privacy__inner reveal">
+          <p class="eyebrow eyebrow--light">A quiet promise</p>
+          <h2>It never leaves your machine.</h2>
+          <p>
+            The formation is a folder on your disk. The knowledge graph and
+            embeddings live in a local store. The agent runs as your own
+            installed CLI, under your own login. Sediment keeps no account, runs
+            no server, and routes no one through anyone else's subscription.
+          </p>
+          <div class="privacy__row">
+            <div><span class="privacy__big">0</span><span class="privacy__lbl">servers to trust</span></div>
+            <div><span class="privacy__big">100%</span><span class="privacy__lbl">local-first</span></div>
+            <div><span class="privacy__big">.md</span><span class="privacy__lbl">your files, forever</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── NAME ──────────────────────── -->
+      <section class="name" id="name">
+        <div class="name__inner reveal">
+          <p class="eyebrow">sed · i · ment</p>
+          <h2>
+            Knowledge isn't filed. It <em>settles.</em>
+          </h2>
+          <p>
+            A single conversation rarely lands a finished thought. It deposits a
+            layer — a fact here, a question there, a loop left open. Over weeks,
+            those layers compress into something with structure and history you
+            can read back: strata. Sediment is built for that slow accretion,
+            not for a tidy inbox you'll never reach the bottom of.
+          </p>
+        </div>
+      </section>
+
+      <!-- ──────────────────────── DOWNLOAD ───────────────────── -->
+      <section class="download" id="download">
+        <div class="download__inner reveal">
+          <h2>Start a formation.</h2>
+          <p>
+            Sediment is in active development and open source. Grab the latest
+            macOS build, or clone the repo and run it yourself.
+          </p>
+          <div class="download__cta">
+            <a class="btn btn--primary btn--lg" href="https://github.com/collinkueter/sediment/releases" target="_blank" rel="noopener">Download for macOS</a>
+            <a class="btn btn--ghost btn--lg" href="https://github.com/collinkueter/sediment" target="_blank" rel="noopener">
+              Build from source
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 11L11 3M11 3H5M11 3V9" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </a>
+          </div>
+          <p class="download__req">
+            Requires macOS on Apple Silicon and a signed-in Claude Code or
+            GitHub Copilot CLI.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <!-- ───────────────────────── FOOTER ────────────────────── -->
+    <footer class="foot">
+      <div class="foot__brand">
+        <span class="mark mark--sm" aria-hidden="true">
+          <span class="mark__layer"></span>
+          <span class="mark__layer"></span>
+          <span class="mark__layer"></span>
+        </span>
+        <span>Sediment</span>
+      </div>
+      <p class="foot__tag">Talk. It remembers.</p>
+      <nav class="foot__links" aria-label="Footer">
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#privacy">Privacy</a>
+        <a href="https://github.com/collinkueter/sediment" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+      <p class="foot__copy">© 2026 Sediment · A local-first place to think.</p>
+    </footer>
+
+    <script src="./script.js" defer></script>
+  </body>
+</html>

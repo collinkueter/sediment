@@ -18,6 +18,12 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "8899", "--directory", "docs/design"],
       "port": 8899
+    },
+    {
+      "name": "site",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8910", "--directory", "site"],
+      "port": 8910
     }
   ]
 }
