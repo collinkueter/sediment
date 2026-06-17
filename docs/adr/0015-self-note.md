@@ -1,8 +1,12 @@
 # ADR-0015: The Self note — a durable, authored model of the user
 
-**Status:** Proposed (2026-06-17) — designed through a structured grilling session;
+**Status:** Accepted (2026-06-17) — designed through a structured grilling session;
 domain term captured in [CONTEXT.md](../../CONTEXT.md) (**Self**), along with the
-**Self**-vs-**Daily note** boundary.
+**Self**-vs-**Daily note** boundary. All three open questions resolved 2026-06-17:
+P1 (injection) implemented in `core::self_model`; the reflection rider (§7) and the
+Self-note authoring discipline live in `prompts/conversation-agent.md`. Authoring
+*quality* is still to be felt-tested in the running app (a prompt-tuning loop, not a
+design change).
 **Amends:** [ADR-0011](0011-working-set-and-push-grounding.md) — answers the gap it
 named ("No durable model of the user", §Context) with an *authored* model, picking
 up where the **Working Set**'s honest limit (§3) leaves off; extends §2's
@@ -167,9 +171,17 @@ and stays wholly inside ADR-0011's grain: no daemon, no new surface, no new budg
    a quarantined `## Patterns` section (graduating to `## Summary` when sure) and
    surfaces one only by winning ADR-0011 §4's existing single proactive beat. No
    daemon, no new code or state.
-2. **Summary maintenance.** Should `## Summary` be agent-authored prose, or
-   deterministically rendered from `Self.md`'s sections? Start agent-authored; revisit
-   if it drifts or bloats.
-3. **Budget interaction.** Exact ranking and cap of the Self slot against ADR-0011
-   open Q3 (Working Set + related notes under `INJECTED_CONTEXT_BUDGET`). Pick a small
-   fixed cap; tune empirically.
+2. ~~**Summary maintenance.**~~ **Resolved (2026-06-17).** Agent-authored prose. The
+   `## Summary` is curated by the agent as part of normal authoring (§3, §7), *not*
+   deterministically rendered from sections: rendering would fight the "authored,
+   curated note" model, could not make §7's "graduate when confident" judgment, and
+   would collide with the watcher/self-write and audit machinery. Drift is bounded —
+   the summary is small (capped, Q3), refreshed on self-relevant turns, and
+   user-editable. Rust only *injects and caps* it; it never writes it.
+3. ~~**Budget interaction.**~~ **Resolved (2026-06-17).** The Self slot is capped at
+   1200 characters (`SELF_SUMMARY_BUDGET` in `core::self_model`) — roughly a dozen
+   lines, ≈15% of the 8000-char `INJECTED_CONTEXT_BUDGET`. `self_model` truncates the
+   `## Summary` to that cap *before* assembly and `chat_turn` ranks it **first**, so it
+   is always included whole and is provably never the section truncated under budget
+   pressure. The prompt keeps the summary tight; the cap is a backstop, not the working
+   size. Revisit only if real summaries routinely hit it.
