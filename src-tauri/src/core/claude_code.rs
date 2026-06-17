@@ -34,6 +34,7 @@
 //! quota-exhausted error rather than an opaque one.
 
 use crate::core::agent_tone;
+use crate::core::cli_launch;
 use crate::core::conversation::{
     ConversationEngine, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest,
 };
@@ -44,7 +45,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
-use tokio::process::Command;
 
 /// Default model alias when the user has not chosen one.
 ///
@@ -118,6 +118,18 @@ pub struct ClaudeCodeStatus {
 /// 4. `/usr/local/bin/claude` — Intel Homebrew / manual
 /// 5. Login-shell probe: `zsh -lc "command -v claude"` (uses `$SHELL` if set)
 pub fn locate() -> Option<PathBuf> {
+    // Windows: the npm-global `claude.exe`/`claude.cmd`, then a PATH `where` probe.
+    // (The login-shell fallback below is a no-op there.)
+    if cfg!(windows) {
+        if let Some(found) = cli_launch::windows_npm_candidates("claude")
+            .into_iter()
+            .find(|c| c.is_file())
+        {
+            return Some(found);
+        }
+        return cli_launch::where_which("claude");
+    }
+
     let home = std::env::var("HOME").ok();
 
     let mut candidates: Vec<PathBuf> = Vec::with_capacity(4);
@@ -197,12 +209,11 @@ pub async fn detect() -> ClaudeCodeStatus {
 
     // Spawn `claude auth status --json`. We ignore errors here — a non-zero
     // exit (e.g. the user is logged out) is handled by `parse_auth_status`.
-    let output = tokio::process::Command::new(&binary)
-        .args(["auth", "status", "--json"])
+    let mut auth_cmd = cli_launch::tokio_command(&binary, &["auth", "status", "--json"]);
+    auth_cmd
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await;
+        .stderr(std::process::Stdio::null());
+    let output = auth_cmd.output().await;
 
     let json = match output {
         Ok(ref o) => String::from_utf8_lossy(&o.stdout).to_string(),
@@ -658,8 +669,10 @@ impl ConversationEngine for ClaudeCodeEngine {
             agent_tone::AgentTone::from_config(Some(&turn.tone)),
         );
 
-        let spawn_result = Command::new(&binary)
-            .args([
+        let mcp_arg = mcp_config_path.to_string_lossy().into_owned();
+        let mut cmd = cli_launch::tokio_command(
+            &binary,
+            &[
                 "-p",
                 "--system-prompt",
                 system_prompt.as_str(),
@@ -668,7 +681,7 @@ impl ConversationEngine for ClaudeCodeEngine {
                 "--include-partial-messages",
                 "--verbose",
                 "--mcp-config",
-                &mcp_config_path.to_string_lossy(),
+                &mcp_arg,
                 "--strict-mcp-config",
                 "--allowedTools",
                 &allowed_tools,
@@ -679,12 +692,13 @@ impl ConversationEngine for ClaudeCodeEngine {
                 "--no-session-persistence",
                 "--model",
                 &self.model,
-            ])
-            .current_dir(&turn.formation_root)
+            ],
+        );
+        cmd.current_dir(&turn.formation_root)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
+            .stderr(std::process::Stdio::piped());
+        let spawn_result = cmd.spawn();
 
         let mut child: Child = match spawn_result {
             Ok(c) => c,

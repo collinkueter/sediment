@@ -3,6 +3,7 @@ pub mod agent_tone;
 pub mod audit;
 pub mod bundled_embed;
 pub mod claude_code;
+pub mod cli_launch;
 pub mod conversation;
 pub mod copilot;
 pub mod daily_note;

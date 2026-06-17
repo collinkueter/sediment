@@ -6,6 +6,7 @@
 //! init when our process exits, so Ollama outlives the app cleanly — restart
 //! cost on the next launch is amortised.
 
+use crate::core::cli_launch;
 use crate::error::{AppError, AppResult};
 use ollama_rs::generation::embeddings::request::GenerateEmbeddingsRequest;
 use ollama_rs::Ollama;
@@ -134,13 +135,10 @@ impl<T> OnceCellSyncInit<T> for OnceCell<T> {
 }
 
 fn is_installed() -> bool {
-    Command::new("which")
-        .arg("ollama")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    // `which ollama` on macOS/Linux, `where ollama` on Windows. Ollama installs a
+    // native `ollama.exe` on PATH there, so the daemon spawn (`Command::new("ollama")`)
+    // works directly once it is found.
+    cli_launch::is_on_path("ollama")
 }
 
 async fn is_running() -> bool {
