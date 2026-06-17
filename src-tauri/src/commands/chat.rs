@@ -276,6 +276,18 @@ pub fn get_self_summary(formation: State<'_, FormationState>) -> AppResult<Optio
     Ok(self_model::summary_text(&root))
 }
 
+/// The Copilot models the user's account can use, discovered live from their own
+/// `copilot --acp` binary (ADR-0012) — names, the premium-request cost, and the
+/// account default. Best-effort: errors if Copilot is not installed or the
+/// handshake fails, so the settings UI falls back to a free-text model field.
+#[tauri::command]
+pub async fn list_copilot_models(
+    formation: State<'_, FormationState>,
+) -> AppResult<copilot::CopilotModels> {
+    let cwd = formation.require().unwrap_or_else(|_| std::env::temp_dir());
+    copilot::fetch_models(&cwd).await
+}
+
 /// Dismiss an Open Loop from the UI — archives it so it stops surfacing
 /// (ADR-0011 §5). The one-tap companion to the agent's `close_open_loop`.
 #[tauri::command]

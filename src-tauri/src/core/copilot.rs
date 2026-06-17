@@ -101,6 +101,155 @@ pub fn detect() -> CopilotStatus {
     }
 }
 
+// ── Model discovery ───────────────────────────────────────────────────────────
+
+/// One model the user's Copilot account can use, as advertised by the ACP
+/// `session/new` handshake (`models.availableModels`).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopilotModel {
+    pub model_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// Premium-request multiplier the account is billed for a turn, e.g. `"0x"`
+    /// (free), `"0.33x"` (from `_meta.copilotUsage`). `None` when not reported.
+    pub usage: Option<String>,
+    /// Whether the account has this model enabled (`copilotEnablement == "enabled"`).
+    pub enabled: bool,
+}
+
+/// The models the user's Copilot account advertises, plus its default.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopilotModels {
+    pub available: Vec<CopilotModel>,
+    /// The account's current/default model id, when reported.
+    pub current_model_id: Option<String>,
+}
+
+/// Discover the Copilot models the user's account can use by running a minimal
+/// `copilot --acp` handshake (`initialize` + `session/new`) and reading the
+/// `models` the server advertises. No prompt is sent, so no request is spent.
+/// Best-effort: errors if the binary is missing or the handshake fails, so the
+/// UI can fall back to a free-text model field.
+pub async fn fetch_models(cwd: &Path) -> AppResult<CopilotModels> {
+    let binary = locate().ok_or_else(|| AppError::other("copilot binary not found"))?;
+    let mut child = Command::new(&binary)
+        .args(["--acp", "--add-dir", &cwd.to_string_lossy()])
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| AppError::other(format!("spawn copilot --acp: {e}")))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| AppError::other("copilot: no stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::other("copilot: no stdout"))?;
+
+    // Drive the handshake, then read responses until session/new (id 2) returns.
+    const SESSION_NEW_ID: i64 = 2;
+    let cwd_str = cwd.to_string_lossy().into_owned();
+    let timed = tokio::time::timeout(HANDSHAKE_TIMEOUT, async move {
+        stdin
+            .write_all(ndjson_line(&initialize_msg(1)).as_bytes())
+            .await
+            .map_err(|e| AppError::other(format!("copilot write init: {e}")))?;
+        stdin
+            .write_all(ndjson_line(&session_new_msg(SESSION_NEW_ID, &cwd_str)).as_bytes())
+            .await
+            .map_err(|e| AppError::other(format!("copilot write session/new: {e}")))?;
+        stdin.flush().await.ok();
+
+        let mut lines = BufReader::new(stdout).lines();
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .map_err(|e| AppError::other(format!("copilot read: {e}")))?
+        {
+            if let Incoming::Response {
+                id,
+                result: res,
+                error,
+            } = classify(&line)
+            {
+                if id == SESSION_NEW_ID {
+                    return match error {
+                        Some(e) => Err(AppError::other(format!("copilot session/new: {e}"))),
+                        None => Ok(res.unwrap_or(Value::Null)),
+                    };
+                }
+            }
+        }
+        Err(AppError::other(
+            "copilot: stream ended before session/new response",
+        ))
+    })
+    .await;
+
+    // Always tear the discovery process down — we only needed the handshake.
+    child.start_kill().ok();
+
+    let resp = timed.map_err(|_| AppError::other("copilot: model discovery timed out"))??;
+    Ok(parse_models(&resp))
+}
+
+/// Parse the `models` object of a `session/new` response into [`CopilotModels`].
+/// Tolerant of a missing or oddly-shaped `models` field (yields an empty list).
+fn parse_models(resp: &Value) -> CopilotModels {
+    let models = resp.get("models");
+    let current_model_id = models
+        .and_then(|m| m.get("currentModelId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let available = models
+        .and_then(|m| m.get("availableModels"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    let model_id = m.get("modelId").and_then(Value::as_str)?.to_string();
+                    let name = m
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&model_id)
+                        .to_string();
+                    let description = m
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let meta = m.get("_meta");
+                    let usage = meta
+                        .and_then(|x| x.get("copilotUsage"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let enabled = meta
+                        .and_then(|x| x.get("copilotEnablement"))
+                        .and_then(Value::as_str)
+                        .map(|s| s == "enabled")
+                        .unwrap_or(true);
+                    Some(CopilotModel {
+                        model_id,
+                        name,
+                        description,
+                        usage,
+                        enabled,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    CopilotModels {
+        available,
+        current_model_id,
+    }
+}
+
 // ── ACP protocol (NDJSON JSON-RPC 2.0) ────────────────────────────────────────
 // docs/copilot-acp-integration.md is the authoritative spec.
 
@@ -655,6 +804,40 @@ fn write_mcp_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `parse_models` reads the `models` block of a real `session/new` response —
+    /// names, the premium-request multiplier, enablement, and the default — and
+    /// tolerates a missing block without panicking.
+    #[test]
+    fn parse_models_reads_available_and_current() {
+        let resp = json!({
+            "sessionId": "x",
+            "models": {
+                "currentModelId": "gpt-5-mini",
+                "availableModels": [
+                    {"modelId":"auto","name":"Auto","description":"Let Copilot pick the best model"},
+                    {"modelId":"gpt-5-mini","name":"GPT-5 mini","_meta":{"copilotUsage":"0x","copilotEnablement":"enabled"}},
+                    {"modelId":"claude-haiku-4.5","name":"Claude Haiku 4.5","_meta":{"copilotUsage":"0.33x","copilotEnablement":"enabled"}}
+                ]
+            }
+        });
+        let m = parse_models(&resp);
+        assert_eq!(m.current_model_id.as_deref(), Some("gpt-5-mini"));
+        assert_eq!(m.available.len(), 3);
+        let mini = m
+            .available
+            .iter()
+            .find(|x| x.model_id == "gpt-5-mini")
+            .expect("gpt-5-mini present");
+        assert_eq!(mini.name, "GPT-5 mini");
+        assert_eq!(mini.usage.as_deref(), Some("0x"));
+        assert!(mini.enabled);
+
+        // A response without a `models` block degrades to empty, never a panic.
+        let empty = parse_models(&json!({ "sessionId": "x" }));
+        assert!(empty.available.is_empty());
+        assert!(empty.current_model_id.is_none());
+    }
 
     #[test]
     fn ndjson_line_is_compact_and_newline_terminated() {

@@ -149,6 +149,26 @@ const RESPONSES: Record<string, unknown> = {
   list_notes: NOTES,
   get_working_set: WORKING_SET,
   get_self_summary: "- Prefers async over meetings\n- Shipping Sediment V1 by August",
+  list_copilot_models: {
+    available: [
+      {
+        modelId: "auto",
+        name: "Auto",
+        description: "Let Copilot pick the best model",
+        usage: null,
+        enabled: true,
+      },
+      { modelId: "gpt-5-mini", name: "GPT-5 mini", description: null, usage: "0x", enabled: true },
+      {
+        modelId: "claude-haiku-4.5",
+        name: "Claude Haiku 4.5",
+        description: null,
+        usage: "0.33x",
+        enabled: true,
+      },
+    ],
+    currentModelId: "gpt-5-mini",
+  },
   list_audit: [],
   list_tasks: TASKS,
   get_models_dir: "/Users/you/.sediment/models",

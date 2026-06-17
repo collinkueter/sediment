@@ -220,6 +220,22 @@ export interface ConversationEngineConfig {
   copilot_model: string | null;
 }
 
+/** One model the Copilot account can use, discovered live from the CLI (ADR-0012). */
+export interface CopilotModel {
+  modelId: string;
+  name: string;
+  description: string | null;
+  /** Premium-request multiplier, e.g. "0x" (free), "0.33x". `null` if unreported. */
+  usage: string | null;
+  enabled: boolean;
+}
+
+/** The models the Copilot account advertises, plus its default. */
+export interface CopilotModels {
+  available: CopilotModel[];
+  currentModelId: string | null;
+}
+
 export type TaskStatus = "open" | "done";
 
 /** A reminder — the scheduling-side mirror of a Tasks.md checklist line. */
@@ -305,6 +321,8 @@ export const tauri = {
   getConversationEngine: () => invoke<ConversationEngineConfig>("get_conversation_engine"),
   setConversationEngine: (engine: string, model: string | null) =>
     invoke<void>("set_conversation_engine", { engine, model }),
+  /** Models the user's Copilot account can use, discovered live from the CLI (ADR-0012). */
+  listCopilotModels: () => invoke<CopilotModels>("list_copilot_models"),
   /** The Agent's conversational tone: "stoic" | "warm" | "sassy". */
   getAgentTone: () => invoke<string>("get_agent_tone"),
   /** Persist the Agent's tone ("stoic" | "warm" | "sassy"); applies next turn. */

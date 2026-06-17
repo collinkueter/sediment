@@ -1,7 +1,7 @@
 import { Segmented } from "@/components/Segmented";
 import { Icon } from "@/components/icons";
 import { useFormationStore } from "@/lib/store";
-import type { ClaudeCodeStatus, CopilotStatus } from "@/lib/tauri";
+import type { ClaudeCodeStatus, CopilotModels, CopilotStatus } from "@/lib/tauri";
 import { tauri } from "@/lib/tauri";
 import { type Theme, useThemeStore } from "@/lib/theme";
 import { useEffect, useRef, useState } from "react";
@@ -25,6 +25,13 @@ const SEARCH_MODE_DESCRIPTIONS: Record<SearchMode, string> = {
 /** The Claude Code model aliases offered in the model selector. */
 const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
 
+/** Format a Copilot premium-request multiplier for display: "0x" → "Free". */
+function copilotCost(usage: string | null): string {
+  if (!usage) return "";
+  if (usage === "0x" || usage === "0×") return " · Free";
+  return ` · ${usage.replace(/x$/i, "×")}`;
+}
+
 /// Settings overlay. Sections:
 ///  - Conversation engine: which agentic CLI runs the conversation (ADR-0009).
 ///  - Appearance: theme picker.
@@ -43,6 +50,8 @@ export function SettingsModal({
   const [copilotModel, setCopilotModel] = useState("");
   const [claudeCode, setClaudeCode] = useState<ClaudeCodeStatus | null>(null);
   const [copilot, setCopilot] = useState<CopilotStatus | null>(null);
+  const [copilotModels, setCopilotModels] = useState<CopilotModels | null>(null);
+  const [copilotModelsLoading, setCopilotModelsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +102,19 @@ export function SettingsModal({
         setCopilot({ installed: false, binary_path: null });
       });
   }, []);
+
+  // Discover the Copilot account's models live when the Copilot engine is in
+  // view and installed (ADR-0012). Best-effort: on failure we keep the free-text
+  // fallback. Spawns a short-lived `copilot --acp` handshake — no prompt is sent.
+  useEffect(() => {
+    if (engine !== "copilot" || !copilot?.installed || copilotModels) return;
+    setCopilotModelsLoading(true);
+    tauri
+      .listCopilotModels()
+      .then(setCopilotModels)
+      .catch(() => setCopilotModels(null))
+      .finally(() => setCopilotModelsLoading(false));
+  }, [engine, copilot?.installed, copilotModels]);
 
   // Dialog accessibility: close on Escape, focus the first focusable element
   // on mount, and trap Tab/Shift+Tab so focus wraps within the dialog.
@@ -195,6 +217,8 @@ export function SettingsModal({
   // Derived engine ready state
   const claudeCodeReady = !!claudeCode?.installed && !!claudeCode.logged_in;
   const copilotReady = !!copilot?.installed;
+  const copilotDefaultName =
+    copilotModels?.available.find((m) => m.modelId === copilotModels.currentModelId)?.name ?? null;
   const selectedStatus = engine === "claude-code" ? claudeCode : copilot;
   const selectedReady = engine === "claude-code" ? claudeCodeReady : copilotReady;
   const showWarning = selectedStatus !== null && !selectedReady;
@@ -368,23 +392,52 @@ export function SettingsModal({
                 )}
 
                 {engine === "copilot" && (
-                  <label className="mt-3 block text-[11px] text-ink-soft">
+                  <label htmlFor="copilot-model" className="mt-3 block text-[11px] text-ink-soft">
                     Model
-                    <input
-                      list="copilot-models"
-                      value={copilotModel}
-                      onChange={(e) => setCopilotModel(e.target.value)}
-                      placeholder="Copilot default"
-                      className="mt-1 block w-full rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-[12px] text-ink placeholder:text-faint focus:border-accent focus:outline-none"
-                    />
-                    <datalist id="copilot-models">
-                      <option value="claude-haiku-4.5" />
-                      <option value="claude-sonnet-4.5" />
-                      <option value="gpt-5" />
-                      <option value="gpt-5-mini" />
-                    </datalist>
+                    {copilotModels && copilotModels.available.length > 0 ? (
+                      <select
+                        id="copilot-model"
+                        value={copilotModel}
+                        onChange={(e) => setCopilotModel(e.target.value)}
+                        className="mt-1 block w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-[12px] text-ink focus:border-accent focus:outline-none"
+                      >
+                        <option value="">
+                          Copilot default{copilotDefaultName ? ` (${copilotDefaultName})` : ""}
+                        </option>
+                        {copilotModels.available.map((m) => (
+                          <option key={m.modelId} value={m.modelId} disabled={!m.enabled}>
+                            {m.name}
+                            {copilotCost(m.usage)}
+                            {m.enabled ? "" : " · unavailable"}
+                          </option>
+                        ))}
+                        {copilotModel !== "" &&
+                          !copilotModels.available.some((m) => m.modelId === copilotModel) && (
+                            <option value={copilotModel}>{copilotModel} (custom)</option>
+                          )}
+                      </select>
+                    ) : (
+                      <input
+                        id="copilot-model"
+                        list="copilot-models"
+                        value={copilotModel}
+                        onChange={(e) => setCopilotModel(e.target.value)}
+                        placeholder="Copilot default"
+                        className="mt-1 block w-full rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-[12px] text-ink placeholder:text-faint focus:border-accent focus:outline-none"
+                      />
+                    )}
+                    {!copilotModels && (
+                      <datalist id="copilot-models">
+                        <option value="claude-haiku-4.5" />
+                        <option value="gpt-5-mini" />
+                      </datalist>
+                    )}
                     <span className="mt-1 block text-[11px] text-muted">
-                      Leave blank for the Copilot default.
+                      {copilotModelsLoading
+                        ? "Reading your account's models…"
+                        : copilotModels && copilotModels.available.length > 0
+                          ? "Live from your Copilot account — cost is the premium-request multiplier."
+                          : "Leave blank for the Copilot default."}
                     </span>
                   </label>
                 )}

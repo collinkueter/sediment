@@ -139,6 +139,7 @@ pub fn run() {
             commands::chat::chat_turn,
             commands::chat::get_working_set,
             commands::chat::get_self_summary,
+            commands::chat::list_copilot_models,
             commands::chat::dismiss_open_loop,
             commands::audit::list_audit,
             commands::audit::undo_turn,
