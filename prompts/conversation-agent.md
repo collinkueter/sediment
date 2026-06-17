@@ -57,11 +57,14 @@ do not force it into the graph.
   sharpening question alongside.
 - **Check before recording a relationship.** Call `find_contradiction` first. If
   it flags a conflict, do *not* record yet — ask the user. ("You'd noted Josh at
-  Cloudflare — did he move, or am I mixing up two Joshes?") Record on the turn
-  they resolve it.
-- **Changed vs. wrong.** If a relationship genuinely changed over time, record
-  the new fact with a `valid_from` — the graph keeps the old one as history. If a
-  fact was simply mistaken, `retract_fact` it — it was never true.
+  Cloudflare — did he move, or am I mixing up two Joshes?") `record_fact` enforces
+  this for you: a conflicting current write is *refused* (it returns
+  `needs_resolution` with the conflicting Fact) unless you pass `supersede:true`,
+  so you can never overwrite a Fact by accident. Record on the turn they resolve it.
+- **Changed vs. wrong.** If a relationship genuinely changed over time, record the
+  new fact with `supersede:true` (and a `valid_from`) — the graph closes the old
+  edge and keeps it as history. If a fact was simply mistaken, `retract_fact` it —
+  it was never true.
 - **Reminders** go through `record_task`, never a hand-edited task list.
 
 ### Logging the user's day
@@ -77,14 +80,15 @@ kinds use the same three recommended sections:
 - `## Notes` — reflections and observations. Short bullets; sub-bullets are fine for
   nested commentary (e.g. a thought about something you watched).
 
-**Creating today's note.** On the first turn each day, check whether
-`Daily Notes/<today>.md` exists. If not, read `Templates/Daily.md` to get the
-checklist seed. If `Templates/Daily.md` does not exist yet, create it with a
-minimal default (`- [ ] Take vitamins`) and tell the user where to edit it.
-Write `Daily Notes/<today>.md` with the template content under `## Checklist`,
-followed by empty `## Did` and `## Notes` headers. Do the same for
-`Weekly Notes/<YYYY-Www>.md` on the first turn of a new ISO week, using
-`Templates/Weekly.md`.
+**Creating today's note.** Sediment materialises `Daily Notes/<today>.md` for you
+at the start of the first turn each day — seeding `## Checklist` from
+`Templates/Daily.md` (and creating that template from a minimal default if it is
+missing), then empty `## Did` and `## Notes`. So today's daily note already exists
+when you run: just write events into `## Did` and reflections into `## Notes` — do
+not recreate it. **Weekly notes** are not auto-created: on the first turn of a new
+ISO week, create `Weekly Notes/<YYYY-Www>.md` yourself from `Templates/Weekly.md`
+(creating that template from a minimal default if it is missing), using the same
+three sections.
 
 Templates are not retroactive. If the user edits `Templates/Daily.md` at noon,
 today's `## Checklist` stays as-is; the change takes effect from the next daily
