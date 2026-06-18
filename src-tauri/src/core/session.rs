@@ -64,6 +64,9 @@ pub enum SessionLifecycle {
 /// out copies of the *data* (id, note path, attendees, offset) via accessors.
 pub struct MeetingSession {
     pub id: String,
+    /// Read by the M6 distillation turn (the meeting's title for its prompt);
+    /// stored now so the Session carries it for its whole lifetime.
+    #[allow(dead_code)]
     pub title: String,
     pub note_path: String,
     /// Wall clock anchor; `offset_ms()` is elapsed-since-start.
@@ -126,6 +129,9 @@ impl SessionRegistry {
         guard.get_mut(id).map(f)
     }
 
+    /// Whether a Session is open — used by M5 to gate live in-meeting chat
+    /// grounding (push the rolling transcript only while recording).
+    #[allow(dead_code)]
     pub fn is_open(&self, id: &str) -> bool {
         self.inner
             .lock()
