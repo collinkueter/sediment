@@ -1,442 +1,506 @@
-# Sediment — Plan: interrupt & steer a turn in flight
+# Sediment — Plan: interrupt, steer & redirect a turn in flight
 
-**Status:** Proposed (2026-06-18).
-**Predecessor:** current HEAD `139dbb7` (non-blocking composer + turn queue —
+**Status:** Proposed (2026-06-18; revised the same day after design feedback).
+**Predecessor:** current HEAD `a64d5a7` (non-blocking composer + turn queue —
 the user can type and send while the agent is thinking; sent messages are
 captured as turns and drained one at a time by `ChatPane`'s `pump` loop).
 **Builds on:** [ADR-0009](../adr/0009-conversational-agent.md) (the turn model:
-one message → snapshot → engine → diff → revertable audit entry),
+one message → snapshot → engine → diff → revertable audit entry; Sediment owns
+the transcript in `chat_message`, scoped by `session_id`),
 [ADR-0011](../adr/0011-working-set-and-push-grounding.md) (pre-pass grounding),
 [ADR-0012](../adr/0012-github-copilot-engine.md) (the warm Copilot ACP engine).
 
-This is the "Level 2 — interrupt-and-restart" steering path. The queue we just
-shipped lets a thought reach the page immediately and run as a *follow-up* turn.
-This plan adds the other half: a queued message can **interrupt** the turn that's
-currently running so it takes over now, instead of waiting in line. The choice is
-the user's, surfaced as a button **on the queued message** — interrupt to jump
-ahead, or do nothing and let the running turn finish.
+The queue we shipped lets a thought reach the page immediately and run as a
+*follow-up* turn. This plan adds three controls on top of it:
 
-It deliberately does **not** attempt true mid-token injection (Level 3); that
-would break the one-message↔one-snapshot↔one-audit-entry invariant and needs its
-own ADR. Interrupt-and-restart preserves that invariant: an interrupted turn
-leaves **no** audit entry, exactly like a failed turn does today.
+1. **Steer** — interrupt the running turn, **keep** what it did (and the whole
+   conversation), and run a queued message next. A nudge.
+2. **Redirect** — interrupt the running turn, **revert** what it did, and run a
+   queued message instead. A change of direction.
+3. **New conversation** — clear the chat session and start a fresh topic, while
+   the formation (long-term memory) is untouched.
+
+Plus the queue mechanics these imply: with several messages waiting, the user
+can promote, reorder, and drop them.
+
+It deliberately does **not** attempt true mid-token injection (Level 3); both
+Steer and Redirect stop the turn at the next safe point and run the new message
+as the next turn. That preserves the one-message↔one-snapshot↔one-audit-entry
+invariant — every committed turn still has exactly one snapshot and one audit
+entry; a redirected turn, like a failed one today, has none.
 
 ---
 
 ## Context for a fresh session
 
-A turn is an atomic unit in `commands/chat.rs::chat_turn` (`chat.rs:80`):
+A turn is atomic in `commands/chat.rs::chat_turn` (`chat.rs:80`): persist the
+user message → `source_chat_id` (`chat.rs:96`); snapshot the formation to
+`…/snapshots/<turn_id>` (`chat.rs:129`); run the engine (`chat.rs:192`); diff the
+snapshot + collect Facts stamped with `source_chat_id` (`chat.rs:222`); write one
+revertable audit entry (`chat.rs:228`); persist the reply (`chat.rs:243`).
 
-1. persist the user message → `source_chat_id` (`chat.rs:96`)
-2. snapshot the whole formation to `…/snapshots/<turn_id>` (`chat.rs:129`)
-3. run the engine (`chat.rs:192`) — Claude Code (cold, one-shot) or the warm
-   Copilot ACP session
-4. diff the snapshot for changed notes; collect Facts stamped with
-   `source_chat_id` (`chat.rs:222`)
-5. write **one** revertable audit entry (`chat.rs:228`)
-6. persist the assistant reply (`chat.rs:243`)
+On engine **failure** today the snapshot is removed and the error propagates with
+no audit entry (`chat.rs:205`). **Redirect reuses this path**, plus a revert step.
+**Steer reuses the success path** — it commits whatever landed.
 
-On engine **failure** today, the snapshot is removed and the error propagates
-with no audit entry written (`chat.rs:205`). **Interrupt reuses exactly this
-path**, plus a revert step: an interrupted turn is a failed turn whose partial
-side-effects (note edits already on disk, Facts already recorded) are rolled
-back from the snapshot before the snapshot is dropped.
-
-Both engines already kill/stop cleanly — we only need to *trigger* it on demand:
+Both engines stop cleanly; we only need to trigger it on demand:
 
 - **Claude Code** (`core/claude_code.rs`): one-shot `claude -p … stream-json`,
-  stdin closed at EOF (`claude_code.rs:741`). `drive_turn` runs under a
-  `tokio::time::timeout`; on expiry it already does `child.kill().await`
-  (`claude_code.rs:714`,`:721`). We add a second wake-up reason: a cancel signal.
-- **Copilot** (`core/copilot.rs`): a resident process with a persistent
-  single-owner stdin writer task (`copilot.rs:497`) serving many
-  `session/prompt`s. `CopilotSession::run_turn` drives a `tokio::select!` loop
-  (`copilot.rs:626`). ACP defines a `session/cancel` notification; we add a
-  branch that sends it over `writer_tx` and stops the loop.
+  stdin closed at EOF (`claude_code.rs:741`). `run_turn` wraps `drive_turn` in a
+  timeout and already does `child.kill().await` on expiry (`claude_code.rs:721`).
+- **Copilot** (`core/copilot.rs`): a resident process with a single-owner stdin
+  writer task (`copilot.rs:497`); `CopilotSession::run_turn` drives a
+  `tokio::select!` loop (`copilot.rs:626`). ACP *defines* a `session/cancel`
+  notification — **but we don't know the installed CLI honours it** (see M4).
 
-Revert already exists: `audit::undo_turn` (`audit.rs:406`) restores changed
-notes from the snapshot (deleting created notes), deletes recorded Facts, and
-removes the snapshot. The cancel path needs the same three steps but driven from
-the *live* snapshot dir + `facts_by_source`, since an interrupted turn has no
-audit entry to read. We factor the shared body out of `undo_turn`.
+Revert exists: `audit::undo_turn` (`audit.rs:406`) restores changed notes from a
+snapshot (deleting created notes), deletes recorded Facts, drops the snapshot.
+We factor its note+fact body out so the live cancel path can reuse it.
+
+History is `session_id`-scoped: `recent_messages` filters on `session_id`
+(`memory.rs:378`), so a **new `session_id` is a clean conversation** with no new
+storage and nothing deleted — the launch-fresh model ADR-0009 already assumes.
+There is no `delete_chat_message` yet; Redirect needs one (M2).
 
 ---
 
 ## UX
 
+### Two interrupt buttons on a queued message
+
 ```
-┌───────────────────────────────────────────────┐
-│  … "set up the Q3 planning doc"          (you) │   ← running turn
-│  ✦ searching your notes                        │     shows "Thinking…"
-│  ✦ editing Projects/Q3.md                      │
-│  Thinking…                                      │
-│                                                 │
-│  … "actually, focus on the budget"      (you)  │   ← queued turn
-│  Queued…                  [ Interrupt & run ]   │     button offered only
-└───────────────────────────────────────────────┘     while a turn is running
+┌─────────────────────────────────────────────────────────────┐
+│  … "set up the Q3 planning doc"                        (you) │  running turn
+│  ✦ searching your notes                                      │  "Thinking…"
+│  ✦ editing Projects/Q3.md                                    │
+│  Thinking…                                                   │
+│                                                              │
+│  … "actually, lead with the budget"                   (you) │  queued — NEXT
+│  Queued · next        [ Steer ]  [ Redirect ]   [ ✕ ]        │
+│                                                              │
+│  … "and cc Dana"                                      (you) │  queued · 2nd
+│  Queued · 2nd         [ Steer ]  [ Redirect ]   [ ↑ ] [ ✕ ]  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-- A **queued** message shows `Queued…` and, *only while another turn is actually
-  running*, an **`Interrupt & run`** button. Doing nothing is the "continue"
-  choice — the message runs when the current turn finishes, as today.
-- Clicking **`Interrupt & run`** on a queued message:
-  1. moves that message to the front of the processing queue (it may not have
-     been next),
-  2. cancels the running turn,
-  3. the running turn is rolled back and marked **Interrupted** in the
-     transcript — not failed — with a **`Resume`** button that re-enqueues it,
-  4. the clicked message starts immediately.
-- Multiple queued messages each get their own button; interrupting promotes the
-  one you clicked, the rest keep their order behind it.
-- **Race:** if the running turn finishes on its own between the click and the
-  cancel landing, the cancel is a no-op (its token is already deregistered); the
-  turn is recorded as **completed**, not interrupted, and the promoted message
-  simply runs next. The "interrupted" state is driven by the backend result, not
-  by the click.
+Each **queued** message shows its place in line (`next`, `2nd`, …) and, *only
+while a turn is actually running*, the interrupt buttons. Doing nothing is the
+"let it finish" choice — the message runs when its turn comes, as today.
 
-An interrupted turn's partial reply is discarded (it was abandoned); its receipt
-shows nothing recorded because the partial writes were reverted. `Resume`
-re-runs it from the original message text as a fresh turn.
+- **Steer** — stop the running turn, **keep** its partial work and reply (it is
+  committed as a normal, revertable turn, badged *Steered*), keep the whole
+  conversation, and run **this** message next.
+- **Redirect** — stop the running turn, **revert** its partial work, collapse it
+  to a thin *Redirected* tombstone (with **Resume**), and run **this** message
+  next.
 
-> Out of scope but a natural sibling: a plain **`Stop`** on the *running* turn
-> (interrupt with nothing queued). Same backend; trivial to add later. This plan
-> focuses on the queued-message button the user asked for.
+In both cases, **turns before the interrupted one are never touched** — Redirect
+only rolls back the single in-flight turn the user chose to abandon.
+
+### What each does — decision table
+
+| | **Steer** (keep) | **Redirect** (revert) |
+|---|---|---|
+| Stop the running engine | yes | yes |
+| Partial note edits / Facts | **kept**, committed | **reverted** from snapshot |
+| Audit entry for the turn | written (revertable later) | none |
+| Interrupted user message in history | **kept** | **removed** (`delete_chat_message`) |
+| Partial assistant reply | kept (may be mid-sentence) | discarded |
+| Transcript | normal turn, *Steered* badge | thin *Redirected* tombstone + Resume |
+| Earlier turns | untouched | untouched |
+| The promoted message | runs next | runs next |
+
+Steer keeps a possibly-partial reply; because note writes are atomic per edit
+(`atomic_write`), files are never left half-written — at worst the turn made
+*fewer* edits than it would have. That's an acceptable nudge artifact.
+
+> **Why two buttons, not a setting:** these are the two honest answers to "what
+> happens to the work already done?" — sometimes the half-built doc is worth
+> keeping and you just want to add direction (Steer); sometimes you realise it's
+> the wrong doc entirely (Redirect). The user picks per interruption.
+
+### Queue with several messages — promote, reorder, drop
+
+The processing queue is explicit and editable while turns drain:
+
+- **Steer / Redirect** on any queued message promotes it to the **front**
+  (runs next); the others keep their relative order behind it.
+- **↑ / ↓** reorder a queued message without interrupting.
+- **✕** drops a queued message: removes it from the queue *and* the transcript
+  (it was never run). This is "bypass — I don't need this one after all."
+- New sends always append to the back, as today.
+
+Place-in-line badges (`next`, `2nd`, …) are derived from queue position so the
+processing order is always legible even though the transcript stays chronological.
+
+While a cancel is in flight (the click landed, the engine hasn't stopped yet) the
+interrupt buttons on **all** queued messages are disabled, so a double-tap can't
+race two interrupts against one running turn. They re-enable when the turn stops.
+
+### New conversation
+
+A **New conversation** control (in a slim header strip above the transcript, and
+mirrored in the command palette) starts a fresh topic:
+
+1. If a turn is running, interrupt it **with revert** (Redirect semantics) — you
+   are leaving the topic, so its in-flight work is rolled back.
+2. Clear the queue and the transcript.
+3. Mint a new `session_id` (the chat store owns it).
+4. For the warm Copilot engine, recycle the resident ACP session so no
+   server-side context bleeds across topics (see Backend §7).
+
+The **formation, graph, and `Self.md` are untouched** — durable memory persists;
+only the conversation resets, exactly as a fresh app launch behaves. Old
+`chat_message` rows stay on disk but are never queried again (a future "clear
+history" could prune them; out of scope here).
 
 ---
 
 ## Architecture
 
 ```
-ChatPane.pump  ──run──►  chat_turn(clientTurnId, …)
-     ▲                        │  registers clientTurnId → CancellationToken
-     │                        │  in CancelRegistry (Tauri state)
-     │                        ▼
- [Interrupt & run]        engine.run_turn(TurnRequest{ …, cancel })
-     │  1. move msg to front      │
-     │  2. cancel_turn(runningId) ─┼─► token.cancel()
-     │                             ▼
-     │                 ┌─ Claude Code: select! { … , _ = cancel.cancelled() => child.kill() }
-     │                 └─ Copilot:     select! { … , _ = cancel.cancelled() => send session/cancel }
-     │                             │
-     │                        TurnStop::Interrupted
-     │                             ▼
-     │             chat_turn: revert_to_snapshot(snapshot, changed, facts_by_source)
-     │                        remove snapshot, NO audit entry, delete user chat row
-     │                             ▼
-     └───────────── ChatTurnResult{ stop: "interrupted", … }  ──► mark turn Interrupted
+ChatPane.pump ──run──► chat_turn(clientTurnId, conversationId, …)
+   ▲                       │ registers clientTurnId → CancelHandle{token, mode}
+   │                       ▼
+[Steer]/[Redirect]     engine.run_turn(TurnRequest{ …, cancel })
+   │ 1. promote msg to front     │
+   │ 2. cancelTurn(runId, mode) ─┼─► handle.mode = mode; token.cancel()
+   │                             ▼
+   │              ┌ Claude Code: select!{ … , _ = cancel.cancelled() => child.kill() }
+   │              └ Copilot:     select!{ … , _ = cancel.cancelled() => session/cancel
+   │                                                         (fallback: kill+recycle) }
+   │                             │  TurnStop::Interrupted
+   │                             ▼
+   │        chat_turn reads handle.mode:
+   │          Steer    → commit (diff, facts, audit entry, persist partial reply)   → stop:"steered"
+   │          Redirect → revert_to_snapshot + delete_chat_message + no audit entry  → stop:"redirected"
+   │                             ▼
+   └────────── ChatTurnResult{ stop } ──► mark turn Steered / Redirected; pump continues
 ```
 
 ---
 
 ## Backend
 
-### 1. Distinguish "cancelled" from "completed" and "failed"
+### 1. A stop reason on the outcome
 
-`ConversationEngine::run_turn` returns `AppResult<TurnOutcome>`. Add a stop
-reason rather than overloading `Err`:
+`core/conversation.rs`:
 
 ```rust
-// core/conversation.rs
 pub enum TurnStop { Completed, Interrupted }
 
 pub struct TurnOutcome {
-    pub reply: String,    // partial when Interrupted; chat_turn discards it
-    pub stop: TurnStop,   // NEW
+    pub reply: String,    // partial when Interrupted
+    pub stop: TurnStop,   // NEW — engines only know "completed" vs "interrupted"
 }
 ```
 
-A genuine error stays `Err(AppError)`. `Interrupted` is an `Ok` outcome with a
-stop reason — it is an expected, user-driven stop, not a failure.
+The engine does **not** know Steer-vs-Redirect; it just stops. The keep/revert
+decision is `chat_turn`'s, read from the cancel handle. A genuine error stays
+`Err`.
 
-### 2. Thread a cancel signal through `TurnRequest`
+### 2. Cancel signal on `TurnRequest`
 
-`TurnRequest`'s doc already says "per-turn state lives entirely in the
-`TurnRequest`" (`conversation.rs:123`). Keep the trait signature stable by adding
-the token there:
+`TurnRequest`'s doc says per-turn state lives in the request (`conversation.rs:123`):
 
 ```rust
-// core/conversation.rs — add to TurnRequest
-/// Tripped when the user interrupts this turn. Engines watch it in their
-/// stream loop and stop promptly (kill the child / send session/cancel).
+/// Tripped when the user interrupts this turn; engines watch it and stop.
 pub cancel: tokio_util::sync::CancellationToken,
+/// Identifies the chat session this turn belongs to. The warm Copilot engine
+/// recycles its ACP session when this changes (New conversation). Cold engines
+/// ignore it — they render history from the transcript window each turn.
+pub conversation_id: String,
 ```
 
-`tokio_util`'s `CancellationToken` is the right primitive: cloneable, awaitable
-(`cancelled()`), and idempotent. (Add `tokio-util = { version = "0.7", features
-= ["rt"] }` to `src-tauri/Cargo.toml` if not already present.)
+(Add `tokio-util = { version = "0.7" }` to `src-tauri/Cargo.toml` if absent.)
 
-### 3. `CancelRegistry` Tauri state + addressing
+### 3. `CancelRegistry` (Tauri state) keyed by the client turn id
 
-The frontend's local turn id (`crypto.randomUUID`) is the only stable handle the
-UI has *before* the turn completes (the backend `turn_id` is generated inside
-`chat_turn` and only returned at the end). So `chat_turn` takes a
-`client_turn_id` and registers under it:
+The frontend's local turn id (`crypto.randomUUID`) is the only handle the UI has
+before the turn completes, so `chat_turn` registers under it and `cancel_turn`
+addresses it. The handle also carries the requested mode:
 
 ```rust
 // core/cancel.rs (new)
+#[derive(Clone, Copy)]
+pub enum CancelMode { Steer, Redirect }
+
+struct CancelHandle { token: CancellationToken, mode: Arc<Mutex<Option<CancelMode>>> }
+
 #[derive(Default)]
-pub struct CancelRegistry { inner: Mutex<HashMap<String, CancellationToken>> }
+pub struct CancelRegistry { inner: Mutex<HashMap<String, CancelHandle>> }
+
 impl CancelRegistry {
-    pub fn register(&self, client_turn_id: &str) -> CancellationToken { … }   // insert + return clone
-    pub fn cancel(&self, client_turn_id: &str) { /* token.cancel() if present */ }
-    pub fn finish(&self, client_turn_id: &str) { /* remove */ }
+    pub fn register(&self, client_turn_id: &str) -> CancellationToken;     // insert, return token clone
+    pub fn cancel(&self, client_turn_id: &str, mode: CancelMode);          // set mode, trip token
+    pub fn taken_mode(&self, client_turn_id: &str) -> Option<CancelMode>;  // read mode after stop
+    pub fn finish(&self, client_turn_id: &str);                            // remove
 }
 ```
 
-- `.manage(core::cancel::CancelRegistry::default())` in `lib.rs:116`-ish.
-- New command `cancel_turn(client_turn_id, registry)` → `registry.cancel(&id)`;
-  registered in `generate_handler!` (`lib.rs:139` neighbourhood) and exposed in
-  `src/lib/tauri.ts` as `cancelTurn(clientTurnId)`.
+- `.manage(core::cancel::CancelRegistry::default())` in `lib.rs` (~`:116`).
+- New command `cancel_turn(client_turn_id, mode, registry)` →
+  `registry.cancel(&id, mode)`; registered in `generate_handler!` (~`lib.rs:139`)
+  and exposed in `src/lib/tauri.ts`.
 
-### 4. `chat_turn` wiring
+### 4. `chat_turn` branching
 
 ```rust
 pub async fn chat_turn(
-    message: String,
-    session_id: String,
-    client_turn_id: String,                 // NEW
-    on_event: Channel<TurnEvent>,
-    …,
-    cancel: State<'_, CancelRegistry>,       // NEW
+    message: String, session_id: String, client_turn_id: String,   // client_turn_id NEW
+    on_event: Channel<TurnEvent>, …, cancel: State<'_, CancelRegistry>,
 ) -> AppResult<ChatTurnResult> {
     let token = cancel.register(&client_turn_id);
-    // … steps 1–3 unchanged (persist msg, history, snapshot) …
+    let _finish = FinishGuard(&cancel, &client_turn_id);  // deregister on every exit, incl. panic
+    // … persist msg, history, snapshot (unchanged) …
     turn_request.cancel = token.clone();
-    let outcome = run the engine as today;
-    // ensure we always deregister, even on early return:
-    //   let _guard = scopeguard-style finish(client_turn_id) on drop, or finish() on each path.
+    turn_request.conversation_id = session_id.clone();
 
+    let outcome = run the engine as today;
     match outcome {
-        Ok(TurnOutcome { stop: TurnStop::Interrupted, .. }) => {
-            // Roll back partial side-effects, then behave like a failed turn:
-            let changed = audit::diff_formation(&formation_root, &snapshot_dir)?;
-            let fact_ids = store.facts_by_source(&source_chat_id).await?;
-            audit::revert_to_snapshot(&formation_root, &snapshot_dir, &changed, &fact_ids, store).await?;
-            std::fs::remove_dir_all(&snapshot_dir).ok();
-            store.delete_chat_message(&source_chat_id).await?;   // keep history clean
-            return Ok(ChatTurnResult { stop: "interrupted", turn_id: String::new(),
-                                       reply: String::new(), changed_notes: vec![],
-                                       recorded_fact_count: 0, working_set });
+        Ok(TurnOutcome { stop: TurnStop::Interrupted, reply }) => {
+            match cancel.taken_mode(&client_turn_id).unwrap_or(CancelMode::Redirect) {
+                CancelMode::Steer => { /* fall through to the normal commit path with `reply` */ }
+                CancelMode::Redirect => {
+                    let changed = audit::diff_formation(&formation_root, &snapshot_dir)?;
+                    let facts   = store.facts_by_source(&source_chat_id).await?;
+                    audit::revert_to_snapshot(&formation_root, &snapshot_dir, &changed, &facts, store).await?;
+                    std::fs::remove_dir_all(&snapshot_dir).ok();
+                    store.delete_chat_message(&source_chat_id).await?;     // NEW (M2)
+                    return Ok(ChatTurnResult{ stop: "redirected", turn_id: String::new(),
+                        reply: String::new(), changed_notes: vec![], recorded_fact_count: 0, working_set });
+                }
+            }
         }
-        Ok(TurnOutcome { reply, .. }) => { /* steps 5–7 exactly as today */ }
+        Ok(_) => { /* completed — unchanged */ }
         Err(e) => { std::fs::remove_dir_all(&snapshot_dir).ok(); return Err(e); }
     }
+    // commit path (completed OR steered): diff, facts, audit entry, persist reply (unchanged) …
+    Ok(ChatTurnResult{ stop: if was_interrupted { "steered" } else { "completed" }, … })
 }
 ```
 
-`ChatTurnResult` gains `stop: "completed" | "interrupted"` (camelCase via serde).
-Completed turns set `"completed"` and are unchanged in every other respect.
+`ChatTurnResult` gains `stop: "completed" | "steered" | "redirected"`. Steered
+turns are real, audited, revertable turns — just flagged so the UI can badge them
+and the partial reply is understood as such.
 
-> **Deregistration must be unconditional.** Use a drop-guard so `finish()` runs
-> on success, error, *and* panic — a leaked token would make a later
-> `cancel_turn` for a reused id hit a stale turn. (Client ids are UUIDs so reuse
-> is unlikely, but the guard is cheap and correct.)
+> **Deregistration is unconditional** via a drop-guard, so a leaked token can't
+> let a later `cancel_turn` hit a stale turn (client ids are UUIDs, but the guard
+> is cheap and correct).
 
-### 5. Revert helper (factor out of `undo_turn`)
-
-`audit::undo_turn` (`audit.rs:406`) already does notes-from-snapshot +
-delete-facts + drop-snapshot. Extract the first two steps:
+### 5. Shared revert helper (factor out of `undo_turn`)
 
 ```rust
-// audit.rs
+// audit.rs — steps 1–2 of today's undo_turn body
 pub async fn revert_to_snapshot(
     formation_root: &Path, snapshot_dir: &Path,
     changed_notes: &[ChangedNote], fact_ids: &[String], store: &MemoryStore,
-) -> AppResult<()> { /* steps 1–2 of today's undo_turn body */ }
+) -> AppResult<()>;
 ```
 
-`undo_turn` calls it (then removes the audit entry); the cancel path in
-`chat_turn` calls it with `diff_formation` output + `facts_by_source`. One code
-path, two callers — the revert semantics can't drift.
+`undo_turn` calls it then removes the audit entry; the Redirect path calls it with
+`diff_formation` + `facts_by_source`. One revert path, two callers — semantics
+can't drift.
 
-### 6. Claude Code engine (`core/claude_code.rs`)
-
-`drive_turn` (`claude_code.rs:736`) already loops over `stream-json` lines; the
-outer `run_turn` wraps it in a timeout and kills the child on expiry
-(`claude_code.rs:714`,`:721`). Add the cancel token as a second stop reason:
+### 6. Claude Code cancel arm (`core/claude_code.rs`)
 
 ```rust
 tokio::select! {
-    res = drive_turn(&mut child, &prompt, on_event) => { /* timeout-wrapped as today */ }
+    res = (timeout-wrapped drive_turn, as today) => { … }
     _ = turn.cancel.cancelled() => {
-        let _ = child.kill().await;                 // same kill the timeout uses
-        return Ok(TurnOutcome { reply: String::new(), stop: TurnStop::Interrupted });
+        let _ = child.kill().await;                       // the kill the timeout path already uses
+        return Ok(TurnOutcome{ reply: streamed_so_far, stop: TurnStop::Interrupted });
     }
 }
 ```
 
-`kill_on_drop` is a belt-and-braces backstop, but explicit `kill().await` (as the
-timeout path already does) is what we rely on. The temp MCP config is cleaned up
-on every exit path, same as today.
+`drive_turn` should accumulate the streamed reply so a Steer can keep it; today
+the reply is rebuilt from the `result` line, so capture deltas as they stream (or
+return the partial accumulator on cancel).
 
-### 7. Copilot engine (`core/copilot.rs`)
+### 7. Copilot cancel arm + the honour-unknown fallback (`core/copilot.rs`)
 
-`CopilotSession::run_turn`'s `select!` (`copilot.rs:626`) gets a cancel arm. ACP
-cancellation is a notification (no response expected); send it on the existing
-`writer_tx` and stop:
+ACP cancel is a notification (no response); send it on the existing `writer_tx`:
 
 ```rust
-// new message builder, mirrors session_prompt_msg (copilot.rs:306)
-pub fn session_cancel_msg(session_id: &str) -> Value {
+pub fn session_cancel_msg(session_id: &str) -> Value {           // mirrors session_prompt_msg (:306)
     json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session_id}})
-}
-
-// inside the select! loop:
-_ = turn.cancel.cancelled() => {
-    let _ = self.writer_tx.send(ndjson_line(&session_cancel_msg(&self.session_id)));
-    *self.active.lock().await = None;
-    return Ok(String::new());   // CopilotEngineHandle maps to TurnStop::Interrupted
 }
 ```
 
-Notes:
+**Because we don't know the installed CLI honours `session/cancel`, the cancel arm
+is defensive:**
+
+```rust
+_ = turn.cancel.cancelled() => {
+    let _ = self.writer_tx.send(ndjson_line(&session_cancel_msg(&self.session_id)));
+    // Give it a short grace window to wind down and emit stopReason "cancelled".
+    // If the prompt response doesn't arrive within COPILOT_CANCEL_GRACE, force it:
+    //   return a sentinel so CopilotEngineHandle kills + recycles the session.
+    return Ok(String::new());   // handle maps to TurnStop::Interrupted
+}
+```
 
 - `CopilotEngineHandle::run_turn` holds the `inner` lock for the whole turn
-  (`copilot.rs:713`) — that's *fine*, because the cancel travels through the
-  `CancellationToken`, not through the handle. The session's own loop observes it
-  and writes to its own `writer_tx`. No lock contention, no second `cancel_turn`
-  acquiring the busy lock.
-- **Do not recycle** the session on cancel. A clean ACP `session/cancel` leaves
-  the session usable and warm; recycling would throw away server-side history and
-  re-send the persona. Cancel is an expected stop, distinct from the error path
-  that *does* recycle (`copilot.rs:752`).
-- *Open question:* confirm the installed Copilot CLI honours `session/cancel`
-  mid-prompt and reports `stopReason: "cancelled"` (or just stops emitting). If a
-  given build ignores it, fall back to killing+recycling the session — uglier but
-  always correct. Gate behind a quick live probe in M-test.
+  (`copilot.rs:713`) — fine: the cancel travels through the token, not the handle;
+  the session's own loop sends `session/cancel` on its own `writer_tx`. No lock
+  contention with a concurrent `cancel_turn`.
+- **Recycle policy:** if cancel returns cleanly within the grace window, keep the
+  warm session (it stays usable). If the grace window elapses, **kill + recycle**
+  (the existing error path, `copilot.rs:752`) — always correct, just colder. M4
+  probes which branch the installed CLI takes and records it.
+- **New conversation recycle:** add `conversation_id` to `ResidentEngine` and the
+  `need_new` check (`copilot.rs:715`): recycle when it changes, so a New
+  conversation transparently starts a fresh `session/new`. Cold Claude Code needs
+  nothing — it renders history from the (now-empty) transcript window.
 
 ---
 
 ## Frontend
 
-### 8. Turn state — add an `interrupted` state
+### 8. Store (`src/lib/store.ts`)
 
-`src/lib/store.ts`, `ChatTurn`:
+`ChatTurn` gains discriminated end-states (mirroring `failure`):
 
 ```ts
-/** Set when the turn was interrupted by the user; carries the message to resume. */
-interrupted?: { body: string };
+/** Set when Steer kept a partial, interrupted turn — a committed, revertable turn. */
+steered?: boolean;
+/** Set when Redirect reverted the turn; carries the text so Resume can re-run it. */
+redirected?: { body: string };
 ```
 
-New actions:
+Actions: `steerTurn(id)`, `redirectTurn(id, body)`, and `resetTurn` extended to
+clear both. `newConversation()` → `set({ sessionId: crypto.randomUUID(), turns: [] })`.
 
-- `interruptTurn(id, body)` → `{ pending: false, queued: false, interrupted: { body } }`
-  (mirrors `failTurn`).
-- `resetTurn` already clears `interrupted` alongside `failure` (extend it) so a
-  resume re-queues cleanly.
-
-`startTurn` already accepts `queued`; no change. The local turn id created by
-`startTurn` is the `client_turn_id` we now pass to `chat_turn`.
+The local turn id from `startTurn` is the `clientTurnId` passed to `chat_turn`.
 
 ### 9. `tauri.ts`
 
 ```ts
 chatTurn: (message, sessionId, clientTurnId, onEvent) =>
   invoke<ChatTurnResult>("chat_turn", { message, sessionId, clientTurnId, onEvent: channel }),
-cancelTurn: (clientTurnId: string) => invoke<void>("cancel_turn", { clientTurnId }),
+cancelTurn: (clientTurnId: string, mode: "steer" | "redirect") =>
+  invoke<void>("cancel_turn", { clientTurnId, mode }),
 ```
 
-`ChatTurnResult` gains `stop: "completed" | "interrupted"`.
+`ChatTurnResult.stop: "completed" | "steered" | "redirected"`.
 
-### 10. `ChatPane` — pump + interrupt
+### 10. `ChatPane` — pump, interrupt, reorder, new conversation
 
-- `runTurn(id, message)` passes `id` as `clientTurnId`. On result, branch on
-  `result.stop`:
-  - `"interrupted"` → `interruptTurn(id, message)` (don't complete, don't refresh
-    panels — nothing was recorded).
-  - `"completed"` → unchanged (complete + refresh panels).
-- The `pump` loop is unchanged — it still drains `queueRef` one at a time. Reorder
-  happens before cancel, so the next `shift()` returns the promoted message.
-- New `handleInterrupt(queuedTurnId)`:
+The `pump` loop is unchanged in shape (drain `queueRef` one at a time); the queue
+just becomes editable and the result is branched.
 
 ```ts
-function handleInterrupt(queuedTurnId: string) {
-  // find the running turn (pending && !queued); nothing to interrupt? no-op
-  const running = turns.find((t) => t.pending && !t.queued);
-  if (!running) return;
-  // promote the clicked message to the front of the processing queue
-  const q = queueRef.current;
-  const i = q.findIndex((m) => m.id === queuedTurnId);
-  if (i > 0) q.unshift(...q.splice(i, 1));
-  // cancel the running turn — its runTurn promise resolves with stop:"interrupted",
-  // the pump loop continues and picks up the promoted message next.
-  void tauri.cancelTurn(running.id);
+// queue ops over queueRef.current ({ id, message }[])
+function promote(id)   { const q=queueRef.current; const i=q.findIndex(m=>m.id===id);
+                         if (i>0) q.unshift(...q.splice(i,1)); }
+function move(id, d)   { /* swap with neighbour */ }
+function removeQueued(id) { queueRef.current = queueRef.current.filter(m=>m.id!==id);
+                            removeTurn(id); }                    // drop from transcript too
+
+const [cancelling, setCancelling] = useState(false);
+function interrupt(queuedId, mode) {
+  const running = turns.find(t => t.pending && !t.queued);
+  if (!running || cancelling) return;
+  promote(queuedId);
+  setCancelling(true);
+  void tauri.cancelTurn(running.id, mode);   // runTurn resolves with stop; pump continues
+}
+
+// in runTurn, branch on result.stop:
+//   "steered"     → steerTurn(id);  refresh panels (work was committed)
+//   "redirected"  → redirectTurn(id, message);  no panel refresh (reverted)
+//   "completed"   → completeTurn(...) as today
+// clear `cancelling` whenever a turn settles.
+
+async function newConversation() {
+  const running = turns.find(t => t.pending && !t.queued);
+  if (running) await tauri.cancelTurn(running.id, "redirect");
+  queueRef.current = [];
+  useChatStore.getState().newConversation();   // new sessionId + clear turns
 }
 ```
 
-- `Resume` on an interrupted turn = `handleRetry`-style: `resetTurn(id)` →
-  enqueue `{ id, message: turn.interrupted.body }` → `pump()`.
+Resume on a redirected turn = `resetTurn(id)` → enqueue `{ id, message: redirected.body }` → `pump()`.
 
-### 11. `TurnView` rendering
+### 11. `TurnView`
 
-- **Queued** turn: keep `Queued…`; add an `Interrupt & run` button rendered only
-  when a sibling turn is running. Pass a `runningCount > 0` flag (already computed
-  in `ChatPane`) down, or compute `canInterrupt` per turn.
-- **Interrupted** turn: a muted line — *"Interrupted"* — with a `Resume` button,
-  styled like the existing failed-turn affordance but neutral (not `danger`).
-- **Running** turn: unchanged (`Thinking…`).
+- **Queued**: `Queued · {place}` + `Steer` / `Redirect` (shown only when a turn is
+  running; disabled while `cancelling`) + `↑`/`↓` + `✕`. `place` and the
+  running/cancelling flags come from `ChatPane`.
+- **Steered**: a normal completed turn (receipt + undo), with a small *Steered*
+  badge so the partial reply reads as intentional.
+- **Redirected**: a thin neutral tombstone — *"Redirected"* — with **Resume**.
+- **Running**: unchanged (`Thinking…`).
+
+### 12. New conversation control
+
+A slim header above the transcript (or a button by the composer toolbar) calling
+`newConversation()`; also wired into `CommandPalette` as "New conversation".
 
 ---
 
 ## Build order
 
-- **M1 — backend cancel spine.** `TurnStop`, `TurnRequest.cancel`,
-  `CancelRegistry`, `cancel_turn` command, `chat_turn` registration +
-  deregistration drop-guard. Engines ignore the token for now (compiles, no
-  behaviour change). Unit-test the registry.
-- **M2 — revert helper.** Extract `audit::revert_to_snapshot`; re-point
-  `undo_turn` at it; add the interrupted branch to `chat_turn` (revert + no audit
-  entry + delete chat row). Test: simulate an interrupted turn that wrote a note
-  and recorded a fact → assert the note matches the snapshot and the fact is gone.
-- **M3 — Claude Code cancel.** Add the `select!` cancel arm + `child.kill()`.
-  Live test `live_run_turn_*`-style: start a turn, cancel mid-stream, assert
-  `TurnStop::Interrupted` and a reaped child.
-- **M4 — Copilot cancel.** `session_cancel_msg`, the cancel arm, the
-  no-recycle decision. Live probe that the CLI honours `session/cancel`; fall
-  back to kill+recycle if not.
-- **M5 — frontend.** `interrupted` state + actions, `tauri.ts` changes,
-  `handleInterrupt`/`Resume`, `TurnView` buttons. The queue/pump from `139dbb7`
-  is already in place.
-- **M6 — polish.** Race handling (finish-before-cancel), the optional `Stop` on
-  the running turn, copy review, biome/tsc/clippy.
+- **M1 — cancel spine.** `TurnStop`, `TurnRequest.cancel` + `conversation_id`,
+  `CancelRegistry` (with mode), `cancel_turn`, `chat_turn` register/deregister
+  guard. Engines ignore the token (compiles, no behaviour change). Unit-test the
+  registry incl. mode round-trip.
+- **M2 — revert + branch.** Extract `audit::revert_to_snapshot`; add
+  `MemoryStore::delete_chat_message`; add the Steer (commit) and Redirect
+  (revert + delete chat row + no audit entry) branches to `chat_turn`. Tests:
+  redirected turn → formation byte-identical to snapshot, facts gone, chat row
+  gone, no audit entry; steered turn → audit entry present, partial reply kept.
+- **M3 — Claude Code cancel.** select! cancel arm + `child.kill()`; accumulate the
+  partial reply for Steer. Cancel mid-stream over the deterministic fixtures
+  (`claude_code.rs:887`+) → `Interrupted` with the streamed-so-far reply.
+- **M4 — Copilot cancel + probe.** `session_cancel_msg`, the defensive arm, the
+  grace window, the kill+recycle fallback, and `conversation_id` recycle.
+  **Live probe** (gated like existing live tests): does the installed CLI honour
+  `session/cancel` and stay usable, or must we recycle? Record the answer here.
+- **M5 — frontend.** Store states + `newConversation`, `tauri.ts`, pump branching,
+  `interrupt`/`promote`/`move`/`removeQueued`/Resume, `TurnView` controls,
+  New-conversation control + command-palette entry.
+- **M6 — polish.** Cancel-in-flight race (finish-before-cancel resolves to the
+  real stop), `cancelling` lockout, place-in-line badges, copy, biome/tsc/clippy.
 
-Each milestone compiles and runs; M1–M2 are invisible to the UI, M3–M4 make
-cancel real per engine, M5 wires the button.
+Each milestone compiles and runs; M1–M2 are invisible, M3–M4 make each engine
+interruptible, M5 wires the buttons.
 
 ---
 
 ## Testing
 
-- **Registry:** register/cancel/finish; cancel of an unknown id is a no-op;
-  double-finish is safe.
-- **Revert (M2):** the property that matters — after an interrupted turn, the
-  formation is byte-identical to the pre-turn snapshot and `facts_by_source` is
-  empty. Reuse the snapshot fixtures around `undo_turn`.
-- **Claude Code (M3):** cancel during the captured `stream-json` transcript
-  (the deterministic fixtures at `claude_code.rs:887`+) → `Interrupted`, partial
-  reply discarded.
-- **Copilot (M4):** live `--acp` probe (gated like the existing live tests) that
-  `session/cancel` stops the prompt and the session survives for the next turn.
-- **Frontend:** the finish-before-cancel race resolves to `completed`; a promoted
-  message runs next; `Resume` re-runs an interrupted turn as a fresh turn.
+- **Registry:** register/cancel(mode)/taken_mode/finish; cancel of an unknown id
+  is a no-op; double-finish safe; mode round-trips.
+- **Redirect (M2):** formation byte-identical to the pre-turn snapshot;
+  `facts_by_source` empty; chat row deleted; no audit entry.
+- **Steer (M2):** audit entry written; changed notes + facts retained; partial
+  reply persisted; turn is revertable via the normal `undo_turn`.
+- **Claude Code (M3):** cancel during the captured `stream-json` transcript →
+  `Interrupted`, partial reply = streamed-so-far, child reaped.
+- **Copilot (M4):** live probe — `session/cancel` stops the prompt and the
+  session survives; otherwise the recycle fallback fires and the next turn works.
+- **New conversation (M4/M5):** new `session_id` ⇒ `recent_messages` empty for it;
+  in-flight turn reverted; Copilot session recycled (fresh `session/new`).
+- **Frontend:** finish-before-cancel resolves to the actual stop (no false
+  "redirected"); promote/reorder/remove keep order; `cancelling` disables
+  double-interrupt; Resume re-runs a redirected turn fresh.
 
 ---
 
 ## Open questions
 
-1. **Copilot `session/cancel` semantics** — does the installed CLI stop the
-   in-flight prompt cleanly and stay usable, or must we kill+recycle? Decides M4's
-   fallback. (Probe early.)
-2. **Resume = same turn or new turn?** This plan re-runs from the captured text as
-   a *fresh* turn (new snapshot, new id). Simpler and matches `handleRetry`. The
-   alternative — resuming the engine's partial work — is Level 3 and out of scope.
-3. **Keep or drop the interrupted user message from `chat_message` history?** Plan
-   drops it (`delete_chat_message`) so the abandoned, half-answered message
-   doesn't pollute the next turn's continuity window. If we'd rather preserve the
-   literal transcript, keep it — but then the next turn sees a user message with
-   no assistant reply, which the engine may find confusing. Recommend: drop.
-4. **Auto-revert vs. keep partial edits.** Plan reverts all partial side-effects
-   on interrupt (clean "as if it never ran"). If users would rather *keep* a
-   half-finished note edit when they steer, that's a different contract — but it
-   reintroduces the audit-entry question for a turn that never produced a reply.
-   Recommend: revert (matches "interrupt = abandon").
+1. **Copilot `session/cancel` honoured?** Unknown — M4's probe decides whether we
+   ride the clean-cancel path or always kill+recycle. Plan works either way.
+2. **Soft Steer variant?** This plan's Steer interrupts promptly and keeps the
+   partial reply. An alternative "soft steer" would *not* interrupt — it lets the
+   running turn finish and only jumps the message to the front of the queue (no
+   partial reply, no kill). If the partial-reply artifact proves jarring in
+   practice we can switch Steer to soft, or offer both. Recommend: ship prompt
+   Steer; revisit if the partial replies read badly.
+3. **Redirected tombstone vs. vanish.** Plan keeps a thin tombstone + Resume so
+   the user remembers they redirected. Alternative: remove the turn entirely.
+   Recommend: tombstone.
+4. **Drag-reorder vs. ↑/↓.** Plan uses ↑/↓ + promote (simple, keyboard-friendly).
+   Full drag-and-drop is a later polish if queues routinely get long.
