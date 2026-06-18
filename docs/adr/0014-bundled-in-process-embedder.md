@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted.
+Accepted. Refined by **ADR-0016**, which makes the bundled model strictly
+file-based (no runtime Hugging Face fetch) and moves weight acquisition into an
+explicit download/import setup step.
 
 ## Context
 
