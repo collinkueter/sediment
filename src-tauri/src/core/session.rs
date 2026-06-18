@@ -11,8 +11,12 @@
 //! spine (UI → registry → Meeting note → stream back). M2+ swaps the source for
 //! real capture + transcription; the types below do not change.
 
+use crate::core::capture_pipeline::CaptureController;
+use crate::core::meeting_note;
+use crate::error::AppResult;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Instant;
 use tauri::ipc::Channel;
@@ -71,9 +75,12 @@ pub struct MeetingSession {
     pub note_path: String,
     /// Wall clock anchor; `offset_ms()` is elapsed-since-start.
     started: Instant,
-    pub attendees: Vec<String>,
-    pub segment_count: usize,
     pub events: Channel<SessionEvent>,
+    /// The running capture→transcription pipeline, when capture is active (the
+    /// `audio` feature, ADR-0016 §1). Dropping it on `session_stop` tears capture
+    /// down deterministically (§3). `None` in M1 / default builds, where segments
+    /// come from the manual `session_push_segment` source.
+    pub capture: Option<CaptureController>,
 }
 
 impl MeetingSession {
@@ -83,9 +90,8 @@ impl MeetingSession {
             title,
             note_path,
             started: Instant::now(),
-            attendees: Vec::new(),
-            segment_count: 0,
             events,
+            capture: None,
         }
     }
 
@@ -93,6 +99,61 @@ impl MeetingSession {
     pub fn offset_ms(&self) -> i64 {
         self.started.elapsed().as_millis() as i64
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Shared recording — the single path both the manual command source
+// (`session_push_segment`) and the capture pipeline use to land a segment in the
+// Meeting note and stream the event. Attendee state is derived from the note, not
+// tracked in memory, so the two sources stay consistent.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Append a transcript segment to the Meeting note and stream `Segment` (plus
+/// `AttendeeChanged` when the speaker is new). `offset_ms` is from Session start.
+pub fn record_segment(
+    formation_root: &Path,
+    note_rel: &str,
+    events: &Channel<SessionEvent>,
+    offset_ms: i64,
+    speaker: &str,
+    text: &str,
+) -> AppResult<()> {
+    let note_abs = formation_root.join(note_rel);
+    let is_new_attendee = !meeting_note::attendee_present(&note_abs, speaker)?;
+    if is_new_attendee {
+        meeting_note::ensure_attendee(&note_abs, speaker)?;
+    }
+    meeting_note::append_transcript_segment(&note_abs, offset_ms, speaker, text)?;
+
+    let _ = events.send(SessionEvent::Segment {
+        segment: TranscriptSegment {
+            offset_ms,
+            speaker: speaker.to_string(),
+            text: text.to_string(),
+        },
+    });
+    if is_new_attendee {
+        let attendees = meeting_note::list_attendees(&note_abs)?;
+        let _ = events.send(SessionEvent::AttendeeChanged { attendees });
+    }
+    Ok(())
+}
+
+/// Append a time-anchored note/chat line to `## Notes` and stream `Note`.
+pub fn record_note(
+    formation_root: &Path,
+    note_rel: &str,
+    events: &Channel<SessionEvent>,
+    offset_ms: i64,
+    text: &str,
+) -> AppResult<()> {
+    let note_abs = formation_root.join(note_rel);
+    meeting_note::append_note_line(&note_abs, offset_ms, text)?;
+    let _ = events.send(SessionEvent::Note {
+        offset_ms,
+        text: text.to_string(),
+    });
+    Ok(())
 }
 
 /// Registry of currently-open Sessions, keyed by session id. Managed by Tauri as

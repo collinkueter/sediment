@@ -1,21 +1,21 @@
-//! Meeting **Session** commands (ADR-0016 §3–§5, plan M1).
+//! Meeting **Session** commands (ADR-0016 §3–§5, plan M1/M2).
 //!
 //! Start/stop are explicit and user-initiated — a Session is bounded, never a
-//! daemon. While open, `session_push_segment` / `session_push_note` splice into
-//! the Meeting note and stream `SessionEvent`s back over the `Channel` the start
-//! call registered, mirroring `chat_turn`'s streaming shape.
+//! daemon. While open, segments and notes land in the Meeting note through the
+//! single `core::session::record_*` path and stream `SessionEvent`s back over the
+//! `Channel` the start call registered (mirroring `chat_turn`).
 //!
-//! M1 has no audio. `session_push_segment` is the **fake source** that proves the
-//! spine (UI → registry → Meeting note → stream) end-to-end; M2 replaces it with
-//! real capture + transcription, and the command surface here does not change.
+//! Two segment sources share that path:
+//!   - **manual** (`session_push_segment`) — the M1 fake source, always available;
+//!   - **capture pipeline** (M2, `audio` feature) — real mic capture →
+//!     transcription, spawned on `session_start`, torn down when the Session's
+//!     `CaptureController` drops on stop.
 
 use crate::commands::formation::APP_DIR;
 use crate::core::formation_state::FormationState;
 use crate::core::memory::MemoryHandle;
 use crate::core::meeting_note;
-use crate::core::session::{
-    MeetingSession, SessionEvent, SessionLifecycle, SessionRegistry, TranscriptSegment,
-};
+use crate::core::session::{record_note, record_segment, MeetingSession, SessionEvent, SessionLifecycle, SessionRegistry};
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -38,7 +38,8 @@ pub struct SessionStopResult {
 }
 
 /// Open a Session: create its Meeting note, reserve the `meeting` Entity, register
-/// the open Session with its streaming channel, and emit a `Status{started}`.
+/// the open Session with its streaming channel, (under the `audio` feature) spawn
+/// the capture pipeline, and emit a `Status{started}`.
 #[tauri::command]
 pub async fn session_start(
     title: String,
@@ -68,13 +69,23 @@ pub async fn session_start(
     }
 
     let session_id = format!("session:{}", uuid::Uuid::new_v4());
-    let session = MeetingSession::new(
+    // `mut` is only needed when the `audio` feature wires up the capture pipeline.
+    #[cfg_attr(not(feature = "audio"), allow(unused_mut))]
+    let mut session = MeetingSession::new(
         session_id.clone(),
         title,
         note_path.clone(),
         on_event.clone(),
     );
-    // Emit the opening status on the freshly-registered channel.
+
+    // M2: spawn the real capture→transcription pipeline. It feeds segments through
+    // the same `record_segment` path as the manual source. Feature-gated so the
+    // default build pulls no audio backend and keeps M1's manual-source behaviour.
+    #[cfg(feature = "audio")]
+    {
+        session.capture = Some(spawn_capture(&formation_root, &note_path, on_event.clone()));
+    }
+
     let _ = on_event.send(SessionEvent::Status {
         session_id: session_id.clone(),
         note_path: note_path.clone(),
@@ -89,9 +100,34 @@ pub async fn session_start(
     })
 }
 
-/// Push one transcript segment (M1: the fake source). Appends to `## Transcript`,
-/// adds the speaker to `## Attendees` if new, and streams `Segment` (+
-/// `AttendeeChanged` on a new attendee).
+/// Wire a [`MicSource`] → [`MockTranscriber`] pipeline whose segments record into
+/// the Meeting note. M3 swaps the mock for the on-device ASR engine; M4 adds
+/// diarization so the placeholder speaker becomes a real attribution.
+#[cfg(feature = "audio")]
+fn spawn_capture(
+    formation_root: &std::path::Path,
+    note_rel: &str,
+    events: Channel<SessionEvent>,
+) -> crate::core::capture_pipeline::CaptureController {
+    use crate::core::capture::MicSource;
+    use crate::core::transcription::MockTranscriber;
+
+    let root = formation_root.to_path_buf();
+    let note = note_rel.to_string();
+    crate::core::capture_pipeline::spawn(
+        MicSource,
+        Box::new(MockTranscriber::default()),
+        "Unknown speaker 1".to_string(),
+        move |offset_ms, speaker, text| {
+            if let Err(e) = record_segment(&root, &note, &events, offset_ms, speaker, text) {
+                tracing::warn!("capture pipeline: record_segment failed: {e}");
+            }
+        },
+    )
+}
+
+/// Push one transcript segment (M1 manual source). Appends to `## Transcript`,
+/// adds the speaker to `## Attendees` if new, and streams the events.
 #[tauri::command]
 pub async fn session_push_segment(
     session_id: String,
@@ -101,44 +137,17 @@ pub async fn session_push_segment(
     sessions: State<'_, SessionRegistry>,
 ) -> AppResult<()> {
     let formation_root = formation.require()?;
-    let (note_rel, offset_ms) = sessions
-        .with_session(&session_id, |s| (s.note_path.clone(), s.offset_ms()))
+    let (note_rel, offset_ms, events) = sessions
+        .with_session(&session_id, |s| {
+            (s.note_path.clone(), s.offset_ms(), s.events.clone())
+        })
         .ok_or_else(|| AppError::other(format!("no open session {session_id}")))?;
 
-    let note_abs = formation_root.join(&note_rel);
-
-    // File IO outside the registry lock.
-    let is_new_attendee = !meeting_note::attendee_present(&note_abs, &speaker)?;
-    if is_new_attendee {
-        meeting_note::ensure_attendee(&note_abs, &speaker)?;
-    }
-    meeting_note::append_transcript_segment(&note_abs, offset_ms, &speaker, &text)?;
-
-    // Update counters and emit under the lock (the session may have been stopped
-    // concurrently — then this is a no-op, which is correct).
-    sessions.with_session(&session_id, |s| {
-        s.segment_count += 1;
-        if is_new_attendee && !s.attendees.iter().any(|a| a == &speaker) {
-            s.attendees.push(speaker.clone());
-        }
-        let _ = s.events.send(SessionEvent::Segment {
-            segment: TranscriptSegment {
-                offset_ms,
-                speaker: speaker.clone(),
-                text: text.clone(),
-            },
-        });
-        if is_new_attendee {
-            let _ = s.events.send(SessionEvent::AttendeeChanged {
-                attendees: s.attendees.clone(),
-            });
-        }
-    });
-    Ok(())
+    record_segment(&formation_root, &note_rel, &events, offset_ms, &speaker, &text)
 }
 
 /// Push a time-anchored note/chat line into `## Notes` (the user typing alongside
-/// the meeting, ADR-0016 §8). Streams a `Note` event.
+/// the meeting, ADR-0016 §8).
 #[tauri::command]
 pub async fn session_push_note(
     session_id: String,
@@ -147,32 +156,28 @@ pub async fn session_push_note(
     sessions: State<'_, SessionRegistry>,
 ) -> AppResult<()> {
     let formation_root = formation.require()?;
-    let (note_rel, offset_ms) = sessions
-        .with_session(&session_id, |s| (s.note_path.clone(), s.offset_ms()))
+    let (note_rel, offset_ms, events) = sessions
+        .with_session(&session_id, |s| {
+            (s.note_path.clone(), s.offset_ms(), s.events.clone())
+        })
         .ok_or_else(|| AppError::other(format!("no open session {session_id}")))?;
 
-    let note_abs = formation_root.join(&note_rel);
-    meeting_note::append_note_line(&note_abs, offset_ms, &text)?;
-
-    sessions.with_session(&session_id, |s| {
-        let _ = s.events.send(SessionEvent::Note {
-            offset_ms,
-            text: text.clone(),
-        });
-    });
-    Ok(())
+    record_note(&formation_root, &note_rel, &events, offset_ms, &text)
 }
 
-/// Close a Session: deregister it, emit `Status{stopped}`, and return a summary.
-/// The end-of-Session distillation turn (ADR-0016 §7) is M6 — M1 just closes.
+/// Close a Session: deregister it (dropping its `CaptureController` tears down
+/// capture), emit `Status{stopped}`, and return a summary derived from the note.
+/// The end-of-Session distillation turn (ADR-0016 §7) is M6 — M1/M2 just close.
 #[tauri::command]
 pub async fn session_stop(
     session_id: String,
+    formation: State<'_, FormationState>,
     sessions: State<'_, SessionRegistry>,
 ) -> AppResult<SessionStopResult> {
     let session = sessions
         .remove(&session_id)
         .ok_or_else(|| AppError::other(format!("no open session {session_id}")))?;
+    // `session` drops at end of scope → its CaptureController stops the pipeline.
 
     let _ = session.events.send(SessionEvent::Status {
         session_id: session_id.clone(),
@@ -180,14 +185,15 @@ pub async fn session_stop(
         state: SessionLifecycle::Stopped,
     });
 
-    tracing::info!(
-        session_id = %session_id,
-        segments = session.segment_count,
-        "session stopped"
-    );
+    // Derive the summary from the note — the single source of truth.
+    let note_abs = formation.require()?.join(&session.note_path);
+    let segment_count = meeting_note::count_transcript_segments(&note_abs).unwrap_or(0);
+    let attendees = meeting_note::list_attendees(&note_abs).unwrap_or_default();
+
+    tracing::info!(session_id = %session_id, segments = segment_count, "session stopped");
     Ok(SessionStopResult {
         note_path: session.note_path,
-        segment_count: session.segment_count,
-        attendees: session.attendees,
+        segment_count,
+        attendees,
     })
 }

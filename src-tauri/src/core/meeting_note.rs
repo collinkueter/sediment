@@ -171,6 +171,39 @@ pub fn attendee_present(note_abs: &Path, name: &str) -> AppResult<bool> {
     })
 }
 
+/// The attendees currently listed in `## Attendees`, as plain names (the `[[…]]`
+/// unwrapped). Derived from the note so it is the single source of truth — the
+/// `attendeeChanged` event and the stop summary both read it.
+pub fn list_attendees(note_abs: &Path) -> AppResult<Vec<String>> {
+    let content = read(note_abs)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let Some((h, end)) = find_section(&lines, ATTENDEES_HEADING) else {
+        return Ok(Vec::new());
+    };
+    Ok(lines[h + 1..end]
+        .iter()
+        .filter_map(|l| {
+            let t = l.trim();
+            let inner = t.strip_prefix("- [[")?.strip_suffix("]]")?;
+            Some(inner.to_string())
+        })
+        .collect())
+}
+
+/// How many transcript segments the note holds — bullets in `## Transcript`.
+/// The Session stop summary reports this (derived, not tracked in memory).
+pub fn count_transcript_segments(note_abs: &Path) -> AppResult<usize> {
+    let content = read(note_abs)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let Some((h, end)) = find_section(&lines, TRANSCRIPT_HEADING) else {
+        return Ok(0);
+    };
+    Ok(lines[h + 1..end]
+        .iter()
+        .filter(|l| l.trim_start().starts_with("- `["))
+        .count())
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Section splice (pure, testable) — parameterised by heading
 // ──────────────────────────────────────────────────────────────────────────

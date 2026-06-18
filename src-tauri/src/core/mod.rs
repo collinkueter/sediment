@@ -1,8 +1,11 @@
 // Core module: long-lived state and subsystems.
 pub mod agent_tone;
+pub mod audio;
 pub mod audit;
 pub mod bundled_embed;
 pub mod cancel;
+pub mod capture;
+pub mod capture_pipeline;
 pub mod claude_code;
 pub mod cli_launch;
 pub mod conversation;
@@ -22,5 +25,6 @@ pub mod self_model;
 pub mod session;
 pub mod task_note;
 pub mod tasks;
+pub mod transcription;
 pub mod watcher;
 pub mod working_set;
