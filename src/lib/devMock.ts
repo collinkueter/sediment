@@ -219,7 +219,6 @@ const RESPONSES: Record<string, unknown> = {
   get_models_dir: "/Users/you/.sediment/models",
   get_embedding_provider: "ollama",
   set_embedding_provider: null,
-  warmup_embedding_model: null,
   get_conversation_engine: {
     engine: "claude-code",
     claude_code_model: "sonnet",

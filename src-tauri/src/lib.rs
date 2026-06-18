@@ -163,7 +163,6 @@ pub fn run() {
             commands::settings::set_models_dir,
             commands::settings::get_embedding_provider,
             commands::settings::set_embedding_provider,
-            commands::settings::warmup_embedding_model,
             commands::settings::detect_claude_code,
             commands::settings::detect_copilot,
             commands::settings::get_conversation_engine,

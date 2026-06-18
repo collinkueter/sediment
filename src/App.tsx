@@ -67,9 +67,18 @@ export default function App() {
 
   useEffect(() => {
     restore().catch((e) => console.error("restore formation failed:", e));
-    // Kick the Ollama daemon awake so the first chat message doesn't pay the
-    // cold-start latency. Errors are non-fatal — chat surfaces them.
-    tauri.ollamaEnsureRunning().catch((e) => console.warn("ollama ensure failed:", e));
+    // Ollama backs only the `ollama` embedding provider now (the agent runs on
+    // a CLI, ADR-0009). Start the daemon ahead of the first search only when
+    // that provider is selected — bundled/keyword users need no daemon. Errors
+    // are non-fatal.
+    tauri
+      .getEmbeddingProvider()
+      .then((p) => {
+        if (p === "ollama") {
+          tauri.ollamaEnsureRunning().catch((e) => console.warn("ollama ensure failed:", e));
+        }
+      })
+      .catch(() => {});
     tauri
       .getOnboardingState()
       .then((s) => setOnboardingComplete(s.complete))

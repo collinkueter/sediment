@@ -376,8 +376,6 @@ export const tauri = {
   getEmbeddingProvider: () => invoke<string>("get_embedding_provider"),
   /** Persist the note-search backend ("ollama" | "bundled" | "none"). */
   setEmbeddingProvider: (provider: string) => invoke<void>("set_embedding_provider", { provider }),
-  /** Eagerly load/download the in-process embedding model (no-op unless bundled). */
-  warmupEmbeddingModel: () => invoke<void>("warmup_embedding_model"),
 
   // Tasks & reminders (ADR-0007)
   listTasks: () => invoke<Task[]>("list_tasks"),

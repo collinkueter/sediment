@@ -2,6 +2,15 @@ import { Icon } from "@/components/icons";
 import { type ModelProgress, type ModelReadiness, type ModelRequirement, tauri } from "@/lib/tauri";
 import { useState } from "react";
 
+// After a semantic provider's model becomes ready, re-embed existing notes so
+// search actually returns results. Switching providers (or installing the
+// model) invalidates the prior vectors, and the background index on open skips
+// unchanged files by mtime — so a forced pass is the only thing that re-embeds.
+// Backgrounded; progress surfaces through the usual `index-progress` events.
+function reindexNotes() {
+  tauri.indexFormation(true).catch((e) => console.warn("re-index after model setup failed:", e));
+}
+
 /// Launch-time setup screen, shown when the selected note-search provider's
 /// model isn't installed. The acquisition flow depends on the provider:
 ///   - "ollama": pull the embedding model through the Ollama daemon.
@@ -34,7 +43,10 @@ export function ModelSetup({
     try {
       await tauri.setEmbeddingProvider("bundled");
       const fresh = await refresh();
-      if (fresh.all_present) onComplete();
+      if (fresh.all_present) {
+        reindexNotes();
+        onComplete();
+      }
     } catch (e) {
       setError(`On-device model — ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -154,7 +166,10 @@ function BundledSetup({
     try {
       await tauri.downloadBundledModel((p) => setProgress((s) => ({ ...s, [p.model]: p })));
       const fresh = await refresh();
-      if (fresh.all_present) onComplete();
+      if (fresh.all_present) {
+        reindexNotes();
+        onComplete();
+      }
     } catch (e) {
       setError(`Download failed — ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -176,7 +191,10 @@ function BundledSetup({
     try {
       await tauri.importBundledModel(dir);
       const fresh = await refresh();
-      if (fresh.all_present) onComplete();
+      if (fresh.all_present) {
+        reindexNotes();
+        onComplete();
+      }
     } catch (e) {
       setError(`Import failed — ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -338,7 +356,10 @@ function OllamaSetup({
     try {
       const fresh = await tauri.checkModelReadiness();
       setReadiness(fresh);
-      if (fresh.all_present) onComplete();
+      if (fresh.all_present) {
+        reindexNotes();
+        onComplete();
+      }
     } catch {
       // Leave the screen up so the user can retry.
     }
