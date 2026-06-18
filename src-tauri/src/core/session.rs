@@ -77,9 +77,11 @@ pub struct MeetingSession {
     started: Instant,
     pub events: Channel<SessionEvent>,
     /// The running capture→transcription pipeline, when capture is active (the
-    /// `audio` feature, ADR-0017 §1). Dropping it on `session_stop` tears capture
-    /// down deterministically (§3). `None` in M1 / default builds, where segments
-    /// come from the manual `session_push_segment` source.
+    /// `audio` feature, ADR-0017 §1). An RAII guard — never read directly; its
+    /// `Drop` on `session_stop` tears capture down deterministically (§3). `None`
+    /// in M1 / default builds, where segments come from the manual
+    /// `session_push_segment` source.
+    #[allow(dead_code)]
     pub capture: Option<CaptureController>,
 }
 
