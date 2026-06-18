@@ -50,19 +50,23 @@ pub trait CaptureSource: Send {
 // ──────────────────────────────────────────────────────────────────────────
 
 /// Replays a fixed list of frames at a fixed format, then ends. Used by the
-/// pipeline tests and as a deterministic stand-in. Honors the stop flag between
-/// frames.
+/// pipeline tests as a deterministic stand-in for a real source. Honors the stop
+/// flag between frames. Test-only for now; a real WAV-file source (M3 offline
+/// bench) would be its own type.
+#[cfg(test)]
 pub struct VecSource {
     format: CaptureFormat,
     chunks: Vec<Vec<f32>>,
 }
 
+#[cfg(test)]
 impl VecSource {
     pub fn new(format: CaptureFormat, chunks: Vec<Vec<f32>>) -> Self {
         Self { format, chunks }
     }
 }
 
+#[cfg(test)]
 impl CaptureSource for VecSource {
     fn start(&self, stop: Arc<AtomicBool>) -> AppResult<CaptureHandle> {
         let (tx, rx) = std::sync::mpsc::channel();
