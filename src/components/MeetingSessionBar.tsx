@@ -86,6 +86,23 @@ export function MeetingSessionBar() {
     }
   }, [sessionId]);
 
+  // "That was Sarah" — name a speaker (ADR-0017 §6). Relabels the transcript and
+  // attendees in the note; optimistically relabel the live view too.
+  const renameSpeaker = useCallback(
+    async (from: string) => {
+      if (!sessionId) return;
+      const to = window.prompt(`Name this speaker (was "${from}")`, "")?.trim();
+      if (!to || to === from) return;
+      try {
+        await tauri.sessionRenameSpeaker(sessionId, from, to);
+        setSegments((prev) => prev.map((s) => (s.speaker === from ? { ...s, speaker: to } : s)));
+      } catch (err) {
+        console.error("rename speaker failed:", err);
+      }
+    },
+    [sessionId],
+  );
+
   const fmt = (ms: number) => {
     const t = Math.max(0, Math.floor(ms / 1000));
     return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
@@ -137,7 +154,19 @@ export function MeetingSessionBar() {
           {segments.map((s, i) => (
             <div key={`${s.offsetMs}-${i}`} className="leading-relaxed">
               <span className="text-muted">[{fmt(s.offsetMs)}]</span>{" "}
-              <span className="font-medium">{s.speaker}:</span> {s.text}
+              {s.speaker.startsWith("📝") ? (
+                <span className="font-medium">{s.speaker}:</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => renameSpeaker(s.speaker)}
+                  title="Name this speaker"
+                  className="font-medium hover:underline"
+                >
+                  {s.speaker}:
+                </button>
+              )}{" "}
+              {s.text}
             </div>
           ))}
         </div>

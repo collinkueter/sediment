@@ -282,6 +282,61 @@ pub fn transcript_windows(note_abs: &Path, budget: usize) -> AppResult<Vec<Strin
     Ok(windows)
 }
 
+/// Rename a speaker throughout the Meeting note — the "that was Sarah" move
+/// (ADR-0017 §6): rewrite `**<from>:**` labels in `## Transcript` and the
+/// `[[<from>]]` bullet in `## Attendees` to `<to>`, deduping if `<to>` is already
+/// an attendee. Returns the number of transcript segments relabelled. A no-op
+/// (count 0, no write) when `<from>` does not appear. Identity correction is
+/// suggest-not-assert: this is how a wrong/unknown label gets fixed by hand.
+pub fn rename_speaker(note_abs: &Path, from: &str, to: &str) -> AppResult<usize> {
+    let from = from.trim();
+    let to = to.trim();
+    if from.is_empty() || to.is_empty() || from == to {
+        return Ok(0);
+    }
+    let content = read(note_abs)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let transcript = find_section(&lines, TRANSCRIPT_HEADING);
+    let attendees = find_section(&lines, ATTENDEES_HEADING);
+
+    let from_tok = format!("**{from}:**");
+    let to_tok = format!("**{to}:**");
+    let from_link = format!("- [[{from}]]");
+    let to_link = format!("- [[{to}]]");
+    let to_already_attendee = attendees
+        .map(|(h, e)| lines[h + 1..e].iter().any(|l| l.trim_end() == to_link))
+        .unwrap_or(false);
+
+    let in_range = |range: Option<(usize, usize)>, i: usize| {
+        range.map(|(h, e)| i > h && i < e).unwrap_or(false)
+    };
+
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut renamed = 0usize;
+    let mut changed = false;
+    for (i, l) in lines.iter().enumerate() {
+        if in_range(transcript, i) && l.contains(&from_tok) {
+            out.push(l.replace(&from_tok, &to_tok));
+            renamed += 1;
+            changed = true;
+        } else if in_range(attendees, i) && l.trim_end() == from_link {
+            changed = true;
+            if to_already_attendee {
+                // Drop the duplicate attendee bullet.
+            } else {
+                out.push(to_link.clone());
+            }
+        } else {
+            out.push((*l).to_string());
+        }
+    }
+
+    if changed {
+        atomic_write(note_abs, finalize(&out, &content).as_bytes())?;
+    }
+    Ok(renamed)
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Section splice (pure, testable) — parameterised by heading
 // ──────────────────────────────────────────────────────────────────────────
@@ -532,6 +587,34 @@ mod tests {
         let rel = meeting_note_relative_path(started(), "Sync");
         let abs = ensure_meeting_note(&root, &rel, "Sync", started()).unwrap();
         assert!(transcript_windows(&abs, DISTILL_WINDOW_BUDGET).unwrap().is_empty());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rename_speaker_rewrites_transcript_and_dedupes_attendees() {
+        let root = tempdir();
+        let rel = meeting_note_relative_path(started(), "Sync");
+        let abs = ensure_meeting_note(&root, &rel, "Sync", started()).unwrap();
+        // Both already listed as attendees (Sarah will absorb the unknown).
+        ensure_attendee(&abs, "Unknown speaker 2").unwrap();
+        ensure_attendee(&abs, "Sarah Chen").unwrap();
+        // Two segments from an unknown speaker, one from Sarah.
+        append_transcript_segment(&abs, 1000, "Unknown speaker 2", "first").unwrap();
+        append_transcript_segment(&abs, 2000, "Sarah Chen", "hi").unwrap();
+        append_transcript_segment(&abs, 3000, "Unknown speaker 2", "second").unwrap();
+
+        let n = rename_speaker(&abs, "Unknown speaker 2", "Sarah Chen").unwrap();
+        assert_eq!(n, 2, "both unknown segments relabelled");
+
+        let body = std::fs::read_to_string(&abs).unwrap();
+        assert!(!body.contains("Unknown speaker 2"), "old label gone");
+        assert_eq!(body.matches("**Sarah Chen:**").count(), 3, "all attributed to Sarah");
+        // Attendees deduped to a single Sarah bullet (she was already listed).
+        assert_eq!(body.matches("- [[Sarah Chen]]").count(), 1);
+        assert!(!body.contains("[[Unknown speaker 2]]"));
+
+        // Renaming a speaker that isn't present is a no-op.
+        assert_eq!(rename_speaker(&abs, "Nobody", "X").unwrap(), 0);
         std::fs::remove_dir_all(root).ok();
     }
 }

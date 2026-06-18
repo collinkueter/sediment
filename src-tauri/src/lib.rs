@@ -147,6 +147,7 @@ pub fn run() {
             commands::session::session_start,
             commands::session::session_push_segment,
             commands::session::session_push_note,
+            commands::session::session_rename_speaker,
             commands::session::session_stop,
             commands::audit::list_audit,
             commands::audit::undo_turn,

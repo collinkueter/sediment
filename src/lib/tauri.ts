@@ -398,6 +398,9 @@ export const tauri = {
   /** Push a time-anchored note/chat line into the open Session's `## Notes`. */
   sessionPushNote: (sessionId: string, text: string) =>
     invoke<void>("session_push_note", { sessionId, text }),
+  /** Name a speaker ("that was Sarah") — relabels the transcript + attendees. */
+  sessionRenameSpeaker: (sessionId: string, from: string, to: string) =>
+    invoke<void>("session_rename_speaker", { sessionId, from, to }),
   /** Close the Session and return its summary (distillation turn is M6). */
   sessionStop: (sessionId: string) => invoke<SessionStopResult>("session_stop", { sessionId }),
 

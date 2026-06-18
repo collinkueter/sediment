@@ -165,6 +165,30 @@ pub async fn session_push_note(
     record_note(&formation_root, &note_rel, &events, offset_ms, &text)
 }
 
+/// Name a speaker — the "that was Sarah" move (ADR-0017 §6). Rewrites the
+/// `## Transcript` labels and `## Attendees` for an open Session's Meeting note,
+/// then streams the refreshed attendee list. The Voiceprint enrolment that would
+/// auto-recognise the speaker next time is the ONNX-gated half (M4 runtime).
+#[tauri::command]
+pub async fn session_rename_speaker(
+    session_id: String,
+    from: String,
+    to: String,
+    formation: State<'_, FormationState>,
+    sessions: State<'_, SessionRegistry>,
+) -> AppResult<()> {
+    let formation_root = formation.require()?;
+    let (note_rel, events) = sessions
+        .with_session(&session_id, |s| (s.note_path.clone(), s.events.clone()))
+        .ok_or_else(|| AppError::other(format!("no open session {session_id}")))?;
+
+    let note_abs = formation_root.join(&note_rel);
+    meeting_note::rename_speaker(&note_abs, &from, &to)?;
+    let attendees = meeting_note::list_attendees(&note_abs)?;
+    let _ = events.send(SessionEvent::AttendeeChanged { attendees });
+    Ok(())
+}
+
 /// Close a Session: deregister it (dropping its `CaptureController` tears down
 /// capture), emit `Status{stopped}`, and return a summary derived from the note.
 /// The end-of-Session distillation turn (ADR-0017 §7) is M6 — M1/M2 just close.
