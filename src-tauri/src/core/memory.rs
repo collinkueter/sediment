@@ -512,6 +512,91 @@ impl MemoryStore {
             .collect())
     }
 
+    /// Enroll a speaker-embedding `sample` as `entity_id`'s **Voiceprint**,
+    /// updating a running centroid (ADR-0017 §6/Q4): the first sample seeds it,
+    /// later samples average in by count. The matching primitive for "name the
+    /// speaker" — same shape as the note/entity `embedding`, different signal.
+    pub async fn enroll_voiceprint(&self, entity_id: &str, sample: &[f32]) -> AppResult<()> {
+        if sample.is_empty() {
+            return Err(AppError::other("enroll_voiceprint: empty sample"));
+        }
+        let key = entity_id.strip_prefix("entity:").unwrap_or(entity_id);
+        let mut res = self
+            .db
+            .query(format!("SELECT voiceprint, voiceprint_n FROM entity:{key};"))
+            .await
+            .map_err(|e| AppError::other(format!("enroll_voiceprint read: {e}")))?;
+        let rows: Vec<VoiceprintRow> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("enroll_voiceprint take: {e}")))?;
+        let Some(row) = rows.into_iter().next() else {
+            return Err(AppError::other(format!(
+                "enroll_voiceprint: no entity {entity_id}"
+            )));
+        };
+        // Average the sample into the existing centroid, unless absent / wrong dim.
+        let (centroid, n) = match (row.voiceprint, row.voiceprint_n) {
+            (Some(c), Some(n)) if c.len() == sample.len() && n > 0 => (c, n as f32),
+            _ => (Vec::new(), 0.0),
+        };
+        let updated: Vec<f32> = if centroid.is_empty() {
+            sample.to_vec()
+        } else {
+            centroid
+                .iter()
+                .zip(sample)
+                .map(|(c, s)| (c * n + s) / (n + 1.0))
+                .collect()
+        };
+        self.db
+            .query(format!(
+                "UPDATE entity:{key} SET voiceprint = $vp, voiceprint_n = $n;"
+            ))
+            .bind(("vp", updated))
+            .bind(("n", n as i64 + 1))
+            .await
+            .map_err(|e| AppError::other(format!("enroll_voiceprint write: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("enroll_voiceprint check: {e}")))?;
+        Ok(())
+    }
+
+    /// The best `person` Entity whose **Voiceprint** matches `sample` by cosine
+    /// similarity at or above `threshold` (ADR-0017 §6). `None` when nothing clears
+    /// the bar — the caller leaves the speaker "Unknown speaker N" rather than
+    /// guess. Naming a Fact to a below-threshold match is never done (ADR-0017
+    /// Gap B); this returns the *label* candidate only.
+    pub async fn match_voiceprint(
+        &self,
+        sample: &[f32],
+        threshold: f32,
+    ) -> AppResult<Option<VoiceprintMatch>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT id, canonical_name, voiceprint FROM entity \
+                 WHERE entity_type = 'person' AND voiceprint != NONE;",
+            )
+            .await
+            .map_err(|e| AppError::other(format!("match_voiceprint: {e}")))?;
+        let rows: Vec<VoiceprintMatchRow> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("match_voiceprint take: {e}")))?;
+        let mut best: Option<VoiceprintMatch> = None;
+        for r in rows {
+            let Some(vp) = r.voiceprint else { continue };
+            let score = cosine(sample, &vp);
+            if score >= threshold && best.as_ref().map(|b| score > b.score).unwrap_or(true) {
+                best = Some(VoiceprintMatch {
+                    entity_id: record_id_to_string(&r.id),
+                    canonical_name: r.canonical_name,
+                    score,
+                });
+            }
+        }
+        Ok(best)
+    }
+
     /// Formation-relative paths of the most recently (re)indexed notes (by
     /// `indexed_at`) — a cheap proxy for "recently edited", since the indexer
     /// re-indexes a note on every change. Drives the Working Set (ADR-0011 §3).
@@ -854,6 +939,44 @@ struct EntityRow {
     pub note_path: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+struct VoiceprintRow {
+    pub voiceprint: Option<Vec<f32>>,
+    pub voiceprint_n: Option<i64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+struct VoiceprintMatchRow {
+    pub id: RecordId,
+    pub canonical_name: String,
+    pub voiceprint: Option<Vec<f32>>,
+}
+
+/// A speaker-recognition hit (ADR-0017 §6): the matched person and the cosine
+/// score that cleared the threshold.
+#[derive(Debug, Clone)]
+pub struct VoiceprintMatch {
+    pub entity_id: String,
+    pub canonical_name: String,
+    pub score: f32,
+}
+
+/// Cosine similarity of two equal-length vectors; `0.0` on length mismatch or a
+/// zero vector. Pure — the matching maths behind [`MemoryStore::match_voiceprint`].
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb = b.iter().map(|y| y * y).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na * nb)
+    }
+}
+
 /// Entity resolution result used by the conversational agent's graph tools.
 /// The `id` is the flat `entity:<slug>` string; `note_path` is `Some` once
 /// the entity has been filed into a note.
@@ -1032,6 +1155,11 @@ DEFINE FIELD IF NOT EXISTS aliases        ON entity TYPE array<string> DEFAULT [
 DEFINE FIELD IF NOT EXISTS canonical_name_history ON entity TYPE array<string> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS note_path      ON entity TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS embedding      ON entity TYPE option<array<float>>;
+-- Speaker embedding for voice recognition in a meeting Session (ADR-0017 §6).
+-- A `person` Entity's Voiceprint — same primitive as `embedding`, different
+-- signal. A running centroid (ADR-0017 Q4); enrolled progressively and lazily.
+DEFINE FIELD IF NOT EXISTS voiceprint     ON entity TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS voiceprint_n   ON entity TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS created_at     ON entity TYPE datetime VALUE time::now() READONLY;
 DEFINE FIELD IF NOT EXISTS updated_at     ON entity TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS entity_name      ON entity FIELDS canonical_name;
@@ -1129,6 +1257,66 @@ mod tests {
             .join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&p).expect("tempdir");
         p
+    }
+
+    #[test]
+    fn cosine_is_one_for_identical_zero_for_orthogonal_and_mismatch() {
+        assert!((cosine(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]) - 1.0).abs() < 1e-6);
+        assert!(cosine(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
+        assert_eq!(cosine(&[1.0, 2.0], &[1.0]), 0.0); // length mismatch
+        assert_eq!(cosine(&[0.0, 0.0], &[1.0, 1.0]), 0.0); // zero vector
+    }
+
+    /// Voiceprints (ADR-0017 §6): enrol a speaker embedding on a person, match a
+    /// near-identical sample above threshold, reject a dissimilar one, and confirm
+    /// enrolment keeps a running centroid (Q4).
+    #[tokio::test]
+    async fn voiceprint_enroll_match_and_centroid() {
+        let dir = tempdir_for_test();
+        let store = MemoryStore::open(&dir).await.expect("open store");
+
+        let sarah = store
+            .upsert_entity("Sarah Chen", "person", vec![])
+            .await
+            .unwrap();
+
+        // No voiceprints yet → no match.
+        assert!(store
+            .match_voiceprint(&[1.0, 0.0, 0.0], 0.8)
+            .await
+            .unwrap()
+            .is_none());
+
+        store.enroll_voiceprint(&sarah.id, &[1.0, 0.0, 0.0]).await.unwrap();
+
+        // A near-identical sample matches Sarah above threshold.
+        let hit = store
+            .match_voiceprint(&[0.96, 0.10, 0.0], 0.8)
+            .await
+            .unwrap()
+            .expect("should match Sarah");
+        assert_eq!(hit.entity_id, sarah.id);
+        assert_eq!(hit.canonical_name, "Sarah Chen");
+        assert!(hit.score >= 0.8);
+
+        // An orthogonal sample clears nothing.
+        assert!(store
+            .match_voiceprint(&[0.0, 0.0, 1.0], 0.8)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Second enrolment averages into the centroid (Q4 running centroid):
+        // (1,0,0) then (0,1,0) → (0.5,0.5,0), which favours a diagonal sample.
+        store.enroll_voiceprint(&sarah.id, &[0.0, 1.0, 0.0]).await.unwrap();
+        let diag = store
+            .match_voiceprint(&[1.0, 1.0, 0.0], 0.9)
+            .await
+            .unwrap()
+            .expect("centroid should match the diagonal");
+        assert_eq!(diag.entity_id, sarah.id);
+
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// Open Loops (ADR-0011 §5): record → list active; closing archives it;

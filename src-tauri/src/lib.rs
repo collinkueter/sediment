@@ -121,6 +121,7 @@ pub fn run() {
         .manage(core::ollama_sidecar::OllamaSidecar::default())
         .manage(core::copilot::CopilotEngineHandle::default())
         .manage(core::cancel::CancelRegistry::default())
+        .manage(core::session::SessionRegistry::default())
         .setup(|app| {
             // Logging guard is owned by the app so the appender keeps draining.
             let guard = init_logging(app.handle()).expect("init logging");
@@ -158,6 +159,11 @@ pub fn run() {
             commands::chat::get_self_summary,
             commands::chat::list_copilot_models,
             commands::chat::dismiss_open_loop,
+            commands::session::session_start,
+            commands::session::session_push_segment,
+            commands::session::session_push_note,
+            commands::session::session_rename_speaker,
+            commands::session::session_stop,
             commands::audit::list_audit,
             commands::audit::undo_turn,
             commands::audit::undo_fact,

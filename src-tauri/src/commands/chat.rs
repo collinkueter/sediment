@@ -22,6 +22,7 @@ use crate::core::memory::MemoryHandle;
 use crate::core::ollama_sidecar::{self, OllamaSidecar};
 use crate::core::pre_pass;
 use crate::core::self_model;
+use crate::core::session::SessionRegistry;
 use crate::core::working_set::{self, WorkingSet};
 use crate::error::AppResult;
 use serde::Serialize;
@@ -106,6 +107,7 @@ pub async fn chat_turn(
     memory: State<'_, MemoryHandle>,
     copilot: State<'_, CopilotEngineHandle>,
     cancel: State<'_, CancelRegistry>,
+    sessions: State<'_, SessionRegistry>,
     app: tauri::AppHandle,
 ) -> AppResult<ChatTurnResult> {
     // Register this turn so `cancel_turn` can interrupt it by the same client id.
@@ -181,11 +183,19 @@ pub async fn chat_turn(
     // authors `Self.md` itself (lazy, in-turn). Absent until it has learned
     // something durable, in which case this contributes nothing.
     let self_summary = self_model::summary_for_grounding(&formation_root);
+    // ADR-0017 §7: when a meeting Session is open, push its most-recent transcript
+    // so a live in-meeting chat turn ("what did Sarah just say about Q3?") is
+    // answered against what was just said. Ranked *below* the Self and Working Set
+    // (ADR-0017 Q3) so it never crowds out who-you-are / what-you're-touching, and
+    // above related-note excerpts (the timely thing beats the generic one). `None`
+    // outside a meeting — zero cost to normal turns.
+    let live_transcript = sessions.live_transcript_grounding(&formation_root);
     let injected_context = assemble_grounding(
         &[
             self_summary,
             pre.render_entities_markdown(),
             working_set.render_markdown(),
+            live_transcript,
             pre.render_related_markdown(),
         ],
         INJECTED_CONTEXT_BUDGET,
