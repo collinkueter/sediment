@@ -8,7 +8,7 @@ import { ModelSetup } from "@/components/ModelSetup";
 import { NoteViewer } from "@/components/NoteViewer";
 import { Onboarding } from "@/components/Onboarding";
 import { ReminderToast } from "@/components/ReminderToast";
-import { RemindersPopover } from "@/components/RemindersPopover";
+import { RemindersView } from "@/components/RemindersView";
 import { SettingsModal } from "@/components/SettingsModal";
 import { TitleBar } from "@/components/TitleBar";
 import { UndoToast } from "@/components/UndoToast";
@@ -60,8 +60,6 @@ export default function App() {
 
   const settingsOpen = useUiStore((s) => s.settingsOpen);
   const closeSettings = useUiStore((s) => s.closeSettings);
-  const remindersOpen = useUiStore((s) => s.remindersOpen);
-  const closeReminders = useUiStore((s) => s.closeReminders);
   const togglePalette = useUiStore((s) => s.togglePalette);
   const toggleNotePane = useUiStore((s) => s.toggleNotePane);
   const notePaneCollapsed = useUiStore((s) => s.notePaneCollapsed);
@@ -175,18 +173,6 @@ export default function App() {
     <div className="relative flex h-full w-full flex-col bg-bg text-ink">
       <TitleBar openTaskCount={openTaskCount} />
 
-      {remindersOpen && (
-        <>
-          <button
-            type="button"
-            aria-label="Close reminders"
-            className="fixed inset-0 z-40 cursor-default"
-            onClick={closeReminders}
-          />
-          <RemindersPopover onClose={closeReminders} />
-        </>
-      )}
-
       <main className="flex min-h-0 flex-1">
         {formationPath ? <Workspace collapsedNote={notePaneCollapsed} /> : <FormationPicker />}
       </main>
@@ -204,6 +190,7 @@ export default function App() {
 
 /** The three-column resizable workspace: Formation · Conversation (hero) · Note. */
 function Workspace({ collapsedNote }: { collapsedNote: boolean }) {
+  const view = useUiStore((s) => s.view);
   const [leftWidth, setLeftWidth] = useState(() =>
     readWidth("sediment.leftWidth", 240, LEFT_MIN, LEFT_MAX),
   );
@@ -226,13 +213,21 @@ function Workspace({ collapsedNote }: { collapsedNote: boolean }) {
       />
 
       <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
-        <InFocusBar />
-        <div className="min-h-0 flex-1">
-          <ChatPane />
-        </div>
+        {view === "reminders" ? (
+          <RemindersView />
+        ) : (
+          <>
+            <InFocusBar />
+            <div className="min-h-0 flex-1">
+              <ChatPane />
+            </div>
+          </>
+        )}
       </section>
 
-      {!collapsedNote && (
+      {/* The note pane belongs to the Conversation view; Reminders takes the
+          full canvas beside the sidebar so it reads as its own section. */}
+      {view === "chat" && !collapsedNote && (
         <>
           <ResizeDivider
             onDelta={(dx) => setRightWidth((w) => clamp(w - dx, RIGHT_MIN, RIGHT_MAX))}

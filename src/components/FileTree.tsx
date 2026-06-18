@@ -1,9 +1,9 @@
 import { Icon } from "@/components/icons";
-import { useFormationStore } from "@/lib/store";
+import { useFormationStore, useRemindersStore } from "@/lib/store";
 import type { FormationNote } from "@/lib/tauri";
 import { useUiStore } from "@/lib/ui";
 import { useMemo, useState } from "react";
-import type { ComponentType, SVGProps } from "react";
+import type { ComponentType, ReactNode, SVGProps } from "react";
 
 interface FolderNode {
   type: "folder";
@@ -163,6 +163,9 @@ export function FileTree() {
         </button>
       </div>
 
+      {/* Primary view nav — Conversation · Reminders */}
+      <PrimaryNav />
+
       {/* Search / ⌘K trigger */}
       <div className="px-3.5 pb-2">
         <button
@@ -220,6 +223,80 @@ export function FileTree() {
         )}
       </nav>
     </aside>
+  );
+}
+
+/** The app's two top-level destinations, sitting above the note tree. */
+function PrimaryNav() {
+  const view = useUiStore((s) => s.view);
+  const showChat = useUiStore((s) => s.showChat);
+  const showReminders = useUiStore((s) => s.showReminders);
+  const openTaskCount = useRemindersStore((s) => s.tasks.filter((t) => t.status === "open").length);
+
+  return (
+    <nav className="px-2.5 pb-1.5" aria-label="Primary">
+      <NavItem
+        icon={<Icon.Chat className="h-[15px] w-[15px]" />}
+        label="Conversation"
+        active={view === "chat"}
+        onClick={showChat}
+      />
+      <NavItem
+        icon={<Icon.Bell className="h-[15px] w-[15px]" />}
+        label="Reminders"
+        active={view === "reminders"}
+        onClick={showReminders}
+        badge={openTaskCount}
+      />
+    </nav>
+  );
+}
+
+function NavItem({
+  icon,
+  label,
+  active,
+  onClick,
+  badge,
+}: {
+  icon: ReactNode;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  badge?: number;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      className={[
+        "relative flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-[7px] text-left text-[13px]",
+        "transition-colors",
+        active
+          ? "bg-accent-tint font-semibold text-accent-ink"
+          : "font-medium text-ink-soft hover:bg-bg-sunk",
+      ].join(" ")}
+    >
+      {active && (
+        <span
+          className="absolute top-[7px] bottom-[7px] left-0 w-[3px] rounded-[3px] bg-accent"
+          aria-hidden="true"
+        />
+      )}
+      <span className={active ? "text-accent" : "text-faint"}>{icon}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {badge !== undefined && badge > 0 && (
+        <span
+          className={[
+            "ml-auto grid h-[18px] min-w-[18px] place-items-center rounded-full px-1.5 text-[10.5px] font-bold",
+            active ? "bg-accent text-white" : "bg-bg-sunk text-muted",
+          ].join(" ")}
+        >
+          {badge}
+        </span>
+      )}
+    </button>
   );
 }
 

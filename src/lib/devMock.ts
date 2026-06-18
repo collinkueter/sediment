@@ -108,27 +108,69 @@ const WORKING_SET = {
   ],
 };
 
+// Due dates are derived from the wall clock so the grouped view (Overdue /
+// Today / Upcoming / Someday) always has a representative spread when previewed.
+const DAY = 86_400_000;
+function isoOffset(days: number, hour = 17): string {
+  const d = new Date(Date.now() + days * DAY);
+  d.setHours(hour, 0, 0, 0);
+  return d.toISOString();
+}
+
 const TASKS = [
   {
-    id: "task:1",
+    id: "task:overdue",
+    title: "Reply to the landlord about the lease",
+    status: "open",
+    due: isoOffset(-2),
+    remind_at: isoOffset(-2, 9),
+    notified: true,
+    created: "2026-06-08T12:00:00Z",
+    completed_at: null,
+    source_chat_id: null,
+  },
+  {
+    id: "task:today",
+    title: "Send staff-design rubric to Keaton",
+    status: "open",
+    due: isoOffset(0),
+    remind_at: isoOffset(0, 9),
+    notified: false,
+    created: "2026-06-15T12:00:00Z",
+    completed_at: null,
+    source_chat_id: null,
+  },
+  {
+    id: "task:soon",
     title: "Decide on lease renewal",
     status: "open",
-    due: "2026-06-20T17:00:00Z",
-    remind_at: "2026-06-18T16:00:00Z",
+    due: isoOffset(3),
+    remind_at: isoOffset(2, 16),
     notified: false,
     created: "2026-06-10T12:00:00Z",
     completed_at: null,
     source_chat_id: null,
   },
   {
-    id: "task:2",
-    title: "Send staff-design rubric to Keaton",
+    id: "task:someday",
+    title: "Read the working-set paper Keaton mentioned",
     status: "open",
-    due: "2026-06-19T17:00:00Z",
+    due: null,
     remind_at: null,
     notified: false,
-    created: "2026-06-15T12:00:00Z",
+    created: "2026-06-14T12:00:00Z",
     completed_at: null,
+    source_chat_id: null,
+  },
+  {
+    id: "task:done",
+    title: "Send Q2 numbers to the team",
+    status: "done",
+    due: isoOffset(-1),
+    remind_at: null,
+    notified: true,
+    created: "2026-06-12T12:00:00Z",
+    completed_at: isoOffset(-1, 14),
     source_chat_id: null,
   },
 ];

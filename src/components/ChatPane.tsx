@@ -295,17 +295,31 @@ function Receipt({ turn, onUndo }: { turn: ChatTurn; onUndo: () => void }) {
   const firstPath = changed[0]?.path;
   const firstName = firstPath ? basename(firstPath) : undefined;
   const extra = changed.length - 1;
+  // Lead with what the turn *did* — the note it touched — and mention facts only
+  // when there are some. A turn that just edits a note shouldn't announce
+  // "Recorded 0 facts"; that buries the real change behind a zero.
+  const facts = (
+    <b className="font-semibold text-ink-soft">
+      {factCount} {factCount === 1 ? "fact" : "facts"}
+    </b>
+  );
   return (
     <div className="ml-[44px] flex max-w-[560px] items-center gap-[9px] rounded-xl border border-line bg-surface py-[7px] pr-[9px] pl-[13px] text-[12px] text-muted">
       <Icon.Check className="h-[14px] w-[14px] flex-none text-sage" />
       <span className="min-w-0 flex-1 truncate">
-        Recorded <b className="font-semibold text-ink-soft">{factCount} facts</b>
-        {firstName && (
+        {firstName ? (
           <>
-            {" · updated "}
-            <cite className="font-semibold not-italic text-accent-ink">{firstName}</cite>
+            Updated <cite className="font-semibold not-italic text-accent-ink">{firstName}</cite>
             {extra > 0 && ` +${extra} more`}
+            {factCount > 0 && (
+              <>
+                {" · recorded "}
+                {facts}
+              </>
+            )}
           </>
+        ) : (
+          <>Recorded {facts}</>
         )}
       </span>
       <button

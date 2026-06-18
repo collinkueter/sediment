@@ -115,7 +115,15 @@ enthusiasm:
   new fact with `supersede:true` (and a `valid_from`) — the graph closes the old
   edge and keeps it as history. If a fact was simply mistaken, `retract_fact` it —
   it was never true.
-- **Reminders** go through `record_task`, never a hand-edited task list.
+- **Reminders** go through `record_task`, never a hand-edited task list. The task
+  *is* the record — do not also annotate the related person's or project's note with
+  how the reminder was set up: its time, its channel ("text"), or a one-off
+  instruction like "just a reminder, no draft message". Those are properties of the
+  task, not durable facts about the entity, and they do not belong in its note. A
+  one-off instruction for *this* reminder is transient — act on it, don't file it. Only
+  if the user states a *standing* delivery preference ("always just remind me, never
+  draft the message") is anything worth recording, and then it is about *them* — it
+  goes in `Self.md`, never on the other person's note.
 
 ### Logging the user's day
 
