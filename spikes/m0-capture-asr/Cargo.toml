@@ -1,0 +1,30 @@
+[package]
+name = "m0-capture-asr"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "ADR-0016 M0 spike: measure on-device streaming ASR latency/RTF on real hardware. Throwaway — not part of the Sediment app build (no workspace member)."
+
+# Intentionally a *standalone* crate, not a member of the app. M0 is a de-risking
+# spike whose deliverable is a benchmark note, not retained code (see the plan).
+# Keeping it separate keeps the heavy native ASR deps and platform audio crates
+# out of src-tauri/Cargo.toml and Cargo.lock.
+
+[dependencies]
+# Official streaming ASR bindings (sherpa-rs is deprecated in favour of this).
+# Pins the API used here: OnlineRecognizer / OnlineRecognizerConfig, 1.13.x.
+sherpa-onnx = "1.13"
+
+# Microphone capture. cpal is the cross-platform input crate; on Linux it needs
+# ALSA dev headers, on macOS CoreAudio, on Windows WASAPI.
+cpal = "0.15"
+
+# WAV read for the deterministic, reproducible benchmark path.
+hound = "3"
+
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[[bin]]
+name = "m0"
+path = "src/main.rs"

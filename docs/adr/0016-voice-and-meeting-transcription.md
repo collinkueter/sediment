@@ -328,7 +328,13 @@ the decisions and their rationale, ADR-0015 style.
    runtime. Multilingual is served later by the BYOK cloud opt-in (§2), not by
    swapping in a heavier local runtime. **M0 still benches it on real hardware**
    before locking the exact model size; the *direction* (streaming ONNX, not
-   whisper.cpp) is now fixed.
+   whisper.cpp) is now fixed. **M0-scaffolding caveat (2026-06-18):** in sherpa-onnx,
+   NVIDIA **Parakeet-TDT is an *offline* model run under VAD-simulated streaming**,
+   not natively online — only streaming-*zipformer* gives continuous sub-second
+   partials. So §2's "true streaming" is delivered by streaming-zipformer; if the
+   bench shows we need Parakeet's accuracy, partials become *segment-granular* and
+   §2/this answer must be reworded. Settled by the M0 numbers (see
+   `docs/plans/m0-benchmark-results.md`).
 6. ~~**Quick-capture scope (Appendix A).**~~ **Resolved (2026-06-18) — typed in V1,
    voice as fast-follow.** The typed path (global hotkey → `chat_turn`/Daily-note
    append) is nearly free and directly answers "with typing, not just voice," so it

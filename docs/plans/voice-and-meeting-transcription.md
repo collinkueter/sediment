@@ -34,19 +34,28 @@ together and streams to a transient live UI, a **Meeting note** writer, and a
 
 ### M0 — Spike: prove local capture + ASR on real hardware *(de-risk first)*
 
-Before committing the architecture, validate the two riskiest unknowns on a real
-machine (ADR-0008's "verify against the binary, don't assume"):
+Before committing the architecture, validate the riskiest unknowns on a real
+machine (ADR-0008's "verify against the binary, don't assume"). **Scaffolded:**
+[`spikes/m0-capture-asr`](../../spikes/m0-capture-asr) — a standalone, disposable
+crate (not part of the app build) wiring the official `sherpa-onnx` 1.13 streaming
+recognizer over a WAV (deterministic) or the mic, with an RTF / TTFP / decode-latency
+harness. Results template: [`m0-benchmark-results.md`](m0-benchmark-results.md).
 
-- Stand up `cpal` mic capture + **system loopback** (macOS ScreenCaptureKit,
-  Windows WASAPI) behind a throwaway Tauri command; mix to 16 kHz mono PCM.
-- Run a streaming `sherpa-onnx`/Parakeet model (the locked V1 default — ADR-0016
-  Q5) over it; measure real-time-factor and partial latency on a mid-range CPU and
-  an Apple-Silicon machine.
-- **Decision gate:** confirm the exact Parakeet *model size* from measured numbers
-  (the streaming-ONNX *direction* is fixed; only the size is open) — and confirm the
-  CPU floor below which V1 should nudge the user toward the cloud opt-in.
+- ASR path (the decision gate) is wired: `cpal` mic + WAV → resample to 16 kHz mono
+  → streaming-zipformer → RTF + time-to-first-partial.
+- **System loopback** (macOS ScreenCaptureKit, Windows WASAPI) is *not* in the spike
+  — it can't compile on the Linux scaffold box and isn't needed to measure ASR
+  latency. It moves to **M2** (crates: `screencapturekit`, `wasapi`).
+- **Finding while scaffolding (feeds the decision gate):** in sherpa-onnx,
+  NVIDIA **Parakeet-TDT is *offline* + VAD-simulated streaming**, not natively online
+  — only streaming-zipformer gives continuous sub-second partials. M0 must bench both
+  and decide whether Parakeet's accuracy justifies *segment-granular* partials, then
+  reconcile ADR-0016 §2/Q5's "true streaming" wording.
+- **Decision gate:** pick the default model + size that holds RTF ≤ 0.5 with
+  acceptable WER; confirm the CPU floor below which V1 nudges to the cloud opt-in;
+  settle the zipformer-vs-Parakeet streaming question.
 
-Output: a benchmark note in `docs/plans/`, no production code retained.
+Output: the filled-in benchmark note in `docs/plans/`; the spike crate is disposable.
 
 ### M1 — Session lifecycle + Meeting note (text-only, no audio yet)
 

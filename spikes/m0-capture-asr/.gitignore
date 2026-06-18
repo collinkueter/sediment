@@ -1,0 +1,6 @@
+/target
+Cargo.lock
+# Model weights and sample audio are downloaded locally, never committed.
+*.onnx
+*.wav
+tokens.txt
