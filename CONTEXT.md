@@ -88,6 +88,38 @@ with the same shape as a **Daily note**, at weekly cadence. Seeded from
 `Templates/Weekly.md`.
 _Avoid_: weekly journal, week summary.
 
+**Session**:
+One user-initiated, bounded stretch of live capture — the **Agent** listening to a
+meeting or a quick voice memo. Explicitly started and stopped by the user, visible
+while it runs, and torn down on stop: the opposite of a background daemon (ADR-0011
+declined the daemon; a **Session** is never unbidden and never always-on). Produces
+a **Meeting note** and collapses into the single conversation when it ends —
+transient capture chrome, not a second surface.
+_Avoid_: recording, daemon, listener, background job.
+
+**Meeting note**:
+The **Note** of a `meeting` **Entity**, at `Meetings/<YYYY-MM-DD HHmm> — <title>.md`,
+capturing one **Session**: `## Attendees`, `## Notes` (the user's typed notes and
+live chat, time-anchored), `## Transcript` (speaker-labelled **Transcript segments**),
+`## Action items`, `## Decisions`. Event-shaped like a **Daily note** — the transcript
+itself is not **Facts**; **Facts** are what the **Agent** distils from it afterward.
+_Avoid_: recording, minutes, call log.
+
+**Transcript segment**:
+One speaker-attributed, timestamped span of transcribed speech within a **Session** —
+text plus a start/end audio offset from **Session** start and the speaker it is
+attributed to. The unit of the **Meeting note**'s `## Transcript`, and the spine that
+time-aligns the user's notes to what was being said.
+_Avoid_: utterance, line, caption.
+
+**Voiceprint**:
+A speaker-embedding vector stored on a **person** **Entity** (beside the embedding it
+already carries) that lets a future **Session** recognise that person's voice.
+Enrolled progressively and lazily — the **Self**'s voice once, others when the user
+names an unknown speaker — never via a wizard. Not a new store: the existing graph
+holds it, the way it holds a **Fact**.
+_Avoid_: voice signature, biometric, speaker model.
+
 ## Relationships
 
 - A **Formation** contains many **Notes**
@@ -99,6 +131,8 @@ _Avoid_: weekly journal, week summary.
 - The **Agent** reads the **Formation** and writes **Notes** and **Facts**
 - The **Agent** reads the **Working Set** each turn; it is *derived* from recent activity across the **Formation**, the graph, and the conversation — never authored
 - A **Daily note** captures one calendar day; a **Weekly note** captures one ISO week
+- A **Session** produces a **Meeting note** and a stream of **Transcript segments**; the **Agent** distils **Facts**, **Tasks**, and **Open Loops** from the **Meeting note** when the **Session** ends
+- A **Voiceprint** is attached to a **person** **Entity** and names the speaker of a **Transcript segment**
 
 ## Example dialogue
 
@@ -142,3 +176,17 @@ _Avoid_: weekly journal, week summary.
   watches, surfaced only in conversation and never via notification. The **Agent**
   picks by whether the thing is a scheduled action (**Task**) or a pending
   resolution (**Open Loop**).
+- **Session** vs daemon (ADR-0016) — resolved: a **Session** is user-initiated,
+  bounded, and visible while it runs; it is never the always-on background listener
+  ADR-0011 declined. Capture is a deliberate act with a start and a stop, not a
+  process that watches unbidden.
+- **Meeting note** vs **Daily note** (ADR-0016) — resolved: both are event-shaped
+  **Notes** whose transcript/events are not **Facts**. A **Meeting note** holds one
+  **Session**'s transcript and the notes taken alongside it; a **Daily note** holds
+  one calendar day's events and reflections. The **Agent** distils durable **Facts**
+  from either into the entity **Notes** and the graph as usual.
+- **Voiceprint** vs **embedding** (ADR-0016) — resolved: both are vectors on an
+  **Entity**, but a **Voiceprint** identifies a **person**'s *voice* (for speaker
+  recognition in a **Session**), while the existing embedding indexes a **Note**'s
+  *text* (for semantic search). Same primitive, different signal; neither is a new
+  store.

@@ -1,11 +1,10 @@
 # ADR-0016: Voice and meeting transcription — the formation listens
 
-**Status:** Proposed (2026-06-18) — the design captured here before any code, in
-the ADR-first discipline of ADR-0008/0009; all open questions refined through a
-structured grilling session the same day (Q1, Q2, Q4, Q5, Q6 resolved; Gaps A and B
-surfaced and resolved as Q7/Q8; Q3 deferred to a felt-test loop). Ready to accept.
-New domain terms (**Session**, **Transcript segment**, **Voiceprint**) to be lifted
-into [CONTEXT.md](../../CONTEXT.md) on acceptance.
+**Status:** Accepted (2026-06-18) — designed before any code (ADR-first, ADR-0008/0009)
+and refined through a structured grilling session the same day: Q1, Q2, Q4, Q5, Q6
+resolved, Gaps A and B surfaced and resolved as Q7/Q8, Q3 deferred to a felt-test
+loop (see Open questions). Domain terms (**Session**, **Meeting note**,
+**Transcript segment**, **Voiceprint**) captured in [CONTEXT.md](../../CONTEXT.md).
 Build order in [docs/plans/voice-and-meeting-transcription.md](../plans/voice-and-meeting-transcription.md).
 **Extends:** [ADR-0009](0009-conversational-agent.md) (a meeting is a new *source*
 that lands in the **single conversation**, not a new mode), [ADR-0011](0011-working-set-and-push-grounding.md)
