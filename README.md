@@ -39,7 +39,15 @@ npm install
 npm run tauri dev
 ```
 
-The same two commands work on macOS and Windows (`npm run tauri dev` from PowerShell or Windows Terminal). The first build compiles a large Rust dep tree (Tauri, SurrealDB) — expect ~5-10 min cold, longer on Windows the first time `ort` fetches the ONNX runtime for the on-device embedder. Subsequent builds are incremental. Windows-specific setup and gotchas (build tools, WebView2, frameless window chrome, reminder toasts) live in [docs/windows.md](docs/windows.md).
+The same two commands work on macOS and Windows (`npm run tauri dev` from PowerShell or Windows Terminal). The first build compiles a large Rust dep tree (Tauri, SurrealDB) — expect ~5-10 min cold, longer on Windows the first time `ort` fetches the ONNX runtime for the on-device embedder. Subsequent builds are incremental.
+
+**Windows, from scratch:** if Node / Rust / the MSVC C++ build tools aren't installed yet, run the bootstrap once instead of `npm install` — it installs them via `winget` and then runs `npm install`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```
+
+Windows-specific setup and gotchas (build tools, WebView2, frameless window chrome, reminder toasts) live in [docs/windows.md](docs/windows.md).
 
 On first launch Sediment checks the embedding model and downloads it if missing:
 
@@ -124,11 +132,11 @@ cargo clippy --lib --bins
 
 **`cargo check` fails on `arrow-arith` / chrono trait conflict** — the lockfile pins `chrono = 0.4.41` to dodge a `quarter()` trait clash in newer chrono. If a fresh clone tries a newer version, run `cargo update -p chrono --precise 0.4.41`.
 
-**`ollama serve` doesn't auto-start** — confirm `ollama` is on PATH (`which ollama`). If the daemon refuses to start, run `ollama serve` manually and the app detects it on next launch.
+**`ollama serve` doesn't auto-start** — confirm `ollama` is on PATH (macOS/Linux `which ollama`; Windows `where ollama`). If the daemon refuses to start, run `ollama serve` manually and the app detects it on next launch.
 
-**Vite port 1420 already in use** — `lsof -ti:1420 | xargs kill -9` clears a stray dev server.
+**Vite port 1420 already in use** — macOS/Linux: `lsof -ti:1420 | xargs kill -9`. Windows (PowerShell): `Get-NetTCPConnection -LocalPort 1420 | Select-Object -Expand OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force }`.
 
-**Chat fails immediately** — make sure the agent CLI selected in Settings is installed and signed in (`claude` or `gemini` in a terminal).
+**Chat fails immediately** — make sure the agent CLI selected in Settings is installed and signed in (`claude` or `copilot` in a terminal).
 
 ## License
 
