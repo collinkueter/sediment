@@ -159,14 +159,29 @@ export function SettingsModal({
   // whether launches require the embedding model, so re-running the readiness
   // check via onModelConfigChanged keeps the setup gate in sync.
   async function changeSearchMode(mode: SearchMode) {
+    const previous = searchMode;
     setSearchMode(mode);
+    setError(null);
     try {
       await tauri.setEmbeddingProvider(mode);
+      // Re-run the launch-time readiness check. If on-device is selected but the
+      // model files aren't installed, this surfaces the setup screen (Download /
+      // Import) instead of letting indexing and search fail silently later. The
+      // Ollama gate works the same way; keyword needs no model.
       onModelConfigChanged();
-      // Pre-load the in-process model in the background so the first on-device
-      // search doesn't pay the download/load cost.
-      if (mode === "bundled") tauri.warmupEmbeddingModel().catch(() => {});
+      // Switching to a semantic provider invalidates the prior vectors. If its
+      // model is already installed, re-embed now so search returns results; if
+      // not, the setup screen re-indexes after install. Keyword uses no vectors.
+      if (mode !== "none") {
+        const r = await tauri.checkModelReadiness();
+        if (r.all_present) {
+          tauri
+            .indexFormation(true)
+            .catch((e) => console.warn("re-index after search-mode switch failed:", e));
+        }
+      }
     } catch (e) {
+      setSearchMode(previous);
       setError(e instanceof Error ? e.message : String(e));
     }
   }
@@ -498,7 +513,7 @@ export function SettingsModal({
               <div className="min-w-0 flex-1">
                 <p className="text-[13.5px] font-medium text-ink">Retrieval</p>
                 <p className="mt-0.5 text-[11.5px] text-muted">
-                  {SEARCH_MODE_DESCRIPTIONS[searchMode]} Re-index to apply.
+                  {SEARCH_MODE_DESCRIPTIONS[searchMode]} Switching re-indexes your notes.
                 </p>
               </div>
               <Segmented<SearchMode>

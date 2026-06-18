@@ -1,6 +1,6 @@
 //! Background note indexer.
 //!
-//! Chunks markdown, embeds each chunk via Ollama, and replaces the note's
+//! Chunks markdown, embeds each chunk via the active embedding provider, and replaces the note's
 //! `note_chunk` rows in SurrealDB. Auto-triggered after in-app saves and
 //! external edits (via the file watcher), with a per-path debounce so a
 //! flurry of Cmd+S presses coalesces into a single re-embed pass.

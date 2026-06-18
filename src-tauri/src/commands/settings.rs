@@ -62,19 +62,6 @@ pub fn set_embedding_provider(provider: String, app: tauri::AppHandle) -> AppRes
     cfg.save(&app)
 }
 
-/// Eagerly load (and download if needed) the in-process embedding model, so the
-/// first on-device search doesn't pay the cost. A no-op unless the bundled
-/// provider is selected. The UI calls this after switching to on-device search.
-#[tauri::command]
-pub async fn warmup_embedding_model(app: tauri::AppHandle) -> AppResult<()> {
-    let provider =
-        EmbeddingProvider::from_config(AppConfig::load(&app).embedding_provider.as_deref());
-    if matches!(provider, EmbeddingProvider::Bundled) {
-        crate::core::bundled_embed::warmup().await?;
-    }
-    Ok(())
-}
-
 // ---- ADR-0009: the conversational-agent engine selector --------------------
 
 /// Probe the user's machine for a `claude` binary and its authentication

@@ -65,6 +65,9 @@ export interface ModelRequirement {
 }
 
 export interface ModelReadiness {
+  /** Active note-search provider: "ollama" | "bundled" | "none". The setup
+   * screen renders a different acquisition flow per provider. */
+  provider: string;
   ollama_installed: boolean;
   requirements: ModelRequirement[];
   all_present: boolean;
@@ -324,6 +327,18 @@ export const tauri = {
     channel.onmessage = onProgress;
     return invoke<void>("pull_ollama_model", { model, onProgress: channel });
   },
+  /**
+   * Download the on-device (bundled) embedding model into Sediment's model
+   * directory, streaming per-file byte progress through `onProgress`. The only
+   * place on-device model acquisition touches the network.
+   */
+  downloadBundledModel: (onProgress: (p: ModelProgress) => void) => {
+    const channel = makeChannel<ModelProgress>();
+    channel.onmessage = onProgress;
+    return invoke<void>("download_bundled_model", { onProgress: channel });
+  },
+  /** Install the on-device model from a user-chosen folder (offline path). */
+  importBundledModel: (sourceDir: string) => invoke<void>("import_bundled_model", { sourceDir }),
 
   // Ollama
   ollamaStatus: () => invoke<OllamaStatus>("ollama_status"),
@@ -417,8 +432,6 @@ export const tauri = {
   getEmbeddingProvider: () => invoke<string>("get_embedding_provider"),
   /** Persist the note-search backend ("ollama" | "bundled" | "none"). */
   setEmbeddingProvider: (provider: string) => invoke<void>("set_embedding_provider", { provider }),
-  /** Eagerly load/download the in-process embedding model (no-op unless bundled). */
-  warmupEmbeddingModel: () => invoke<void>("warmup_embedding_model"),
 
   // Tasks & reminders (ADR-0007)
   listTasks: () => invoke<Task[]>("list_tasks"),
