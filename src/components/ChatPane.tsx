@@ -16,10 +16,16 @@ import { useEffect, useRef, useState } from "react";
 /// agent grounds itself, records what it learns into the formation, and replies
 /// — all in the same turn. Each turn streams the agent's reply plus an inline
 /// trail of the tools it used, then settles into a quiet receipt with an undo.
+///
+/// The composer never blocks: the user can keep typing and sending while the
+/// agent is still thinking. Each sent message is captured as a turn right away
+/// and queued, so a thought reaches the page the instant it's written; the
+/// engine drains the queue one turn at a time as it becomes free.
 export function ChatPane() {
   const sessionId = useChatStore((s) => s.sessionId);
   const turns = useChatStore((s) => s.turns);
   const startTurn = useChatStore((s) => s.startTurn);
+  const beginTurn = useChatStore((s) => s.beginTurn);
   const appendReply = useChatStore((s) => s.appendReply);
   const appendActivity = useChatStore((s) => s.appendActivity);
   const completeTurn = useChatStore((s) => s.completeTurn);
@@ -28,8 +34,17 @@ export function ChatPane() {
   const refreshAudit = useAuditStore((s) => s.refresh);
   const undoTurn = useAuditStore((s) => s.undoTurn);
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Messages waiting to run, paired with the turn already shown for each. The
+  // engine processes them in order; a single `pump` loop guarded by
+  // `pumpingRef` keeps turns strictly serial even as new ones are enqueued.
+  const queueRef = useRef<{ id: string; message: string }[]>([]);
+  const pumpingRef = useRef(false);
+
+  // How many turns are still in flight, for the composer's quiet status line.
+  // One turn at most is running; the rest are queued behind it.
+  const runningCount = turns.filter((t) => t.pending && !t.queued).length;
+  const queuedCount = turns.filter((t) => t.pending && t.queued).length;
 
   // Auto-scroll to the latest reply chunk / activity line. `turns` re-renders
   // the parent on every `appendReply` / `appendActivity` (the array reference
@@ -44,7 +59,6 @@ export function ChatPane() {
   // text + tool activity; on success records the receipt fields and refreshes
   // the side panels, on failure marks the turn so it can be retried in place.
   async function runTurn(turnLocalId: string, message: string) {
-    setBusy(true);
     try {
       const result = await tauri.chatTurn(message, sessionId, (event) => {
         if (event.kind === "textDelta") {
@@ -75,27 +89,49 @@ export function ChatPane() {
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       failTurn(turnLocalId, { error, body: message });
-    } finally {
-      setBusy(false);
     }
   }
 
-  async function handleSend() {
+  // Drain the queue one turn at a time. `pumpingRef` ensures a single active
+  // loop: callers just enqueue and call `pump()`; if a loop is already running
+  // it picks up the newly-enqueued turn on its next iteration. Reading
+  // `queueRef.current` (a stable ref) each iteration keeps the loop current
+  // even though this closure is captured from one render.
+  async function pump() {
+    if (pumpingRef.current) return;
+    pumpingRef.current = true;
+    try {
+      let next = queueRef.current.shift();
+      while (next) {
+        beginTurn(next.id);
+        await runTurn(next.id, next.message);
+        next = queueRef.current.shift();
+      }
+    } finally {
+      pumpingRef.current = false;
+    }
+  }
+
+  function handleSend() {
     const text = draft.trim();
-    if (!text || busy) return;
+    if (!text) return;
     setDraft("");
-    const turnLocalId = startTurn(text);
-    await runTurn(turnLocalId, text);
+    // Capture the turn immediately so the thought lands on the page now, then
+    // queue it. It shows as "Queued" until the engine reaches it.
+    const turnLocalId = startTurn(text, true);
+    queueRef.current.push({ id: turnLocalId, message: text });
+    void pump();
   }
 
   // Re-run a failed turn in place, using the message captured when it failed.
-  async function handleRetry(turnLocalId: string) {
-    if (busy) return;
+  // Like a fresh send, this rejoins the queue rather than blocking.
+  function handleRetry(turnLocalId: string) {
     const turn = turns.find((t) => t.id === turnLocalId);
     if (!turn?.failure) return;
     const message = turn.failure.body;
     resetTurn(turnLocalId);
-    await runTurn(turnLocalId, message);
+    queueRef.current.push({ id: turnLocalId, message });
+    void pump();
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -138,8 +174,7 @@ export function ChatPane() {
               <TurnView
                 key={turn.id}
                 turn={turn}
-                busy={busy}
-                onRetry={() => void handleRetry(turn.id)}
+                onRetry={() => handleRetry(turn.id)}
                 onUndo={() => void undoTurn(turn.turnId ?? "")}
               />
             ))}
@@ -157,8 +192,7 @@ export function ChatPane() {
               onKeyDown={handleKeyDown}
               placeholder="Tell Sediment a thought, or ask what it knows…"
               rows={2}
-              disabled={busy}
-              className="block min-h-[50px] w-full resize-none border-none bg-transparent text-[14.5px] leading-relaxed text-ink outline-none placeholder:text-faint disabled:opacity-60"
+              className="block min-h-[50px] w-full resize-none border-none bg-transparent text-[14.5px] leading-relaxed text-ink outline-none placeholder:text-faint"
             />
             <div className="mt-2 flex items-center gap-[10px]">
               <span className="flex items-center gap-[7px] text-[11px] text-faint">
@@ -171,10 +205,19 @@ export function ChatPane() {
                 </kbd>
                 newline
               </span>
+              {/* Quiet reassurance that sending while busy is safe — the engine
+                  is working and queued thoughts will be picked up in order. */}
+              {runningCount > 0 && (
+                <span className="flex items-center gap-[6px] text-[11px] text-muted">
+                  <span className="h-[6px] w-[6px] animate-pulse rounded-full bg-sage" />
+                  Thinking
+                  {queuedCount > 0 && <span className="text-faint">· {queuedCount} queued</span>}
+                </span>
+              )}
               <button
                 type="button"
-                onClick={() => void handleSend()}
-                disabled={!draft.trim() || busy}
+                onClick={() => handleSend()}
+                disabled={!draft.trim()}
                 className="ml-auto inline-flex items-center gap-[7px] whitespace-nowrap rounded-[10px] bg-accent px-[15px] py-2 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-accent-ink disabled:opacity-40"
               >
                 Send
@@ -213,12 +256,10 @@ function EmptyState() {
 /// the streamed reply (or a retry affordance), and a quiet receipt with undo.
 function TurnView({
   turn,
-  busy,
   onRetry,
   onUndo,
 }: {
   turn: ChatTurn;
-  busy: boolean;
   onRetry: () => void;
   onUndo: () => void;
 }) {
@@ -256,8 +297,7 @@ function TurnView({
           <button
             type="button"
             onClick={onRetry}
-            disabled={busy}
-            className="mt-2 rounded-md border border-line-strong px-2 py-0.5 text-[11.5px] font-semibold text-accent-ink hover:bg-accent-tint disabled:opacity-40"
+            className="mt-2 rounded-md border border-line-strong px-2 py-0.5 text-[11.5px] font-semibold text-accent-ink hover:bg-accent-tint"
           >
             Retry
           </button>
@@ -270,7 +310,11 @@ function TurnView({
           <div className="max-w-[560px] font-serif text-[16.5px] leading-[1.62] text-ink">
             {turn.reply.length === 0 ? (
               turn.pending ? (
-                <span className="italic text-muted">Thinking…</span>
+                turn.queued ? (
+                  <span className="italic text-faint">Queued…</span>
+                ) : (
+                  <span className="italic text-muted">Thinking…</span>
+                )
               ) : (
                 <span className="opacity-50">…</span>
               )
