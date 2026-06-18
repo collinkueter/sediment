@@ -204,6 +204,42 @@ pub fn count_transcript_segments(note_abs: &Path) -> AppResult<usize> {
         .count())
 }
 
+/// The most recent `## Transcript` bullets, oldest-first within `budget` bytes,
+/// rendered as a grounding block for a live in-meeting chat turn (ADR-0017 §7).
+/// Takes from the end (newest) so a long meeting still grounds the chat on *what
+/// was just said*. `None` when there is no transcript yet.
+pub fn recent_transcript_grounding(note_abs: &Path, budget: usize) -> AppResult<Option<String>> {
+    let content = read(note_abs)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let Some((h, end)) = find_section(&lines, TRANSCRIPT_HEADING) else {
+        return Ok(None);
+    };
+    let bullets: Vec<&str> = lines[h + 1..end]
+        .iter()
+        .copied()
+        .filter(|l| l.trim_start().starts_with("- `["))
+        .collect();
+    if bullets.is_empty() {
+        return Ok(None);
+    }
+    // Walk from the newest bullet back until the budget is spent; keep at least one.
+    let mut chosen: Vec<&str> = Vec::new();
+    let mut total = 0usize;
+    for b in bullets.iter().rev() {
+        let add = b.len() + 1; // + newline
+        if total + add > budget && !chosen.is_empty() {
+            break;
+        }
+        chosen.push(b);
+        total += add;
+    }
+    chosen.reverse(); // back to oldest-first reading order
+    Ok(Some(format!(
+        "## Live meeting transcript (most recent)\n{}",
+        chosen.join("\n")
+    )))
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Section splice (pure, testable) — parameterised by heading
 // ──────────────────────────────────────────────────────────────────────────
@@ -381,6 +417,29 @@ mod tests {
         let seg2 = body.find("**Self:** Sounds good.").unwrap();
         assert!(transcript < seg1 && seg1 < seg2 && seg2 < actions);
         assert!(body.contains("- `[00:05]` **Sarah:** Let's start with Q3."));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn recent_transcript_grounding_takes_newest_within_budget() {
+        let root = tempdir();
+        let rel = meeting_note_relative_path(started(), "Sync");
+        let abs = ensure_meeting_note(&root, &rel, "Sync", started()).unwrap();
+
+        // No transcript yet → None.
+        assert!(recent_transcript_grounding(&abs, 2000).unwrap().is_none());
+
+        for i in 0..5 {
+            append_transcript_segment(&abs, i * 1000, "Sarah", &format!("line number {i}")).unwrap();
+        }
+        let all = recent_transcript_grounding(&abs, 2000).unwrap().unwrap();
+        assert!(all.starts_with("## Live meeting transcript"));
+        assert!(all.contains("line number 0") && all.contains("line number 4"));
+
+        // A tight budget keeps only the newest bullet(s), and always at least one.
+        let tight = recent_transcript_grounding(&abs, 1).unwrap().unwrap();
+        assert!(tight.contains("line number 4"), "newest kept: {tight}");
+        assert!(!tight.contains("line number 0"), "oldest dropped: {tight}");
         std::fs::remove_dir_all(root).ok();
     }
 

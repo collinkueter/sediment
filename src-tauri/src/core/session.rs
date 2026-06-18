@@ -199,4 +199,25 @@ impl SessionRegistry {
             .expect("session registry poisoned")
             .contains_key(id)
     }
+
+    /// Grounding block for an open meeting Session's most-recent transcript, for
+    /// live in-meeting chat (ADR-0017 §7). `None` when no Session is open or it has
+    /// no transcript yet. Picks the most-recently-started open Session (the UI
+    /// runs one at a time). Capped at [`LIVE_TRANSCRIPT_BUDGET`] so it never crowds
+    /// the Self (ADR-0015 §3) or Working Set (ADR-0011 §2) above it in the turn's
+    /// grounding (ADR-0017 Q3).
+    pub fn live_transcript_grounding(&self, formation_root: &Path) -> Option<String> {
+        let note_rel = {
+            let guard = self.inner.lock().ok()?;
+            guard.values().max_by_key(|s| s.started)?.note_path.clone()
+        };
+        let note_abs = formation_root.join(note_rel);
+        meeting_note::recent_transcript_grounding(&note_abs, LIVE_TRANSCRIPT_BUDGET)
+            .ok()
+            .flatten()
+    }
 }
+
+/// Cap on the live-transcript grounding slot (ADR-0017 Q3 — a felt-test starting
+/// point of ~2 KB / roughly the last minute or two of speech).
+const LIVE_TRANSCRIPT_BUDGET: usize = 2000;
