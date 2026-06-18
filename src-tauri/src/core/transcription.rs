@@ -1,6 +1,6 @@
-//! Transcription engine seam (ADR-0016 §2, plan M2/M3).
+//! Transcription engine seam (ADR-0017 §2, plan M2/M3).
 //!
-//! ADR-0016 Q1 resolved to **stay concrete** — no `TranscriptionEngine` trait
+//! ADR-0017 Q1 resolved to **stay concrete** — no `TranscriptionEngine` trait
 //! designed against one real impl and a stub. But the *pipeline* still needs to be
 //! testable without a real model, so this defines a minimal [`Transcriber`] seam
 //! with two implementations: [`MockTranscriber`] (default build + tests — emits

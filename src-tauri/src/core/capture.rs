@@ -1,4 +1,4 @@
-//! Audio capture sources (ADR-0016 §1, plan M2).
+//! Audio capture sources (ADR-0017 §1, plan M2).
 //!
 //! A [`CaptureSource`] begins capturing on `start` and streams native-rate,
 //! possibly-multichannel interleaved f32 frames over a channel until its `stop`

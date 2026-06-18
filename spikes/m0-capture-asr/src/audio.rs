@@ -3,7 +3,7 @@
 //! model expects.
 //!
 //! NOT in scope for this crate: system-output *loopback* capture (the meeting
-//! audio). That is the platform-specific half of ADR-0016 §1 — macOS
+//! audio). That is the platform-specific half of ADR-0017 §1 — macOS
 //! ScreenCaptureKit, Windows WASAPI loopback — and is tracked as the M2 capture
 //! work. It is deliberately omitted here because (a) it cannot compile on the
 //! Linux CI box this was scaffolded on, and (b) measuring ASR latency/RTF (the M0

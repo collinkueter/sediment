@@ -12,7 +12,7 @@
 //!   - flush: `stream.input_finished()`
 //!
 //! This wires the *natively streaming* path (streaming zipformer transducer).
-//! NOTE for ADR-0016 Q5: NVIDIA **Parakeet-TDT** in sherpa-onnx is an *offline*
+//! NOTE for ADR-0017 Q5: NVIDIA **Parakeet-TDT** in sherpa-onnx is an *offline*
 //! recognizer run under VAD-based *simulated* streaming (interim every ~0.2 s
 //! within a speech segment) — not a true online model. To benchmark that path,
 //! run sherpa-onnx's own `parakeet_tdt_simulate_streaming_microphone` example and

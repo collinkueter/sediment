@@ -1,4 +1,4 @@
-# ADR-0016: Voice and meeting transcription — the formation listens
+# ADR-0017: Voice and meeting transcription — the formation listens
 
 **Status:** Accepted (2026-06-18) — designed before any code (ADR-first, ADR-0008/0009)
 and refined through a structured grilling session the same day: Q1, Q2, Q4, Q5, Q6
@@ -6,6 +6,10 @@ resolved, Gaps A and B surfaced and resolved as Q7/Q8, Q3 deferred to a felt-tes
 loop (see Open questions). Domain terms (**Session**, **Meeting note**,
 **Transcript segment**, **Voiceprint**) captured in [CONTEXT.md](../../CONTEXT.md).
 Build order in [docs/plans/voice-and-meeting-transcription.md](../plans/voice-and-meeting-transcription.md).
+**Renumbered 0016 → 0017 (2026-06-18):** originally authored as ADR-0016, renumbered
+on merge with `main`, which had concurrently landed [ADR-0016: local-only model
+provisioning](0016-local-only-model-provisioning.md). Unrelated ADR; the number was
+the only collision.
 **Extends:** [ADR-0009](0009-conversational-agent.md) (a meeting is a new *source*
 that lands in the **single conversation**, not a new mode), [ADR-0011](0011-working-set-and-push-grounding.md)
 (the live transcript is grounding pushed into the turn, like the Working Set),

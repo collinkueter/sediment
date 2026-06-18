@@ -1,4 +1,4 @@
-//! Meeting notes — `Meetings/<YYYY-MM-DD HHmm> — <title>.md` (ADR-0016 §5,
+//! Meeting notes — `Meetings/<YYYY-MM-DD HHmm> — <title>.md` (ADR-0017 §5,
 //! plan M1).
 //!
 //! A **Meeting note** is the Note of a `meeting` Entity: an event-shaped Note
@@ -26,7 +26,7 @@ use chrono::{DateTime, Local};
 use std::path::{Path, PathBuf};
 
 /// Folder under the formation root holding `Meetings/*.md`. Plural matches
-/// `People/`, `Daily Notes/`, … (ADR-0016 §5; ADR-0010 decision 1).
+/// `People/`, `Daily Notes/`, … (ADR-0017 §5; ADR-0010 decision 1).
 pub const MEETINGS_DIR: &str = "Meetings";
 
 pub const ATTENDEES_HEADING: &str = "## Attendees";

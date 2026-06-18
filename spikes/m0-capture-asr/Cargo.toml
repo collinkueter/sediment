@@ -3,7 +3,7 @@ name = "m0-capture-asr"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "ADR-0016 M0 spike: measure on-device streaming ASR latency/RTF on real hardware. Throwaway — not part of the Sediment app build (no workspace member)."
+description = "ADR-0017 M0 spike: measure on-device streaming ASR latency/RTF on real hardware. Throwaway — not part of the Sediment app build (no workspace member)."
 
 # Intentionally a *standalone* crate, not a member of the app. M0 is a de-risking
 # spike whose deliverable is a benchmark note, not retained code (see the plan).

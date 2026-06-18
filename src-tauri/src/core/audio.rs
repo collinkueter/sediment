@@ -1,4 +1,4 @@
-//! Audio DSP for the capture pipeline (ADR-0016 §1, plan M2): downmix to mono and
+//! Audio DSP for the capture pipeline (ADR-0017 §1, plan M2): downmix to mono and
 //! resample to the 16 kHz the transcriber expects.
 //!
 //! Pure and dependency-free — no audio backend, no platform code — so it compiles
@@ -10,7 +10,7 @@
 //! fine for the M2 spine; if measured WER warrants it, swap in a sinc resampler
 //! (`rubato`) behind the `audio` feature — the call sites do not change.
 
-/// Sample rate the transcription stack consumes (ADR-0016 §2).
+/// Sample rate the transcription stack consumes (ADR-0017 §2).
 pub const TARGET_RATE: u32 = 16_000;
 
 /// Average interleaved frames down to mono. `channels <= 1` is a passthrough.

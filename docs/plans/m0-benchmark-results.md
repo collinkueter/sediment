@@ -2,7 +2,7 @@
 
 **Status:** Open (awaiting runs on real hardware). The spike that produces these
 numbers is [`spikes/m0-capture-asr`](../../spikes/m0-capture-asr); it answers the
-[ADR-0016](../adr/0016-voice-and-meeting-transcription.md) plan's M0 decision gate.
+[ADR-0017](../adr/0017-voice-and-meeting-transcription.md) plan's M0 decision gate.
 
 This note is the *output* of M0. It is intentionally a fill-in template until the
 runs happen — the leaderboard does not decide the model; these measurements do.
@@ -30,11 +30,11 @@ comparable. Add a row per machine × model × provider.
 ## Decisions this note must produce
 
 1. **Default local model + size** for V1 (which row clears RTF ≤ 0.5 with acceptable
-   WER). Confirms or revises ADR-0016 Q5.
+   WER). Confirms or revises ADR-0017 Q5.
 2. **CPU floor** — the hardware below which RTF ≥ ~0.8, where V1 should nudge the user
-   toward the cloud STT opt-in (ADR-0016 §2) instead of degrading silently.
+   toward the cloud STT opt-in (ADR-0017 §2) instead of degrading silently.
 3. **Streaming wording** — does Parakeet's accuracy justify segment-granular partials,
-   or does streaming-zipformer's continuous partials win? Update ADR-0016 §2/Q5 to
+   or does streaming-zipformer's continuous partials win? Update ADR-0017 §2/Q5 to
    match what the numbers say (see the spike README §5 — Parakeet is *not* natively
    streaming in sherpa-onnx, contrary to the ADR's current phrasing).
 

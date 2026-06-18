@@ -1,4 +1,4 @@
-//! Meeting **Session** commands (ADR-0016 §3–§5, plan M1/M2).
+//! Meeting **Session** commands (ADR-0017 §3–§5, plan M1/M2).
 //!
 //! Start/stop are explicit and user-initiated — a Session is bounded, never a
 //! daemon. While open, segments and notes land in the Meeting note through the
@@ -56,7 +56,7 @@ pub async fn session_start(
     meeting_note::ensure_meeting_note(&formation_root, &note_path, &title, started)?;
 
     // Reserve the `meeting` Entity so the note has a graph node from the start
-    // (ADR-0016 §5). Best-effort: a Session must still open if the store can't
+    // (ADR-0017 §5). Best-effort: a Session must still open if the store can't
     // init. note_path↔entity linking is the indexer's job, as for every Note.
     let memory_dir = formation_root.join(APP_DIR).join("memory");
     match memory.get_or_init(&memory_dir).await {
@@ -147,7 +147,7 @@ pub async fn session_push_segment(
 }
 
 /// Push a time-anchored note/chat line into `## Notes` (the user typing alongside
-/// the meeting, ADR-0016 §8).
+/// the meeting, ADR-0017 §8).
 #[tauri::command]
 pub async fn session_push_note(
     session_id: String,
@@ -167,7 +167,7 @@ pub async fn session_push_note(
 
 /// Close a Session: deregister it (dropping its `CaptureController` tears down
 /// capture), emit `Status{stopped}`, and return a summary derived from the note.
-/// The end-of-Session distillation turn (ADR-0016 §7) is M6 — M1/M2 just close.
+/// The end-of-Session distillation turn (ADR-0017 §7) is M6 — M1/M2 just close.
 #[tauri::command]
 pub async fn session_stop(
     session_id: String,

@@ -1,4 +1,4 @@
-//! Meeting **Session** state (ADR-0016 §3, plan M1).
+//! Meeting **Session** state (ADR-0017 §3, plan M1).
 //!
 //! A **Session** is one user-initiated, bounded stretch of live capture — the
 //! opposite of a background daemon (it is started and stopped explicitly, exists
@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 use tauri::ipc::Channel;
 
-/// One speaker-attributed, timestamped span of transcribed speech (ADR-0016 §6,
+/// One speaker-attributed, timestamped span of transcribed speech (ADR-0017 §6,
 /// §8). `offset_ms` is measured from Session start — the spine that time-aligns
 /// the transcript to the notes taken beside it.
 #[derive(Debug, Clone, Serialize)]
@@ -77,7 +77,7 @@ pub struct MeetingSession {
     started: Instant,
     pub events: Channel<SessionEvent>,
     /// The running capture→transcription pipeline, when capture is active (the
-    /// `audio` feature, ADR-0016 §1). Dropping it on `session_stop` tears capture
+    /// `audio` feature, ADR-0017 §1). Dropping it on `session_stop` tears capture
     /// down deterministically (§3). `None` in M1 / default builds, where segments
     /// come from the manual `session_push_segment` source.
     pub capture: Option<CaptureController>,
@@ -95,7 +95,7 @@ impl MeetingSession {
         }
     }
 
-    /// Milliseconds since the Session started — the audio offset (ADR-0016 §8).
+    /// Milliseconds since the Session started — the audio offset (ADR-0017 §8).
     pub fn offset_ms(&self) -> i64 {
         self.started.elapsed().as_millis() as i64
     }
@@ -158,7 +158,7 @@ pub fn record_note(
 
 /// Registry of currently-open Sessions, keyed by session id. Managed by Tauri as
 /// app state. Bounded by user action — entries appear on `session_start` and are
-/// removed on `session_stop` (ADR-0016 §3).
+/// removed on `session_stop` (ADR-0017 §3).
 #[derive(Default)]
 pub struct SessionRegistry {
     inner: Mutex<HashMap<String, MeetingSession>>,

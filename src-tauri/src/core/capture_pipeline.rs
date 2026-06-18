@@ -1,4 +1,4 @@
-//! Capture → transcription pipeline (ADR-0016 §1/§2, plan M2).
+//! Capture → transcription pipeline (ADR-0017 §1/§2, plan M2).
 //!
 //! Connects a [`CaptureSource`] to a [`Transcriber`]: pull native frames, downmix
 //! + resample to 16 kHz ([`crate::core::audio`]), feed the transcriber, and hand
@@ -23,7 +23,7 @@ use std::time::Duration;
 
 /// Owns a running pipeline. Dropping it (or calling [`CaptureController::stop`])
 /// signals teardown and joins the worker — so a Session that drops its controller
-/// on stop tears capture down deterministically (ADR-0016 §3).
+/// on stop tears capture down deterministically (ADR-0017 §3).
 pub struct CaptureController {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,

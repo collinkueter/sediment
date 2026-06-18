@@ -176,16 +176,16 @@ _Avoid_: voice signature, biometric, speaker model.
   watches, surfaced only in conversation and never via notification. The **Agent**
   picks by whether the thing is a scheduled action (**Task**) or a pending
   resolution (**Open Loop**).
-- **Session** vs daemon (ADR-0016) — resolved: a **Session** is user-initiated,
+- **Session** vs daemon (ADR-0017) — resolved: a **Session** is user-initiated,
   bounded, and visible while it runs; it is never the always-on background listener
   ADR-0011 declined. Capture is a deliberate act with a start and a stop, not a
   process that watches unbidden.
-- **Meeting note** vs **Daily note** (ADR-0016) — resolved: both are event-shaped
+- **Meeting note** vs **Daily note** (ADR-0017) — resolved: both are event-shaped
   **Notes** whose transcript/events are not **Facts**. A **Meeting note** holds one
   **Session**'s transcript and the notes taken alongside it; a **Daily note** holds
   one calendar day's events and reflections. The **Agent** distils durable **Facts**
   from either into the entity **Notes** and the graph as usual.
-- **Voiceprint** vs **embedding** (ADR-0016) — resolved: both are vectors on an
+- **Voiceprint** vs **embedding** (ADR-0017) — resolved: both are vectors on an
   **Entity**, but a **Voiceprint** identifies a **person**'s *voice* (for speaker
   recognition in a **Session**), while the existing embedding indexes a **Note**'s
   *text* (for semantic search). Same primitive, different signal; neither is a new

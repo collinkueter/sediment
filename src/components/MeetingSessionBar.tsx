@@ -2,9 +2,9 @@ import { type SessionEvent, type TranscriptSegment, tauri } from "@/lib/tauri";
 import { useCallback, useRef, useState } from "react";
 
 /**
- * Meeting Session capture bar (ADR-0016, plan M1).
+ * Meeting Session capture bar (ADR-0017, plan M1).
  *
- * The transient capture surface (ADR-0016 §4): it exists only while a Session is
+ * The transient capture surface (ADR-0017 §4): it exists only while a Session is
  * open and collapses back to nothing on stop — the durable artifact is the
  * Meeting note. M1 has no audio, so segments are pushed by hand here (the "fake
  * source") to validate the spine UI → note → stream end-to-end. M2+ replaces the

@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
-# Off by default so the standard build pulls no audio backend (ADR-0016 M2).
+# Off by default so the standard build pulls no audio backend (ADR-0017 M2).
 # Enable on macOS/Windows to compile the real microphone capture pipeline
 # (`core::capture::MicSource` via cpal). System-output loopback and the on-device
 # ASR engine land behind this (and a future `local-asr`) feature too.
@@ -75,7 +75,7 @@ async-trait = "0.1"
 # --- MCP server (ADR-0009 §5 — the graph-only stdio MCP server) ---
 rmcp = { version = "0.16", features = ["server", "transport-io", "schemars"] }
 
-# --- Audio capture (ADR-0016 M2, `audio` feature only) ---
+# --- Audio capture (ADR-0017 M2, `audio` feature only) ---
 # Cross-platform microphone capture. Optional so the default build is unchanged.
 # cpal's Stream is !Send on some backends — `core::capture::MicSource` owns it on
 # a dedicated thread accordingly.

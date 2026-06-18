@@ -1,4 +1,4 @@
-//! ADR-0016 M0 spike — on-device streaming ASR latency/RTF on real hardware.
+//! ADR-0017 M0 spike — on-device streaming ASR latency/RTF on real hardware.
 //!
 //! Two input modes:
 //!   --wav <path>   deterministic, reproducible bench (runs anywhere with the

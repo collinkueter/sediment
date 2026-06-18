@@ -265,9 +265,9 @@ export interface Task {
   source_chat_id: string | null;
 }
 
-// ── Meeting sessions (ADR-0016, plan M1) ───────────────────────────────────
+// ── Meeting sessions (ADR-0017, plan M1) ───────────────────────────────────
 
-/** One speaker-attributed, timestamped span of transcribed speech (ADR-0016 §6/§8). */
+/** One speaker-attributed, timestamped span of transcribed speech (ADR-0017 §6/§8). */
 export interface TranscriptSegment {
   /** Milliseconds from session start — the time-alignment spine (§8). */
   offsetMs: number;
@@ -279,7 +279,7 @@ export interface TranscriptSegment {
 export type SessionLifecycle = "started" | "stopped";
 
 /**
- * Streamed over the session `Channel` while a Session is open (ADR-0016 §4),
+ * Streamed over the session `Channel` while a Session is open (ADR-0017 §4),
  * mirroring `TurnEvent`. Internally tagged on `kind`.
  */
 export type SessionEvent =
@@ -380,7 +380,7 @@ export const tauri = {
   /** Dismiss an open loop so it stops surfacing (ADR-0011 §5). */
   dismissOpenLoop: (loopId: string) => invoke<void>("dismiss_open_loop", { loopId }),
 
-  // Meeting sessions (ADR-0016, plan M1) — bounded, user-initiated capture.
+  // Meeting sessions (ADR-0017, plan M1) — bounded, user-initiated capture.
   /**
    * Open a Session: creates the Meeting note and streams `SessionEvent`s through
    * `onEvent` (status, segments, attendees, notes) until `sessionStop`. Hold the
