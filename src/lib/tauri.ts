@@ -138,7 +138,16 @@ export interface ChatTurnResult {
   recordedFactCount: number;
   /** The Working Set as of this turn — drives the "what's in play" panel. */
   workingSet: WorkingSet;
+  /**
+   * How the turn ended: `"completed"` (normal), `"steered"` (interrupted, its
+   * partial work kept), or `"redirected"` (interrupted, its work reverted —
+   * `reply`/`changedNotes` are empty).
+   */
+  stop: "completed" | "steered" | "redirected";
 }
+
+/** Which way the user interrupted a turn — see `cancelTurn`. */
+export type CancelMode = "steer" | "redirect";
 
 /** A chat-turn audit entry (ADR-0009 §6). */
 export interface ChatTurnAuditEntry {
@@ -292,11 +301,28 @@ export const tauri = {
    * `textDelta` chunks of the reply and `toolActivity` lines — and resolves
    * with the turn's authoritative outcome when it completes.
    */
-  chatTurn: (message: string, sessionId: string, onEvent: (e: TurnEvent) => void) => {
+  chatTurn: (
+    message: string,
+    sessionId: string,
+    clientTurnId: string,
+    onEvent: (e: TurnEvent) => void,
+  ) => {
     const channel = makeChannel<TurnEvent>();
     channel.onmessage = onEvent;
-    return invoke<ChatTurnResult>("chat_turn", { message, sessionId, onEvent: channel });
+    return invoke<ChatTurnResult>("chat_turn", {
+      message,
+      sessionId,
+      clientTurnId,
+      onEvent: channel,
+    });
   },
+  /**
+   * Interrupt an in-flight turn, addressed by the `clientTurnId` passed to
+   * `chatTurn`. `"steer"` keeps the turn's partial work; `"redirect"` reverts it.
+   * A no-op if the turn already finished.
+   */
+  cancelTurn: (clientTurnId: string, mode: CancelMode) =>
+    invoke<void>("cancel_turn", { clientTurnId, mode }),
   /** The current Working Set for the "what's in play" panel (ADR-0011 §3). */
   getWorkingSet: () => invoke<WorkingSet>("get_working_set"),
   /** The Self summary for the "in focus" panel — `## Summary` of `Self.md` (ADR-0015 §5). */

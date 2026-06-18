@@ -1,5 +1,5 @@
 import { Icon } from "@/components/icons";
-import { useFormationStore, useWorkingSetStore } from "@/lib/store";
+import { useChatStore, useFormationStore, useWorkingSetStore } from "@/lib/store";
 import { useThemeStore } from "@/lib/theme";
 import { useUiStore } from "@/lib/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -114,6 +114,12 @@ export function CommandPalette() {
         title: "Toggle theme",
         subtitle: "Paper for daylight, Strata for night",
       },
+      {
+        kind: "action",
+        key: "action:new-conversation",
+        title: "New conversation",
+        subtitle: "Clear the chat and start a fresh topic",
+      },
     ];
     return all.filter((a) => (q ? a.title.toLowerCase().includes(q) : true));
   }, [query]);
@@ -141,6 +147,9 @@ export function CommandPalette() {
       openSettings();
     } else if (item.key === "action:theme") {
       useThemeStore.getState().toggle();
+      close();
+    } else if (item.key === "action:new-conversation") {
+      useChatStore.getState().newConversation();
       close();
     }
   }

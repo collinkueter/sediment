@@ -24,6 +24,7 @@
 use crate::error::AppResult;
 use async_trait::async_trait;
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 
 /// One prior turn of conversation.
 ///
@@ -66,6 +67,17 @@ pub struct TurnRequest {
     /// behaviour prompt's `## Tone` section. An empty string means the default
     /// (warm). Reply wording only — never affects what the turn records.
     pub tone: String,
+    /// Tripped when the user interrupts this turn (Steer or Redirect). Engines
+    /// watch it in their stream loop and stop promptly, returning whatever they
+    /// produced so far as a [`TurnStop::Interrupted`] outcome. The engine never
+    /// learns *why* it was stopped — `chat_turn` decides keep-vs-revert from the
+    /// cancel mode it recorded separately.
+    pub cancel: CancellationToken,
+    /// The chat session this turn belongs to. The warm Copilot engine recycles
+    /// its resident ACP session when this changes (a New conversation), so no
+    /// server-side context bleeds across topics. Cold engines ignore it — they
+    /// render history from the transcript window each turn.
+    pub conversation_id: String,
 }
 
 /// A streamed event during a turn.
@@ -107,11 +119,26 @@ pub enum TurnEvent {
 /// only ever calls it — it never inspects the sink.
 pub type TurnEventSink = Box<dyn Fn(TurnEvent) + Send + Sync>;
 
-/// The result of a completed turn.
+/// How a turn stopped.
+///
+/// `Completed` is the normal end. `Interrupted` means the user tripped
+/// [`TurnRequest::cancel`] and the engine stopped early — `reply` then holds
+/// whatever streamed so far. `chat_turn` maps `Interrupted` to either a kept
+/// (Steer) or reverted (Redirect) turn based on the recorded cancel mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnStop {
+    Completed,
+    Interrupted,
+}
+
+/// The result of a turn.
 pub struct TurnOutcome {
-    /// The full assistant reply text — the authoritative final answer, not the
-    /// concatenation of streamed deltas (which may be partial).
+    /// The assistant reply text. For a completed turn this is the authoritative
+    /// final answer; for an interrupted turn it is the partial reply streamed
+    /// before the stop.
     pub reply: String,
+    /// How the turn stopped — normal completion or a user interrupt.
+    pub stop: TurnStop,
 }
 
 /// Runs the agent loop for one conversational turn.

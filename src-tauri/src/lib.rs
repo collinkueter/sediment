@@ -114,6 +114,7 @@ pub fn run() {
         .manage(core::watcher::FormationWatcher::default())
         .manage(core::ollama_sidecar::OllamaSidecar::default())
         .manage(core::copilot::CopilotEngineHandle::default())
+        .manage(core::cancel::CancelRegistry::default())
         .setup(|app| {
             // Logging guard is owned by the app so the appender keeps draining.
             let guard = init_logging(app.handle()).expect("init logging");
@@ -137,6 +138,7 @@ pub fn run() {
             commands::formation::write_note,
             commands::memory::index_formation,
             commands::chat::chat_turn,
+            commands::chat::cancel_turn,
             commands::chat::get_working_set,
             commands::chat::get_self_summary,
             commands::chat::list_copilot_models,

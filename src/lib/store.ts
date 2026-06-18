@@ -56,6 +56,18 @@ export interface ChatTurn {
   recordedFactCount?: number;
   /** Set when the turn failed; drives the inline retry affordance. */
   failure?: ChatFailure;
+  /**
+   * True when the turn was interrupted with **Steer**: its partial work was
+   * kept and committed (it is a normal, revertable turn) — just badged so the
+   * possibly-partial reply reads as intentional.
+   */
+  steered?: boolean;
+  /**
+   * Set when the turn was interrupted with **Redirect**: its work was reverted
+   * and it collapses to a tombstone. Carries the message text so Resume can
+   * re-run it as a fresh turn.
+   */
+  redirected?: { body: string };
 }
 
 interface ChatState {
@@ -84,9 +96,17 @@ interface ChatState {
   ) => void;
   /** Mark a turn as failed so it can be retried. */
   failTurn: (id: string, failure: ChatFailure) => void;
-  /** Clear a turn's failure + partial state so it can be re-run in place. */
+  /** Badge a (now-completed) turn as Steered — interrupted, partial work kept. */
+  markSteered: (id: string) => void;
+  /** Collapse an interrupted turn to a Redirected tombstone (work was reverted). */
+  redirectTurn: (id: string, body: string) => void;
+  /** Drop a turn from the transcript entirely (a bypassed queued message). */
+  removeTurn: (id: string) => void;
+  /** Clear a turn's failure/redirect + partial state so it can be re-run in place. */
   resetTurn: (id: string) => void;
   clear: () => void;
+  /** Start a fresh conversation: new session id, empty transcript. */
+  newConversation: () => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -130,6 +150,29 @@ export const useChatStore = create<ChatState>((set) => ({
         t.id === id ? { ...t, pending: false, queued: false, failure } : t,
       ),
     })),
+  markSteered: (id) =>
+    set((state) => ({
+      turns: state.turns.map((t) => (t.id === id ? { ...t, steered: true } : t)),
+    })),
+  redirectTurn: (id, body) =>
+    set((state) => ({
+      turns: state.turns.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              reply: "",
+              activity: [],
+              pending: false,
+              queued: false,
+              changedNotes: undefined,
+              recordedFactCount: undefined,
+              turnId: undefined,
+              redirected: { body },
+            }
+          : t,
+      ),
+    })),
+  removeTurn: (id) => set((state) => ({ turns: state.turns.filter((t) => t.id !== id) })),
   resetTurn: (id) =>
     set((state) => ({
       turns: state.turns.map((t) =>
@@ -143,12 +186,18 @@ export const useChatStore = create<ChatState>((set) => ({
               // engine is free.
               queued: true,
               failure: undefined,
+              redirected: undefined,
+              steered: undefined,
               turnId: undefined,
             }
           : t,
       ),
     })),
   clear: () => set({ turns: [] }),
+  // A new conversation is a fresh session id (history is session-scoped, so the
+  // agent starts cold) and an empty transcript. The formation, graph, and Self
+  // persist — durable memory, as on a fresh launch.
+  newConversation: () => set({ sessionId: crypto.randomUUID(), turns: [] }),
 }));
 
 interface FormationState {

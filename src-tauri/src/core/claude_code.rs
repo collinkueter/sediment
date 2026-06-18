@@ -36,7 +36,7 @@
 use crate::core::agent_tone;
 use crate::core::cli_launch;
 use crate::core::conversation::{
-    ConversationEngine, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest,
+    ConversationEngine, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest, TurnStop,
 };
 use crate::error::{AppError, AppResult};
 use async_trait::async_trait;
@@ -709,9 +709,14 @@ impl ConversationEngine for ClaudeCodeEngine {
         };
 
         // Run the whole turn under a wall-clock cap. On expiry the child is
-        // killed; the temp config is cleaned up on every exit path below.
-        let outcome =
-            tokio::time::timeout(TURN_TIMEOUT, drive_turn(&mut child, &prompt, on_event)).await;
+        // killed; the temp config is cleaned up on every exit path below. The
+        // turn's cancel token lets the user interrupt before the cap: `drive_turn`
+        // watches it, kills the child, and returns the partial reply.
+        let outcome = tokio::time::timeout(
+            TURN_TIMEOUT,
+            drive_turn(&mut child, &prompt, on_event, &turn.cancel),
+        )
+        .await;
 
         let _ = std::fs::remove_file(&mcp_config_path);
 
@@ -737,6 +742,7 @@ async fn drive_turn(
     child: &mut Child,
     prompt: &str,
     on_event: &TurnEventSink,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> AppResult<TurnOutcome> {
     // Write the prompt to stdin and close it (EOF).
     {
@@ -766,11 +772,22 @@ async fn drive_turn(
     let mut done: Option<(String, bool, Option<String>)> = None;
     let mut rate_limited = false;
 
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|e| AppError::other(format!("read stdout: {e}")))?
-    {
+    loop {
+        let line = tokio::select! {
+            biased;
+            // User interrupt — stop now, kill the child, and return the partial
+            // reply as an interrupted outcome. `chat_turn` decides keep-vs-revert.
+            _ = cancel.cancelled() => {
+                let _ = child.kill().await;
+                return Ok(TurnOutcome { reply: accumulator, stop: TurnStop::Interrupted });
+            }
+            next = lines.next_line() => {
+                match next.map_err(|e| AppError::other(format!("read stdout: {e}")))? {
+                    Some(line) => line,
+                    None => break,
+                }
+            }
+        };
         match parse_stream_line(&line) {
             StreamLine::Token(t) => {
                 accumulator.push_str(&t);
@@ -827,7 +844,7 @@ async fn drive_turn(
                     "Claude Code returned an empty reply — the turn may have been blocked.",
                 ));
             };
-            Ok(TurnOutcome { reply })
+            Ok(TurnOutcome { reply, stop: TurnStop::Completed })
         }
         Some((_answer, true, subtype)) => Err(AppError::other(format!(
             "Claude Code reported an error during the turn (subtype: {}).",
@@ -854,7 +871,7 @@ async fn drive_turn(
                 return Err(AppError::other(msg));
             }
             if !accumulator.is_empty() {
-                Ok(TurnOutcome { reply: accumulator })
+                Ok(TurnOutcome { reply: accumulator, stop: TurnStop::Completed })
             } else {
                 Err(AppError::other(
                     "Claude Code exited without finishing the turn — make sure you are signed \
@@ -1245,6 +1262,8 @@ mod tests {
             embedding_provider: "ollama".to_string(),
             injected_context: None,
             tone: String::new(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            conversation_id: String::new(),
         };
         let p = render_turn_prompt(&turn);
         assert!(p.contains("# Your formation"));
@@ -1275,6 +1294,8 @@ mod tests {
             embedding_provider: "ollama".to_string(),
             injected_context: None,
             tone: String::new(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            conversation_id: String::new(),
         };
         let p = render_turn_prompt(&turn);
         assert!(p.contains("# Your formation"));
@@ -1297,6 +1318,8 @@ mod tests {
             embedding_provider: "ollama".to_string(),
             injected_context: Some("Josh → People/Josh.md (works_at Cloudflare)".to_string()),
             tone: String::new(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            conversation_id: String::new(),
         };
         let p = render_turn_prompt(&with);
         assert!(p.contains("# What you already know"));
@@ -1328,6 +1351,8 @@ mod tests {
             embedding_provider: "ollama".to_string(),
             injected_context: None,
             tone: String::new(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            conversation_id: String::new(),
         };
         let raw = mcp_config_json(Path::new("/Apps/Sediment.app/sediment"), &turn);
         let v: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
@@ -1408,6 +1433,8 @@ mod tests {
             embedding_provider: "ollama".to_string(),
             injected_context: None,
             tone: String::new(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            conversation_id: String::new(),
         };
 
         let engine = ClaudeCodeEngine::new(DEFAULT_MODEL);

@@ -253,7 +253,11 @@ export function browserMock<T>(cmd: string, args?: Record<string, unknown>): Pro
       changedNotes: [{ path: "People/Keaton Vale.md", wasCreate: false }],
       recordedFactCount: 2,
       workingSet: WORKING_SET,
+      stop: "completed",
     } as unknown as T);
+  }
+  if (cmd === "cancel_turn") {
+    return Promise.resolve(undefined as unknown as T);
   }
   if (cmd in RESPONSES) {
     return Promise.resolve(RESPONSES[cmd] as T);

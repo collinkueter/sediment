@@ -18,7 +18,7 @@
 
 use crate::core::agent_tone;
 use crate::core::cli_launch;
-use crate::core::conversation::{TurnEvent, TurnEventSink, TurnOutcome, TurnRequest};
+use crate::core::conversation::{TurnEvent, TurnEventSink, TurnOutcome, TurnRequest, TurnStop};
 use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -29,6 +29,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio_util::sync::CancellationToken;
 
 /// Default Copilot model — configurable in settings (M9). `claude-haiku-4.5` is
 /// a fast, capable default; `gpt-5-mini` is the zero-premium-request option.
@@ -45,6 +46,12 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Recycle the resident process after this many turns to dodge the #2755
 /// latency-degradation bug (docs/copilot-acp-integration.md).
 const MAX_TURNS_PER_PROCESS: usize = 40;
+/// After sending `session/cancel`, how long to wait for the prompt to actually
+/// wind down (its response to arrive) before giving up and recycling the
+/// session. We don't yet know the installed CLI honours `session/cancel`
+/// mid-prompt (see the plan's M4 probe); if it doesn't, the grace elapses and the
+/// session is killed + recycled — colder, but always correct.
+const CANCEL_GRACE: Duration = Duration::from_secs(5);
 
 // ── Binary discovery ──────────────────────────────────────────────────────────
 
@@ -308,6 +315,13 @@ pub fn session_prompt_msg(id: i64, session_id: &str, text: &str) -> Value {
         "sessionId":session_id,"prompt":[{"type":"text","text":text}]}})
 }
 
+/// `session/cancel` notification — asks the server to stop the in-flight prompt.
+/// A notification (no `id`, no response expected); the prompt's own response is
+/// what tells us it wound down. The user interrupting a turn sends this.
+pub fn session_cancel_msg(session_id: &str) -> Value {
+    json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session_id}})
+}
+
 /// Auto-approve reply to a `session/request_permission` request — picks the
 /// `allow_always` option (else any allow option, else `allow_once`). `their_id`
 /// is Copilot's request id: its id space collides with ours, so we reply with
@@ -418,6 +432,16 @@ pub fn session_update_event(params: &Value) -> Option<TurnEvent> {
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 type ActiveSink = Arc<Mutex<Option<mpsc::UnboundedSender<Value>>>>;
+
+/// The result of one `CopilotSession::run_turn`. Beyond the reply and how it
+/// stopped, it carries whether the session must be recycled — set when an
+/// interrupt's `session/cancel` was *not* acknowledged within [`CANCEL_GRACE`],
+/// so the resident process can't be trusted to be idle for the next turn.
+struct SessionTurn {
+    reply: String,
+    stop: TurnStop,
+    recycle: bool,
+}
 
 /// A resident `copilot --acp` process holding one ACP session, serving many
 /// turns. Created lazily per formation and reused across turns (the warm path).
@@ -604,8 +628,13 @@ impl CopilotSession {
 
     /// Run one turn: send `session/prompt`, stream `session/update` text/tool
     /// events to `on_event`, and return the accumulated reply when the prompt
-    /// resolves.
-    async fn run_turn(&self, prompt_text: &str, on_event: &TurnEventSink) -> AppResult<String> {
+    /// resolves — or, if `cancel` trips, the partial reply as an interrupted turn.
+    async fn run_turn(
+        &self,
+        prompt_text: &str,
+        on_event: &TurnEventSink,
+        cancel: &CancellationToken,
+    ) -> AppResult<SessionTurn> {
         // Route this turn's notifications.
         let (notif_tx, mut notif_rx) = mpsc::unbounded_channel::<Value>();
         *self.active.lock().await = Some(notif_tx);
@@ -621,16 +650,24 @@ impl CopilotSession {
             )))
             .map_err(|_| AppError::other("copilot: writer closed"))?;
 
+        /// How the streaming loop ended.
+        enum LoopEnd {
+            /// The `session/prompt` response arrived (its raw oneshot payload).
+            Responded(Result<Value, String>),
+            /// The user interrupted the turn.
+            Cancelled,
+        }
+
         let mut reply = String::new();
         let mut resp_rx = resp_rx;
-        let result: Result<Value, AppError> = tokio::time::timeout(TURN_TIMEOUT, async {
+        let loop_end = tokio::time::timeout(TURN_TIMEOUT, async {
             loop {
                 tokio::select! {
                     biased;
-                    r = &mut resp_rx => {
-                        let inner = r.map_err(|_| AppError::other("copilot: response channel closed"))?;
-                        return inner.map_err(|e| AppError::other(format!("copilot error: {e}")));
-                    }
+                    r = &mut resp_rx => return LoopEnd::Responded(
+                        r.unwrap_or_else(|_| Err("response channel closed".to_string())),
+                    ),
+                    _ = cancel.cancelled() => return LoopEnd::Cancelled,
                     maybe = notif_rx.recv() => {
                         if let Some(params) = maybe {
                             if let Some(ev) = session_update_event(&params) {
@@ -647,23 +684,49 @@ impl CopilotSession {
         .await
         .map_err(|_| AppError::other("copilot: turn timed out"))?;
 
-        *self.active.lock().await = None;
-        // Drain any notifications buffered alongside the response.
-        while let Ok(params) = notif_rx.try_recv() {
-            if let Some(ev) = session_update_event(&params) {
-                if let TurnEvent::TextDelta { ref text } = ev {
-                    reply.push_str(text);
+        match loop_end {
+            LoopEnd::Cancelled => {
+                // Courtesy `session/cancel`, then wait a grace window for the
+                // prompt to actually wind down. If its response arrives, the
+                // session is idle again and stays warm; if the grace elapses the
+                // CLI likely ignored the cancel, so flag the session for recycle.
+                let _ =
+                    self.writer_tx
+                        .send(ndjson_line(&session_cancel_msg(&self.session_id)));
+                let acknowledged = tokio::time::timeout(CANCEL_GRACE, &mut resp_rx)
+                    .await
+                    .is_ok();
+                *self.active.lock().await = None;
+                self.turns.fetch_add(1, Ordering::SeqCst);
+                Ok(SessionTurn {
+                    reply,
+                    stop: TurnStop::Interrupted,
+                    recycle: !acknowledged,
+                })
+            }
+            LoopEnd::Responded(payload) => {
+                *self.active.lock().await = None;
+                // Drain any notifications buffered alongside the response.
+                while let Ok(params) = notif_rx.try_recv() {
+                    if let Some(ev) = session_update_event(&params) {
+                        if let TurnEvent::TextDelta { ref text } = ev {
+                            reply.push_str(text);
+                        }
+                        on_event(ev);
+                    }
                 }
-                on_event(ev);
+                let resp = payload.map_err(|e| AppError::other(format!("copilot error: {e}")))?;
+                if resp.get("stopReason").and_then(Value::as_str) == Some("refusal") {
+                    return Err(AppError::other("copilot refused the request"));
+                }
+                self.turns.fetch_add(1, Ordering::SeqCst);
+                Ok(SessionTurn {
+                    reply,
+                    stop: TurnStop::Completed,
+                    recycle: false,
+                })
             }
         }
-
-        let resp = result?;
-        if resp.get("stopReason").and_then(Value::as_str) == Some("refusal") {
-            return Err(AppError::other("copilot refused the request"));
-        }
-        self.turns.fetch_add(1, Ordering::SeqCst);
-        Ok(reply)
     }
 
     /// Close stdin (EOF → clean ACP shutdown) and kill the child as a backstop.
@@ -684,6 +747,10 @@ struct ResidentEngine {
     /// on its first turn, so a tone change in Settings only takes effect by
     /// recycling the session — mirrors how a model change is handled.
     tone: String,
+    /// The chat session this resident process is serving. A New conversation
+    /// changes it, which recycles the session so no server-side context (Copilot
+    /// retains history in-process) bleeds from the old topic into the new one.
+    conversation_id: String,
 }
 
 /// Tauri state holding the warm Copilot session. Lazily created per formation,
@@ -718,6 +785,7 @@ impl CopilotEngineHandle {
                 re.formation != turn.formation_root
                     || re.model != model
                     || re.tone != turn.tone
+                    || re.conversation_id != turn.conversation_id
                     || re.session.turns.load(Ordering::SeqCst) >= MAX_TURNS_PER_PROCESS
             }
         };
@@ -737,6 +805,7 @@ impl CopilotEngineHandle {
                 formation: turn.formation_root.clone(),
                 model: model.to_string(),
                 tone: turn.tone.clone(),
+                conversation_id: turn.conversation_id.clone(),
             });
         }
 
@@ -744,11 +813,24 @@ impl CopilotEngineHandle {
             let re = guard.as_ref().expect("session present after (re)create");
             let first = !re.session.persona_sent.swap(true, Ordering::SeqCst);
             let prompt = render_copilot_prompt(turn, first);
-            re.session.run_turn(&prompt, on_event).await
+            re.session.run_turn(&prompt, on_event, &turn.cancel).await
         };
 
         match result {
-            Ok(reply) => Ok(TurnOutcome { reply }),
+            Ok(t) => {
+                // An interrupt whose `session/cancel` wasn't acknowledged leaves
+                // the resident process untrustworthy — recycle it so the next
+                // turn starts clean. A clean stop keeps the session warm.
+                if t.recycle {
+                    if let Some(old) = guard.take() {
+                        old.session.shutdown().await;
+                    }
+                }
+                Ok(TurnOutcome {
+                    reply: t.reply,
+                    stop: t.stop,
+                })
+            }
             Err(e) => {
                 // Recycle on error so the next turn starts from a clean process.
                 if let Some(old) = guard.take() {
@@ -946,6 +1028,8 @@ mod tests {
             embedding_provider: "ollama".to_string(),
             injected_context: Some("## Currently in play".to_string()),
             tone: String::new(),
+            cancel: CancellationToken::new(),
+            conversation_id: String::new(),
         };
         let first = render_copilot_prompt(&turn, true);
         assert!(
@@ -996,9 +1080,14 @@ mod tests {
         });
 
         let reply = session
-            .run_turn("Reply with exactly the word READY and nothing else.", &sink)
+            .run_turn(
+                "Reply with exactly the word READY and nothing else.",
+                &sink,
+                &CancellationToken::new(),
+            )
             .await
-            .expect("run_turn");
+            .expect("run_turn")
+            .reply;
         println!("reply: {reply:?}");
         assert!(
             reply.to_uppercase().contains("READY"),

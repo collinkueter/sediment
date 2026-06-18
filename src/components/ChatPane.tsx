@@ -30,21 +30,42 @@ export function ChatPane() {
   const appendActivity = useChatStore((s) => s.appendActivity);
   const completeTurn = useChatStore((s) => s.completeTurn);
   const failTurn = useChatStore((s) => s.failTurn);
+  const markSteered = useChatStore((s) => s.markSteered);
+  const redirectTurn = useChatStore((s) => s.redirectTurn);
+  const removeTurn = useChatStore((s) => s.removeTurn);
+  const newConversation = useChatStore((s) => s.newConversation);
   const resetTurn = useChatStore((s) => s.resetTurn);
   const refreshAudit = useAuditStore((s) => s.refresh);
   const undoTurn = useAuditStore((s) => s.undoTurn);
   const [draft, setDraft] = useState("");
+  // True between an interrupt click and the running turn actually stopping, so
+  // the interrupt buttons can't race two cancels against one turn.
+  const [cancelling, setCancelling] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Messages waiting to run, paired with the turn already shown for each. The
   // engine processes them in order; a single `pump` loop guarded by
   // `pumpingRef` keeps turns strictly serial even as new ones are enqueued.
   const queueRef = useRef<{ id: string; message: string }[]>([]);
   const pumpingRef = useRef(false);
+  // The turn the engine is running right now (set synchronously by `pump`), so a
+  // New conversation can interrupt it even though it's already gone from `turns`.
+  const runningIdRef = useRef<string | null>(null);
+  // Reordering the queue mutates `queueRef` (not the store), so bump this to
+  // re-render the place-in-line badges. Store-driven changes (a turn starting or
+  // finishing) re-render on their own.
+  const [, setQueueVersion] = useState(0);
+  const bumpQueue = () => setQueueVersion((v) => v + 1);
 
   // How many turns are still in flight, for the composer's quiet status line.
   // One turn at most is running; the rest are queued behind it.
   const runningCount = turns.filter((t) => t.pending && !t.queued).length;
   const queuedCount = turns.filter((t) => t.pending && t.queued).length;
+  // A queued turn's place in the processing line (1 = next), or null if it isn't
+  // queued. Read from `queueRef`; `setQueueVersion` forces a re-read on reorder.
+  const placeOf = (id: string) => {
+    const i = queueRef.current.findIndex((m) => m.id === id);
+    return i < 0 ? null : i + 1;
+  };
 
   // Auto-scroll to the latest reply chunk / activity line. `turns` re-renders
   // the parent on every `appendReply` / `appendActivity` (the array reference
@@ -55,18 +76,41 @@ export function ChatPane() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turns]);
 
+  // A New conversation mints a fresh `sessionId` (from the header button or the
+  // command palette). React to it here so both entry points get the same
+  // side-effects: drop the pending queue and interrupt-and-revert any running
+  // turn — we're leaving the topic. Skips the initial mount.
+  const mountedRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `sessionId` is the trigger, not a value read in the effect; `bumpQueue`/`setCancelling` are stable.
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return;
+    }
+    queueRef.current = [];
+    if (runningIdRef.current) void tauri.cancelTurn(runningIdRef.current, "redirect");
+    setCancelling(false);
+    bumpQueue();
+  }, [sessionId]);
+
   // Run one conversational turn into the given local turn id. Streams reply
   // text + tool activity; on success records the receipt fields and refreshes
   // the side panels, on failure marks the turn so it can be retried in place.
   async function runTurn(turnLocalId: string, message: string) {
     try {
-      const result = await tauri.chatTurn(message, sessionId, (event) => {
+      const result = await tauri.chatTurn(message, sessionId, turnLocalId, (event) => {
         if (event.kind === "textDelta") {
           appendReply(turnLocalId, event.text);
         } else {
           appendActivity(turnLocalId, { tool: event.tool, summary: event.summary });
         }
       });
+      // Redirected: the turn was interrupted and its work reverted on disk.
+      // Collapse it to a tombstone; nothing was recorded, so skip the refreshes.
+      if (result.stop === "redirected") {
+        redirectTurn(turnLocalId, message);
+        return;
+      }
       completeTurn(
         turnLocalId,
         result.reply,
@@ -74,6 +118,9 @@ export function ChatPane() {
         result.changedNotes,
         result.recordedFactCount,
       );
+      // Steered: interrupted but its partial work was kept and committed — badge
+      // it so the possibly-partial reply reads as intentional.
+      if (result.stop === "steered") markSteered(turnLocalId);
       // Refresh the Working Set panel with the authoritative state from this turn.
       useWorkingSetStore.getState().setWorkingSet(result.workingSet);
       // The turn may have updated Self.md — refresh the Self summary too (ADR-0015 §5).
@@ -89,6 +136,10 @@ export function ChatPane() {
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       failTurn(turnLocalId, { error, body: message });
+    } finally {
+      // The turn settled (completed, steered, redirected, or failed) — any
+      // pending interrupt is resolved, so re-enable the buttons.
+      setCancelling(false);
     }
   }
 
@@ -103,11 +154,14 @@ export function ChatPane() {
     try {
       let next = queueRef.current.shift();
       while (next) {
+        runningIdRef.current = next.id;
         beginTurn(next.id);
         await runTurn(next.id, next.message);
+        runningIdRef.current = null;
         next = queueRef.current.shift();
       }
     } finally {
+      runningIdRef.current = null;
       pumpingRef.current = false;
     }
   }
@@ -132,6 +186,67 @@ export function ChatPane() {
     resetTurn(turnLocalId);
     queueRef.current.push({ id: turnLocalId, message });
     void pump();
+  }
+
+  // Re-run a redirected turn from the message captured when it was redirected.
+  function handleResume(turnLocalId: string) {
+    const turn = turns.find((t) => t.id === turnLocalId);
+    if (!turn?.redirected) return;
+    const message = turn.redirected.body;
+    resetTurn(turnLocalId);
+    queueRef.current.push({ id: turnLocalId, message });
+    void pump();
+  }
+
+  // Move a queued message to the front of the processing line.
+  function promote(turnLocalId: string) {
+    const q = queueRef.current;
+    const i = q.findIndex((m) => m.id === turnLocalId);
+    const item = i > 0 ? q.splice(i, 1)[0] : undefined;
+    if (item) {
+      q.unshift(item);
+      bumpQueue();
+    }
+  }
+
+  // Nudge a queued message up (-1) or down (+1) one place in the line.
+  function moveQueued(turnLocalId: string, dir: -1 | 1) {
+    const q = queueRef.current;
+    const i = q.findIndex((m) => m.id === turnLocalId);
+    const j = i + dir;
+    const a = q[i];
+    const b = q[j];
+    if (i >= 0 && j >= 0 && j < q.length && a && b) {
+      q[i] = b;
+      q[j] = a;
+      bumpQueue();
+    }
+  }
+
+  // Drop a queued message — it never runs and leaves the transcript.
+  function removeQueued(turnLocalId: string) {
+    queueRef.current = queueRef.current.filter((m) => m.id !== turnLocalId);
+    removeTurn(turnLocalId);
+    bumpQueue();
+  }
+
+  // Interrupt the running turn so a queued message takes over now. `mode` says
+  // what happens to the running turn: "steer" keeps its work, "redirect" reverts
+  // it. Either way the clicked message is promoted to run next.
+  function interrupt(queuedTurnId: string, mode: "steer" | "redirect") {
+    const running = turns.find((t) => t.pending && !t.queued);
+    if (!running || cancelling) return;
+    promote(queuedTurnId);
+    setCancelling(true);
+    void tauri.cancelTurn(running.id, mode);
+  }
+
+  // Start a fresh conversation. Just resets the session + transcript; the
+  // `sessionId` effect below does the side-effects (clear queue, interrupt any
+  // running turn) so the command-palette entry point gets them too.
+  function handleNewConversation() {
+    if (turns.length === 0 && queueRef.current.length === 0) return;
+    newConversation();
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -163,6 +278,21 @@ export function ChatPane() {
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col bg-bg">
+      {/* Slim header — a quiet "New conversation" affordance, shown once there's
+          something to clear. The formation (long-term memory) is untouched. */}
+      {(turns.length > 0 || queueRef.current.length > 0) && (
+        <div className="flex flex-none items-center justify-end px-[22px] pt-3">
+          <button
+            type="button"
+            onClick={handleNewConversation}
+            className="inline-flex items-center gap-[6px] rounded-[8px] border border-line px-[10px] py-[5px] text-[11.5px] font-semibold text-muted transition-colors hover:border-line-strong hover:text-ink"
+          >
+            <Icon.Plus className="h-[13px] w-[13px]" />
+            New conversation
+          </button>
+        </div>
+      )}
+
       {/* Transcript — a centered reading column. */}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-[22px] pt-[30px] pb-[10px]">
         {turns.length === 0 ? (
@@ -174,6 +304,16 @@ export function ChatPane() {
               <TurnView
                 key={turn.id}
                 turn={turn}
+                place={placeOf(turn.id)}
+                canInterrupt={runningCount > 0}
+                cancelling={cancelling}
+                queueLen={queueRef.current.length}
+                onSteer={() => interrupt(turn.id, "steer")}
+                onRedirect={() => interrupt(turn.id, "redirect")}
+                onMoveUp={() => moveQueued(turn.id, -1)}
+                onMoveDown={() => moveQueued(turn.id, 1)}
+                onRemoveQueued={() => removeQueued(turn.id)}
+                onResume={() => handleResume(turn.id)}
                 onRetry={() => handleRetry(turn.id)}
                 onUndo={() => void undoTurn(turn.turnId ?? "")}
               />
@@ -254,17 +394,42 @@ function EmptyState() {
 
 /// One conversational turn: the user's bubble, the agent's tool-activity trail,
 /// the streamed reply (or a retry affordance), and a quiet receipt with undo.
+/// A queued turn instead shows its place in line and the interrupt controls; a
+/// redirected turn collapses to a tombstone with Resume.
 function TurnView({
   turn,
+  place,
+  canInterrupt,
+  cancelling,
+  queueLen,
+  onSteer,
+  onRedirect,
+  onMoveUp,
+  onMoveDown,
+  onRemoveQueued,
+  onResume,
   onRetry,
   onUndo,
 }: {
   turn: ChatTurn;
+  place: number | null;
+  canInterrupt: boolean;
+  cancelling: boolean;
+  queueLen: number;
+  onSteer: () => void;
+  onRedirect: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onRemoveQueued: () => void;
+  onResume: () => void;
   onRetry: () => void;
   onUndo: () => void;
 }) {
+  const isQueued = turn.pending && Boolean(turn.queued);
   const hasReceipt =
-    !turn.failure && (Boolean(turn.changedNotes?.length) || Boolean(turn.recordedFactCount));
+    !turn.failure &&
+    !turn.redirected &&
+    (Boolean(turn.changedNotes?.length) || Boolean(turn.recordedFactCount));
   return (
     <div className="flex flex-col gap-3">
       {/* User message — right-aligned dark bubble with a clipped corner. */}
@@ -274,59 +439,174 @@ function TurnView({
         </div>
       </div>
 
-      {/* Fact-trail — a subtle muted line per tool call. */}
-      {turn.activity.length > 0 && (
-        <ul className="flex flex-col gap-[3px] self-start pl-[42px]">
-          {turn.activity.map((a, i) => (
-            <ActivityLine
-              // biome-ignore lint/suspicious/noArrayIndexKey: activity is append-only and positional
-              key={i}
-              activity={a}
-            />
-          ))}
-        </ul>
-      )}
+      {isQueued ? (
+        <QueuedControls
+          place={place}
+          canInterrupt={canInterrupt}
+          cancelling={cancelling}
+          queueLen={queueLen}
+          onSteer={onSteer}
+          onRedirect={onRedirect}
+          onMoveUp={onMoveUp}
+          onMoveDown={onMoveDown}
+          onRemove={onRemoveQueued}
+        />
+      ) : turn.redirected ? (
+        <RedirectedTombstone onResume={onResume} />
+      ) : (
+        <>
+          {/* Fact-trail — a subtle muted line per tool call. */}
+          {turn.activity.length > 0 && (
+            <ul className="flex flex-col gap-[3px] self-start pl-[42px]">
+              {turn.activity.map((a, i) => (
+                <ActivityLine
+                  // biome-ignore lint/suspicious/noArrayIndexKey: activity is append-only and positional
+                  key={i}
+                  activity={a}
+                />
+              ))}
+            </ul>
+          )}
 
-      {/* Assistant reply, or a failed-turn retry affordance. */}
-      {turn.failure ? (
-        <div className="ml-[44px] max-w-[560px] rounded-xl border border-line-strong bg-danger-tint px-4 py-3">
-          <p className="flex items-start gap-2 whitespace-pre-wrap text-[13px] text-ink-soft">
-            <Icon.Warning className="mt-px h-4 w-4 flex-none text-danger" />
-            {turn.failure.error}
-          </p>
+          {/* Assistant reply, or a failed-turn retry affordance. */}
+          {turn.failure ? (
+            <div className="ml-[44px] max-w-[560px] rounded-xl border border-line-strong bg-danger-tint px-4 py-3">
+              <p className="flex items-start gap-2 whitespace-pre-wrap text-[13px] text-ink-soft">
+                <Icon.Warning className="mt-px h-4 w-4 flex-none text-danger" />
+                {turn.failure.error}
+              </p>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="mt-2 rounded-md border border-line-strong px-2 py-0.5 text-[11.5px] font-semibold text-accent-ink hover:bg-accent-tint"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-[14px]">
+              <div className="mt-0.5 grid h-[30px] w-[30px] flex-none place-items-center rounded-[9px] bg-[linear-gradient(150deg,var(--accent),var(--accent-ink))] text-white shadow-sm">
+                <Icon.Sparkle className="h-[17px] w-[17px]" />
+              </div>
+              <div className="max-w-[560px] font-serif text-[16.5px] leading-[1.62] text-ink">
+                {turn.reply.length === 0 ? (
+                  turn.pending ? (
+                    <span className="italic text-muted">Thinking…</span>
+                  ) : (
+                    <span className="opacity-50">…</span>
+                  )
+                ) : (
+                  <>
+                    <CitedText text={turn.reply} />
+                    {turn.steered && (
+                      <span className="ml-2 align-middle text-[10.5px] font-sans font-semibold uppercase tracking-[0.05em] text-faint">
+                        · steered
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Receipt — the inline undo affordance, attached to the turn it describes. */}
+          {hasReceipt && <Receipt turn={turn} onUndo={onUndo} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+/// Controls on a queued message: its place in line, the two interrupt buttons
+/// (shown only while a turn is running), reorder nudges, and a drop. Right-
+/// aligned to sit under the user's bubble.
+function QueuedControls({
+  place,
+  canInterrupt,
+  cancelling,
+  queueLen,
+  onSteer,
+  onRedirect,
+  onMoveUp,
+  onMoveDown,
+  onRemove,
+}: {
+  place: number | null;
+  canInterrupt: boolean;
+  cancelling: boolean;
+  queueLen: number;
+  onSteer: () => void;
+  onRedirect: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onRemove: () => void;
+}) {
+  const iconBtn =
+    "grid h-[22px] w-[22px] place-items-center rounded-[6px] border border-line text-muted transition-colors hover:border-line-strong hover:text-ink disabled:opacity-30 disabled:hover:border-line disabled:hover:text-muted";
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-[7px] text-[11.5px]">
+      <span className="text-faint">Queued{place ? ` · ${place === 1 ? "next" : place}` : ""}</span>
+      {canInterrupt && (
+        <>
           <button
             type="button"
-            onClick={onRetry}
-            className="mt-2 rounded-md border border-line-strong px-2 py-0.5 text-[11.5px] font-semibold text-accent-ink hover:bg-accent-tint"
+            onClick={onSteer}
+            disabled={cancelling}
+            title="Interrupt and run this next, keeping the current turn's work"
+            className="rounded-[7px] border border-line-strong px-[9px] py-[3px] font-semibold text-accent-ink transition-colors hover:bg-accent-tint disabled:opacity-40"
           >
-            Retry
+            Steer
           </button>
-        </div>
-      ) : (
-        <div className="flex gap-[14px]">
-          <div className="mt-0.5 grid h-[30px] w-[30px] flex-none place-items-center rounded-[9px] bg-[linear-gradient(150deg,var(--accent),var(--accent-ink))] text-white shadow-sm">
-            <Icon.Sparkle className="h-[17px] w-[17px]" />
-          </div>
-          <div className="max-w-[560px] font-serif text-[16.5px] leading-[1.62] text-ink">
-            {turn.reply.length === 0 ? (
-              turn.pending ? (
-                turn.queued ? (
-                  <span className="italic text-faint">Queued…</span>
-                ) : (
-                  <span className="italic text-muted">Thinking…</span>
-                )
-              ) : (
-                <span className="opacity-50">…</span>
-              )
-            ) : (
-              <CitedText text={turn.reply} />
-            )}
-          </div>
-        </div>
+          <button
+            type="button"
+            onClick={onRedirect}
+            disabled={cancelling}
+            title="Interrupt and run this instead, reverting the current turn"
+            className="rounded-[7px] border border-line-strong px-[9px] py-[3px] font-semibold text-muted transition-colors hover:bg-surface hover:text-ink disabled:opacity-40"
+          >
+            Redirect
+          </button>
+        </>
       )}
+      <button
+        type="button"
+        onClick={onMoveUp}
+        disabled={place === null || place <= 1}
+        title="Move up"
+        className={iconBtn}
+      >
+        <Icon.ChevronDown className="h-3 w-3 rotate-180" />
+      </button>
+      <button
+        type="button"
+        onClick={onMoveDown}
+        disabled={place === null || place >= queueLen}
+        title="Move down"
+        className={iconBtn}
+      >
+        <Icon.ChevronDown className="h-3 w-3" />
+      </button>
+      <button type="button" onClick={onRemove} title="Remove from queue" className={iconBtn}>
+        <Icon.X className="h-3 w-3" />
+      </button>
+    </div>
+  );
+}
 
-      {/* Receipt — the inline undo affordance, attached to the turn it describes. */}
-      {hasReceipt && <Receipt turn={turn} onUndo={onUndo} />}
+/// A redirected turn: interrupted with its work reverted. A thin neutral
+/// tombstone with a Resume that re-runs it as a fresh turn.
+function RedirectedTombstone({ onResume }: { onResume: () => void }) {
+  return (
+    <div className="ml-[44px] flex max-w-[560px] items-center gap-[9px] rounded-xl border border-line bg-surface py-[7px] pr-[9px] pl-[13px] text-[12px] text-muted">
+      <Icon.Undo className="h-[14px] w-[14px] flex-none text-faint" />
+      <span className="min-w-0 flex-1 truncate">Redirected — this turn was reverted.</span>
+      <button
+        type="button"
+        onClick={onResume}
+        className="inline-flex flex-none items-center gap-[6px] rounded-[7px] border border-line-strong bg-raised px-[13px] py-1 text-[11.5px] font-semibold text-accent-ink hover:border-accent hover:bg-accent-tint"
+      >
+        Resume
+      </button>
     </div>
   );
 }
