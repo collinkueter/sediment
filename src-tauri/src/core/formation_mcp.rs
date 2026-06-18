@@ -55,12 +55,15 @@ impl FormationMcp {
         formation_root: PathBuf,
         source_chat_id: String,
         embedding_provider: EmbeddingProvider,
+        ollama_url: Option<String>,
     ) -> AppResult<Self> {
         let store = MemoryStore::open(&memory_dir(&formation_root)).await?;
+        let sidecar = OllamaSidecar::default();
+        sidecar.set_endpoint(ollama_url);
         let ctx = ToolContext {
             store,
             formation_root,
-            sidecar: OllamaSidecar::default(),
+            sidecar,
             embedding_provider,
             source_chat_id,
         };
@@ -154,8 +157,10 @@ pub async fn serve_stdio(
     formation_root: PathBuf,
     source_chat_id: String,
     embedding_provider: EmbeddingProvider,
+    ollama_url: Option<String>,
 ) -> AppResult<()> {
-    let server = FormationMcp::new(formation_root, source_chat_id, embedding_provider).await?;
+    let server =
+        FormationMcp::new(formation_root, source_chat_id, embedding_provider, ollama_url).await?;
 
     let running = server
         .serve(rmcp::transport::stdio())
@@ -252,6 +257,7 @@ mod tests {
             root.clone(),
             "chat_message:test".to_string(),
             EmbeddingProvider::Ollama,
+            None,
         )
         .await
         .expect("build server");
@@ -273,6 +279,7 @@ mod tests {
             root.clone(),
             "chat_message:test".to_string(),
             EmbeddingProvider::Ollama,
+            None,
         )
         .await
         .expect("build server");
@@ -313,6 +320,7 @@ mod tests {
             root.clone(),
             "chat_message:test".to_string(),
             EmbeddingProvider::Ollama,
+            None,
         )
         .await
         .expect("build server");
@@ -339,6 +347,7 @@ mod tests {
             root.clone(),
             "chat_message:mcp".to_string(),
             EmbeddingProvider::Ollama,
+            None,
         )
         .await
         .expect("serve_stdio");

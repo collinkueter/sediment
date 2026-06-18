@@ -797,6 +797,7 @@ impl CopilotEngineHandle {
                 &turn.formation_root,
                 &turn.source_chat_id,
                 &turn.embedding_provider,
+                turn.ollama_url.as_deref().unwrap_or(""),
             )?;
             let session =
                 CopilotSession::spawn(&binary, &turn.formation_root, model, &mcp_path).await?;
@@ -886,6 +887,7 @@ fn write_mcp_config(
     formation: &Path,
     source_chat_id: &str,
     embedding_provider: &str,
+    ollama_url: &str,
 ) -> AppResult<PathBuf> {
     let self_exe =
         std::env::current_exe().map_err(|e| AppError::other(format!("current_exe: {e}")))?;
@@ -897,6 +899,7 @@ fn write_mcp_config(
             "SEDIMENT_FORMATION": formation.to_string_lossy(),
             "SEDIMENT_SOURCE_CHAT_ID": source_chat_id,
             "SEDIMENT_EMBEDDING_PROVIDER": embedding_provider,
+            "SEDIMENT_OLLAMA_URL": ollama_url,
         },
         "tools":["*"]
     }}});
@@ -1026,6 +1029,7 @@ mod tests {
             formation_root: PathBuf::from("/f"),
             source_chat_id: "chat_message:1".to_string(),
             embedding_provider: "ollama".to_string(),
+            ollama_url: None,
             injected_context: Some("## Currently in play".to_string()),
             tone: String::new(),
             cancel: CancellationToken::new(),

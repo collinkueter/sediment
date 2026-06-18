@@ -620,6 +620,7 @@ fn mcp_config_json(self_exe: &Path, turn: &TurnRequest) -> String {
                     "SEDIMENT_FORMATION": turn.formation_root.to_string_lossy(),
                     "SEDIMENT_SOURCE_CHAT_ID": turn.source_chat_id,
                     "SEDIMENT_EMBEDDING_PROVIDER": turn.embedding_provider,
+                    "SEDIMENT_OLLAMA_URL": turn.ollama_url.as_deref().unwrap_or(""),
                 }
             }
         }
@@ -1260,6 +1261,7 @@ mod tests {
             formation_root: PathBuf::from("/f"),
             source_chat_id: "chat_message:1".to_string(),
             embedding_provider: "ollama".to_string(),
+            ollama_url: None,
             injected_context: None,
             tone: String::new(),
             cancel: tokio_util::sync::CancellationToken::new(),
@@ -1292,6 +1294,7 @@ mod tests {
             formation_root: PathBuf::from("/f"),
             source_chat_id: "chat_message:2".to_string(),
             embedding_provider: "ollama".to_string(),
+            ollama_url: None,
             injected_context: None,
             tone: String::new(),
             cancel: tokio_util::sync::CancellationToken::new(),
@@ -1316,6 +1319,7 @@ mod tests {
             formation_root: PathBuf::from("/f"),
             source_chat_id: "chat_message:3".to_string(),
             embedding_provider: "ollama".to_string(),
+            ollama_url: None,
             injected_context: Some("Josh → People/Josh.md (works_at Cloudflare)".to_string()),
             tone: String::new(),
             cancel: tokio_util::sync::CancellationToken::new(),
@@ -1349,6 +1353,7 @@ mod tests {
             formation_root: PathBuf::from("/Users/x/formation"),
             source_chat_id: "chat_message:42".to_string(),
             embedding_provider: "ollama".to_string(),
+            ollama_url: None,
             injected_context: None,
             tone: String::new(),
             cancel: tokio_util::sync::CancellationToken::new(),
@@ -1431,6 +1436,7 @@ mod tests {
             formation_root: root.clone(),
             source_chat_id: "chat_message:live".to_string(),
             embedding_provider: "ollama".to_string(),
+            ollama_url: None,
             injected_context: None,
             tone: String::new(),
             cancel: tokio_util::sync::CancellationToken::new(),

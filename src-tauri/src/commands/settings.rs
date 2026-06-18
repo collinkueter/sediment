@@ -62,6 +62,44 @@ pub fn set_embedding_provider(provider: String, app: tauri::AppHandle) -> AppRes
     cfg.save(&app)
 }
 
+// ---- Ollama endpoint: run-it-yourself (Docker/Podman/remote) ---------------
+
+/// The configured custom Ollama endpoint, or `None` when Sediment manages a
+/// local daemon. The `SEDIMENT_OLLAMA_URL` env var takes precedence so a
+/// locked-down deployment can force it; the settings UI shows the effective
+/// value either way.
+#[tauri::command]
+pub fn get_ollama_url(app: tauri::AppHandle) -> Option<String> {
+    crate::core::ollama_sidecar::resolved_endpoint(AppConfig::load(&app).ollama_url)
+}
+
+/// Point Sediment at an Ollama the user runs themselves — e.g. in Docker/Podman,
+/// or on a remote host — or clear it (`None` / empty) to fall back to the bundled
+/// local daemon. Validates the URL, persists it, and reconfigures the live
+/// sidecar so the change takes effect without a restart. A scheme defaults to
+/// `http://` when omitted (`"dockerhost:11434"` → `"http://dockerhost:11434"`).
+#[tauri::command]
+pub fn set_ollama_url(
+    url: Option<String>,
+    sidecar: tauri::State<'_, crate::core::ollama_sidecar::OllamaSidecar>,
+    app: tauri::AppHandle,
+) -> AppResult<()> {
+    let normalized = match url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()) {
+        Some(raw) => Some(
+            crate::core::ollama_sidecar::validate_endpoint(&raw).map_err(AppError::other)?,
+        ),
+        None => None,
+    };
+    let mut cfg = AppConfig::load(&app);
+    cfg.ollama_url = normalized.clone();
+    cfg.save(&app)?;
+    // Reconfigure the managed singleton (used by the indexer + Ollama commands).
+    // The env var, if set, still wins on the next resolve — but a user editing
+    // this setting in the UI is the common case, so honour their value live.
+    sidecar.set_endpoint(crate::core::ollama_sidecar::resolved_endpoint(normalized));
+    Ok(())
+}
+
 // ---- ADR-0009: the conversational-agent engine selector --------------------
 
 /// Probe the user's machine for a `claude` binary and its authentication
