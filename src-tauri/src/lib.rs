@@ -157,6 +157,8 @@ pub fn run() {
             commands::hardware::complete_onboarding,
             commands::models::check_model_readiness,
             commands::models::pull_ollama_model,
+            commands::models::download_bundled_model,
+            commands::models::import_bundled_model,
             commands::settings::get_models_dir,
             commands::settings::set_models_dir,
             commands::settings::get_embedding_provider,

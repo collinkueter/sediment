@@ -164,20 +164,11 @@ export function SettingsModal({
     setError(null);
     try {
       await tauri.setEmbeddingProvider(mode);
+      // Re-run the launch-time readiness check. If on-device is selected but the
+      // model files aren't installed, this surfaces the setup screen (Download /
+      // Import) instead of letting indexing and search fail silently later. The
+      // Ollama gate works the same way; keyword needs no model.
       onModelConfigChanged();
-      // Pre-load the in-process model so the first on-device search doesn't pay
-      // the download/load cost. Warmup is what actually downloads/loads the model,
-      // so don't swallow its failure: surface it and roll the toggle back to the
-      // previous mode, otherwise the app sits in a broken "bundled" state where
-      // indexing and search silently fail.
-      if (mode === "bundled") {
-        tauri.warmupEmbeddingModel().catch((e) => {
-          setError(`On-device model — ${e instanceof Error ? e.message : String(e)}`);
-          setSearchMode(previous);
-          tauri.setEmbeddingProvider(previous).catch(() => {});
-          onModelConfigChanged();
-        });
-      }
     } catch (e) {
       setSearchMode(previous);
       setError(e instanceof Error ? e.message : String(e));

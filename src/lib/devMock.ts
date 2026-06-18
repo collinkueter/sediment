@@ -182,12 +182,15 @@ const RESPONSES: Record<string, unknown> = {
   ollama_ensure_running: { installed: true, running: true, install_hint: null },
   ollama_status: { installed: true, running: true, install_hint: null },
   check_model_readiness: {
+    provider: "ollama",
     ollama_installed: true,
     all_present: true,
     requirements: [
       { kind: "embed", id: "all-minilm", label: "Embeddings", size_hint: "45 MB", present: true },
     ],
   },
+  download_bundled_model: null,
+  import_bundled_model: null,
   list_notes: NOTES,
   get_working_set: WORKING_SET,
   get_self_summary: "- Prefers async over meetings\n- Shipping Sediment V1 by August",

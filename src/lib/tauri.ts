@@ -65,6 +65,9 @@ export interface ModelRequirement {
 }
 
 export interface ModelReadiness {
+  /** Active note-search provider: "ollama" | "bundled" | "none". The setup
+   * screen renders a different acquisition flow per provider. */
+  provider: string;
   ollama_installed: boolean;
   requirements: ModelRequirement[];
   all_present: boolean;
@@ -289,6 +292,18 @@ export const tauri = {
     channel.onmessage = onProgress;
     return invoke<void>("pull_ollama_model", { model, onProgress: channel });
   },
+  /**
+   * Download the on-device (bundled) embedding model into Sediment's model
+   * directory, streaming per-file byte progress through `onProgress`. The only
+   * place on-device model acquisition touches the network.
+   */
+  downloadBundledModel: (onProgress: (p: ModelProgress) => void) => {
+    const channel = makeChannel<ModelProgress>();
+    channel.onmessage = onProgress;
+    return invoke<void>("download_bundled_model", { onProgress: channel });
+  },
+  /** Install the on-device model from a user-chosen folder (offline path). */
+  importBundledModel: (sourceDir: string) => invoke<void>("import_bundled_model", { sourceDir }),
 
   // Ollama
   ollamaStatus: () => invoke<OllamaStatus>("ollama_status"),

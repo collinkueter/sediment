@@ -65,6 +65,13 @@ pub struct AppConfig {
     /// See `core::agent_tone::AgentTone`.
     #[serde(default)]
     pub agent_tone: Option<String>,
+    /// Base URL the on-device model files are downloaded from during setup
+    /// (ADR-0016). `None` uses the Hugging Face default; set it to a mirror for
+    /// locked-down environments. The five files are fetched from
+    /// `<base>/<file>`. Also overridable via the `SEDIMENT_MODEL_BASE_URL`
+    /// environment variable. See `commands::models::download_bundled_model`.
+    #[serde(default)]
+    pub bundled_model_url: Option<String>,
 }
 
 impl AppConfig {
