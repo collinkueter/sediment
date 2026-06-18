@@ -4,6 +4,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { FileTree } from "@/components/FileTree";
 import { FormationPicker } from "@/components/FormationPicker";
 import { InFocusBar } from "@/components/InFocusBar";
+import { MeetingSessionBar } from "@/components/MeetingSessionBar";
 import { ModelSetup } from "@/components/ModelSetup";
 import { NoteViewer } from "@/components/NoteViewer";
 import { Onboarding } from "@/components/Onboarding";
@@ -217,6 +218,7 @@ function Workspace({ collapsedNote }: { collapsedNote: boolean }) {
           <RemindersView />
         ) : (
           <>
+            <MeetingSessionBar />
             <InFocusBar />
             <div className="min-h-0 flex-1">
               <ChatPane />

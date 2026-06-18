@@ -6,5 +6,6 @@ pub mod hardware;
 pub mod memory;
 pub mod models;
 pub mod ollama;
+pub mod session;
 pub mod settings;
 pub mod tasks;

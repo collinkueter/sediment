@@ -262,6 +262,41 @@ export interface Task {
   source_chat_id: string | null;
 }
 
+// ── Meeting sessions (ADR-0016, plan M1) ───────────────────────────────────
+
+/** One speaker-attributed, timestamped span of transcribed speech (ADR-0016 §6/§8). */
+export interface TranscriptSegment {
+  /** Milliseconds from session start — the time-alignment spine (§8). */
+  offsetMs: number;
+  /** Attributed speaker: a person's name, "Self", or "Unknown speaker N". */
+  speaker: string;
+  text: string;
+}
+
+export type SessionLifecycle = "started" | "stopped";
+
+/**
+ * Streamed over the session `Channel` while a Session is open (ADR-0016 §4),
+ * mirroring `TurnEvent`. Internally tagged on `kind`.
+ */
+export type SessionEvent =
+  | { kind: "status"; sessionId: string; notePath: string; state: SessionLifecycle }
+  | { kind: "segment"; segment: TranscriptSegment }
+  | { kind: "attendeeChanged"; attendees: string[] }
+  | { kind: "note"; offsetMs: number; text: string };
+
+export interface SessionStartResult {
+  sessionId: string;
+  /** Formation-relative path of the Meeting note. */
+  notePath: string;
+}
+
+export interface SessionStopResult {
+  notePath: string;
+  segmentCount: number;
+  attendees: string[];
+}
+
 export const tauri = {
   appVersion: () => invoke<string>("app_version"),
 
@@ -329,6 +364,27 @@ export const tauri = {
   getSelfSummary: () => invoke<string | null>("get_self_summary"),
   /** Dismiss an open loop so it stops surfacing (ADR-0011 §5). */
   dismissOpenLoop: (loopId: string) => invoke<void>("dismiss_open_loop", { loopId }),
+
+  // Meeting sessions (ADR-0016, plan M1) — bounded, user-initiated capture.
+  /**
+   * Open a Session: creates the Meeting note and streams `SessionEvent`s through
+   * `onEvent` (status, segments, attendees, notes) until `sessionStop`. Hold the
+   * returned `sessionId` for the push calls. M1: segments arrive via
+   * `sessionPushSegment` (a fake source); M2+ swaps in real capture.
+   */
+  sessionStart: (title: string, onEvent: (e: SessionEvent) => void) => {
+    const channel = makeChannel<SessionEvent>();
+    channel.onmessage = onEvent;
+    return invoke<SessionStartResult>("session_start", { title, onEvent: channel });
+  },
+  /** Push one transcript segment into the open Session (M1 fake source). */
+  sessionPushSegment: (sessionId: string, speaker: string, text: string) =>
+    invoke<void>("session_push_segment", { sessionId, speaker, text }),
+  /** Push a time-anchored note/chat line into the open Session's `## Notes`. */
+  sessionPushNote: (sessionId: string, text: string) =>
+    invoke<void>("session_push_note", { sessionId, text }),
+  /** Close the Session and return its summary (distillation turn is M6). */
+  sessionStop: (sessionId: string) => invoke<SessionStopResult>("session_stop", { sessionId }),
 
   // Audit log — the browsable, revertable backstop (ADR-0009 §6, ADR-0010 §8)
   /** Every turn's audit entry, newest-first. */
