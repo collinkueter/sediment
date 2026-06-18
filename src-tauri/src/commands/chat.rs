@@ -9,9 +9,10 @@
 use crate::commands::formation::APP_DIR;
 use crate::core::agent_tone;
 use crate::core::audit::{self, AuditEntry, ChangedNote, ChatTurnEntry};
+use crate::core::cancel::{CancelMode, CancelRegistry};
 use crate::core::claude_code::{self, ClaudeCodeEngine};
 use crate::core::conversation::{
-    ConversationEngine, TranscriptTurn, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest,
+    ConversationEngine, TranscriptTurn, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest, TurnStop,
 };
 use crate::core::copilot::{self, CopilotEngineHandle};
 use crate::core::daily_note;
@@ -52,6 +53,24 @@ pub struct ChatTurnResult {
     /// The Working Set as of this turn — what's in play, for the UI panel
     /// (ADR-0011 §3). Also pushed into the agent's prompt.
     pub working_set: WorkingSet,
+    /// How the turn ended: `"completed"` (normal), `"steered"` (interrupted, its
+    /// partial work kept and committed), or `"redirected"` (interrupted, its work
+    /// reverted — no audit entry). Drives the transcript's per-turn rendering.
+    pub stop: String,
+}
+
+/// Removes a turn from the [`CancelRegistry`] on every exit path of `chat_turn`
+/// — success, error, or panic — so a leaked token can never let a later
+/// `cancel_turn` for a reused id trip a stale turn.
+struct FinishGuard<'a> {
+    registry: &'a CancelRegistry,
+    client_turn_id: &'a str,
+}
+
+impl Drop for FinishGuard<'_> {
+    fn drop(&mut self) {
+        self.registry.finish(self.client_turn_id);
+    }
 }
 
 /// Build the cold-spawn `ConversationEngine` for this turn — the Claude Code
@@ -81,12 +100,22 @@ fn build_engine(cfg: &AppConfig) -> Box<dyn ConversationEngine> {
 pub async fn chat_turn(
     message: String,
     session_id: String,
+    client_turn_id: String,
     on_event: Channel<TurnEvent>,
     formation: State<'_, FormationState>,
     memory: State<'_, MemoryHandle>,
     copilot: State<'_, CopilotEngineHandle>,
+    cancel: State<'_, CancelRegistry>,
     app: tauri::AppHandle,
 ) -> AppResult<ChatTurnResult> {
+    // Register this turn so `cancel_turn` can interrupt it by the same client id.
+    // The guard removes it on every exit path (incl. panic).
+    let cancel_token = cancel.register(&client_turn_id);
+    let _finish = FinishGuard {
+        registry: &cancel,
+        client_turn_id: &client_turn_id,
+    };
+
     let formation_root = formation.require()?;
     let memory_dir = formation_root.join(APP_DIR).join("memory");
     let store = memory.get_or_init(&memory_dir).await?;
@@ -172,6 +201,8 @@ pub async fn chat_turn(
         tone: agent_tone::AgentTone::from_config(cfg.agent_tone.as_deref())
             .as_str()
             .to_string(),
+        cancel: cancel_token,
+        conversation_id: session_id.clone(),
     };
     let sink: TurnEventSink = {
         let channel = on_event.clone();
@@ -199,13 +230,47 @@ pub async fn chat_turn(
     } else {
         build_engine(&cfg).run_turn(&turn_request, &sink).await
     };
-    let TurnOutcome { reply } = match turn_outcome {
+    let outcome = match turn_outcome {
         Ok(o) => o,
         Err(e) => {
             std::fs::remove_dir_all(&snapshot_dir).ok();
             return Err(e);
         }
     };
+    let interrupted = outcome.stop == TurnStop::Interrupted;
+
+    // An interrupted-and-**redirected** turn is rolled back as if it never ran:
+    // revert its partial note edits + Facts from the snapshot, drop the snapshot,
+    // and delete its user message from the transcript so the next turn doesn't
+    // carry a prompt the user changed direction away from. No audit entry is
+    // written — like a failed turn. (Steer, by contrast, falls through to the
+    // normal commit path below, keeping the partial work as a revertable turn.)
+    if interrupted && cancel.taken_mode(&client_turn_id) == Some(CancelMode::Redirect) {
+        let changed_notes = audit::diff_formation(&formation_root, &snapshot_dir)?;
+        let recorded_fact_ids = store.facts_by_source(&source_chat_id).await?;
+        audit::revert_to_snapshot(
+            &formation_root,
+            &snapshot_dir,
+            &changed_notes,
+            &recorded_fact_ids,
+            store,
+        )
+        .await?;
+        std::fs::remove_dir_all(&snapshot_dir).ok();
+        if let Err(e) = store.delete_chat_message(&source_chat_id).await {
+            tracing::warn!("chat_turn: delete redirected chat message failed: {e}");
+        }
+        return Ok(ChatTurnResult {
+            turn_id: String::new(),
+            reply: String::new(),
+            changed_notes: Vec::new(),
+            recorded_fact_count: 0,
+            working_set,
+            stop: "redirected".to_string(),
+        });
+    }
+
+    let TurnOutcome { reply, .. } = outcome;
 
     // ADR-0011 §4: rotate the surfaced open loop so the rider doesn't repeat the
     // same one. The Working Set lists loops least-recently-surfaced first and the
@@ -250,7 +315,19 @@ pub async fn chat_turn(
         changed_notes,
         recorded_fact_count,
         working_set,
+        // A turn that reached here after an interrupt was a Steer — its partial
+        // work was just committed as a normal, revertable turn.
+        stop: if interrupted { "steered" } else { "completed" }.to_string(),
     })
+}
+
+/// Interrupt an in-flight turn. The UI addresses the turn by the same
+/// `client_turn_id` it passed to `chat_turn`; `mode` (`"steer"` keeps the partial
+/// work, `"redirect"` reverts it) is recorded so `chat_turn` knows what to do
+/// when its engine stops. A no-op if the turn already finished (a benign race).
+#[tauri::command]
+pub fn cancel_turn(client_turn_id: String, mode: CancelMode, cancel: State<'_, CancelRegistry>) {
+    cancel.cancel(&client_turn_id, mode);
 }
 
 /// The current Working Set — for the "what's in play" panel on load and refresh

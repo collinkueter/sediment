@@ -412,8 +412,41 @@ pub async fn undo_turn(formation_root: &Path, store: &MemoryStore, turn_id: &str
     };
     let snapshot_dir = formation_root.join(&entry.snapshot_dir);
 
+    // Roll back the turn's notes + Facts from its pre-turn snapshot.
+    revert_to_snapshot(
+        formation_root,
+        &snapshot_dir,
+        &entry.changed_notes,
+        &entry.recorded_fact_ids,
+        store,
+    )
+    .await?;
+
+    // Drop the audit entry and its snapshot — the turn is gone.
+    std::fs::remove_dir_all(&snapshot_dir).ok();
+    remove_audit(formation_root, &entry.turn_id)?;
+    Ok(())
+}
+
+/// Roll back a turn's side-effects from its pre-turn snapshot: restore each
+/// changed note (or delete it if the turn created it), then delete every Fact the
+/// turn recorded. Shared by [`undo_turn`] (which reads them from a written audit
+/// entry, then also drops the entry + snapshot) and by the interrupt **Redirect**
+/// path in `chat_turn` (which has no audit entry — it passes the live
+/// `diff_formation` result + `facts_by_source`). One body means the two callers
+/// can't drift on revert semantics.
+///
+/// `snapshot_dir` is the absolute snapshot directory. Deleting a Fact is
+/// best-effort (logged, not fatal); a missing created-note is ignored.
+pub async fn revert_to_snapshot(
+    formation_root: &Path,
+    snapshot_dir: &Path,
+    changed_notes: &[ChangedNote],
+    fact_ids: &[String],
+    store: &MemoryStore,
+) -> AppResult<()> {
     // 1. Notes — restore from snapshot, or delete if the turn created them.
-    for note in &entry.changed_notes {
+    for note in changed_notes {
         let target = formation_root.join(&note.path);
         if note.was_create {
             match std::fs::remove_file(&target) {
@@ -421,28 +454,25 @@ pub async fn undo_turn(formation_root: &Path, store: &MemoryStore, turn_id: &str
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
                     return Err(AppError::other(format!(
-                        "undo: remove created note {}: {e}",
+                        "revert: remove created note {}: {e}",
                         note.path
                     )))
                 }
             }
         } else {
-            let bytes = std::fs::read(snapshot_dir.join(&note.path))
-                .map_err(|e| AppError::other(format!("undo: read snapshot {}: {e}", note.path)))?;
+            let bytes = std::fs::read(snapshot_dir.join(&note.path)).map_err(|e| {
+                AppError::other(format!("revert: read snapshot {}: {e}", note.path))
+            })?;
             atomic_write(&target, &bytes)?;
         }
     }
 
     // 2. Graph — delete every Fact the turn recorded.
-    for fact_id in &entry.recorded_fact_ids {
+    for fact_id in fact_ids {
         if let Err(e) = store.delete_fact(fact_id).await {
-            tracing::warn!("undo: delete fact {fact_id} failed: {e}");
+            tracing::warn!("revert: delete fact {fact_id} failed: {e}");
         }
     }
-
-    // 3. Drop the audit entry and its snapshot — the turn is gone.
-    std::fs::remove_dir_all(&snapshot_dir).ok();
-    remove_audit(formation_root, &entry.turn_id)?;
     Ok(())
 }
 

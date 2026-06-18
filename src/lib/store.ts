@@ -40,8 +40,14 @@ export interface ChatTurn {
   reply: string;
   /** The agent's tool calls, in order, surfaced as a subtle activity trail. */
   activity: ToolActivity[];
-  /** True while the turn is still streaming. */
+  /** True while the turn is in flight — waiting in the queue or streaming. */
   pending: boolean;
+  /**
+   * True while the turn is waiting its turn in the queue, before the engine
+   * has started it. Lets the user keep typing and sending while the agent is
+   * busy: each message is captured as a turn immediately and run in order.
+   */
+  queued?: boolean;
   /** The audit-entry id once the turn completes — drives the quiet undo. */
   turnId?: string;
   /** Notes this turn changed on disk — drives the inline receipt. */
@@ -50,14 +56,32 @@ export interface ChatTurn {
   recordedFactCount?: number;
   /** Set when the turn failed; drives the inline retry affordance. */
   failure?: ChatFailure;
+  /**
+   * True when the turn was interrupted with **Steer**: its partial work was
+   * kept and committed (it is a normal, revertable turn) — just badged so the
+   * possibly-partial reply reads as intentional.
+   */
+  steered?: boolean;
+  /**
+   * Set when the turn was interrupted with **Redirect**: its work was reverted
+   * and it collapses to a tombstone. Carries the message text so Resume can
+   * re-run it as a fresh turn.
+   */
+  redirected?: { body: string };
 }
 
 interface ChatState {
   /** Stable id for this app-launch chat session; provenance for stored facts. */
   sessionId: string;
   turns: ChatTurn[];
-  /** Start a turn from a user message; returns the new turn's local id. */
-  startTurn: (userMessage: string) => string;
+  /**
+   * Start a turn from a user message; returns the new turn's local id.
+   * Pass `queued` when the engine is busy so the turn shows as waiting until
+   * `beginTurn` promotes it to running.
+   */
+  startTurn: (userMessage: string, queued?: boolean) => string;
+  /** Promote a queued turn to running (the engine has picked it up). */
+  beginTurn: (id: string) => void;
   /** Append a streamed reply chunk to a turn. */
   appendReply: (id: string, text: string) => void;
   /** Append a tool-activity line to a turn's trail. */
@@ -72,24 +96,36 @@ interface ChatState {
   ) => void;
   /** Mark a turn as failed so it can be retried. */
   failTurn: (id: string, failure: ChatFailure) => void;
-  /** Clear a turn's failure + partial state so it can be re-run in place. */
+  /** Badge a (now-completed) turn as Steered — interrupted, partial work kept. */
+  markSteered: (id: string) => void;
+  /** Collapse an interrupted turn to a Redirected tombstone (work was reverted). */
+  redirectTurn: (id: string, body: string) => void;
+  /** Drop a turn from the transcript entirely (a bypassed queued message). */
+  removeTurn: (id: string) => void;
+  /** Clear a turn's failure/redirect + partial state so it can be re-run in place. */
   resetTurn: (id: string) => void;
   clear: () => void;
+  /** Start a fresh conversation: new session id, empty transcript. */
+  newConversation: () => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
   sessionId: crypto.randomUUID(),
   turns: [],
-  startTurn: (userMessage) => {
+  startTurn: (userMessage, queued = false) => {
     const id = crypto.randomUUID();
     set((state) => ({
       turns: [
         ...state.turns,
-        { id, createdAt: Date.now(), userMessage, reply: "", activity: [], pending: true },
+        { id, createdAt: Date.now(), userMessage, reply: "", activity: [], pending: true, queued },
       ],
     }));
     return id;
   },
+  beginTurn: (id) =>
+    set((state) => ({
+      turns: state.turns.map((t) => (t.id === id ? { ...t, queued: false } : t)),
+    })),
   appendReply: (id, text) =>
     set((state) => ({
       turns: state.turns.map((t) => (t.id === id ? { ...t, reply: t.reply + text } : t)),
@@ -103,22 +139,65 @@ export const useChatStore = create<ChatState>((set) => ({
   completeTurn: (id, reply, turnId, changedNotes, recordedFactCount) =>
     set((state) => ({
       turns: state.turns.map((t) =>
-        t.id === id ? { ...t, reply, turnId, changedNotes, recordedFactCount, pending: false } : t,
+        t.id === id
+          ? { ...t, reply, turnId, changedNotes, recordedFactCount, pending: false, queued: false }
+          : t,
       ),
     })),
   failTurn: (id, failure) =>
     set((state) => ({
-      turns: state.turns.map((t) => (t.id === id ? { ...t, pending: false, failure } : t)),
+      turns: state.turns.map((t) =>
+        t.id === id ? { ...t, pending: false, queued: false, failure } : t,
+      ),
     })),
+  markSteered: (id) =>
+    set((state) => ({
+      turns: state.turns.map((t) => (t.id === id ? { ...t, steered: true } : t)),
+    })),
+  redirectTurn: (id, body) =>
+    set((state) => ({
+      turns: state.turns.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              reply: "",
+              activity: [],
+              pending: false,
+              queued: false,
+              changedNotes: undefined,
+              recordedFactCount: undefined,
+              turnId: undefined,
+              redirected: { body },
+            }
+          : t,
+      ),
+    })),
+  removeTurn: (id) => set((state) => ({ turns: state.turns.filter((t) => t.id !== id) })),
   resetTurn: (id) =>
     set((state) => ({
       turns: state.turns.map((t) =>
         t.id === id
-          ? { ...t, reply: "", activity: [], pending: true, failure: undefined, turnId: undefined }
+          ? {
+              ...t,
+              reply: "",
+              activity: [],
+              pending: true,
+              // Re-runs rejoin the queue; `beginTurn` promotes it when the
+              // engine is free.
+              queued: true,
+              failure: undefined,
+              redirected: undefined,
+              steered: undefined,
+              turnId: undefined,
+            }
           : t,
       ),
     })),
   clear: () => set({ turns: [] }),
+  // A new conversation is a fresh session id (history is session-scoped, so the
+  // agent starts cold) and an empty transcript. The formation, graph, and Self
+  // persist — durable memory, as on a fresh launch.
+  newConversation: () => set({ sessionId: crypto.randomUUID(), turns: [] }),
 }));
 
 interface FormationState {

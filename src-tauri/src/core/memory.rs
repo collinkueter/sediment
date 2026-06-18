@@ -404,6 +404,23 @@ impl MemoryStore {
         Ok(rows.into_iter().map(|r| (r.role, r.content)).collect())
     }
 
+    /// Delete one `chat_message` by record id. Used when a turn is interrupted
+    /// and **redirected**: the abandoned user message is rolled back out of the
+    /// transcript so the next turn's continuity window doesn't carry a prompt the
+    /// user chose to change direction away from. Idempotent — a missing row is a
+    /// no-op.
+    pub async fn delete_chat_message(&self, id: &str) -> AppResult<()> {
+        let key = id.strip_prefix("chat_message:").unwrap_or(id);
+        self.db
+            .query("DELETE type::record('chat_message', $key);")
+            .bind(("key", key.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("delete_chat_message: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("delete_chat_message check: {e}")))?;
+        Ok(())
+    }
+
     /// The `fact` record ids whose `source_chat_id` equals `source_chat_id` —
     /// the graph Facts a single turn recorded.
     ///
