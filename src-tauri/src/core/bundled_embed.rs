@@ -41,7 +41,13 @@ fn model() -> AppResult<&'static Mutex<TextEmbedding>> {
             .with_cache_dir(dir)
             .with_show_download_progress(false),
     )
-    .map_err(|e| AppError::other(format!("init bundled embedder: {e}")))?;
+    .map_err(|e| {
+        AppError::other(format!(
+            "On-device model unavailable — the embedding model files couldn't be \
+             loaded. They download once on first use, so check your network \
+             connection and try again, or switch to keyword search in Settings. ({e})"
+        ))
+    })?;
     // A concurrent racer may have set it first — either way `get` succeeds.
     let _ = MODEL.set(Mutex::new(embedder));
     MODEL

@@ -18,14 +18,22 @@ export function ModelSetup({
   const [error, setError] = useState<string | null>(null);
 
   // Switch to the in-process model (no Ollama) and pre-load it before entering.
+  // Persist `bundled` only after warmup succeeds: warmup is what downloads/loads
+  // the model, so committing the provider first would leave the app in a broken
+  // "bundled" state (indexing and search silently failing) if the download fails.
   async function useOnDevice() {
     setPreparing(true);
     setError(null);
+    const previous = await tauri.getEmbeddingProvider().catch(() => "ollama");
     try {
+      // warmup_embedding_model only warms when the persisted provider is bundled,
+      // so set it, warm it, and roll back if warmup throws.
       await tauri.setEmbeddingProvider("bundled");
       await tauri.warmupEmbeddingModel();
       onComplete();
     } catch (e) {
+      // Roll back so launch/indexing don't keep hitting the broken provider.
+      await tauri.setEmbeddingProvider(previous === "bundled" ? "none" : previous).catch(() => {});
       setError(`On-device model — ${e instanceof Error ? e.message : String(e)}`);
       setPreparing(false);
     }

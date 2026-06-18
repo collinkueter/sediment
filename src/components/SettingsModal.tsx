@@ -159,14 +159,27 @@ export function SettingsModal({
   // whether launches require the embedding model, so re-running the readiness
   // check via onModelConfigChanged keeps the setup gate in sync.
   async function changeSearchMode(mode: SearchMode) {
+    const previous = searchMode;
     setSearchMode(mode);
+    setError(null);
     try {
       await tauri.setEmbeddingProvider(mode);
       onModelConfigChanged();
-      // Pre-load the in-process model in the background so the first on-device
-      // search doesn't pay the download/load cost.
-      if (mode === "bundled") tauri.warmupEmbeddingModel().catch(() => {});
+      // Pre-load the in-process model so the first on-device search doesn't pay
+      // the download/load cost. Warmup is what actually downloads/loads the model,
+      // so don't swallow its failure: surface it and roll the toggle back to the
+      // previous mode, otherwise the app sits in a broken "bundled" state where
+      // indexing and search silently fail.
+      if (mode === "bundled") {
+        tauri.warmupEmbeddingModel().catch((e) => {
+          setError(`On-device model — ${e instanceof Error ? e.message : String(e)}`);
+          setSearchMode(previous);
+          tauri.setEmbeddingProvider(previous).catch(() => {});
+          onModelConfigChanged();
+        });
+      }
     } catch (e) {
+      setSearchMode(previous);
       setError(e instanceof Error ? e.message : String(e));
     }
   }
