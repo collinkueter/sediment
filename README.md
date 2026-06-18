@@ -22,12 +22,14 @@ See [docs/plans/](docs/plans/) for milestone breakdowns and [docs/adr/](docs/adr
 
 ## Prerequisites
 
-- **macOS** (Apple Silicon recommended). Linux/Windows come post-V1.
-- **Rust** ≥ 1.88 — `rustup update stable`
+- **macOS** (Apple Silicon recommended) or **Windows 10/11**. Linux comes post-V1.
+- **Rust** ≥ 1.88 — `rustup update stable` (Windows: the default **MSVC** toolchain).
 - **Node** ≥ 22 + npm
-- **Xcode Command Line Tools** — `xcode-select --install`
-- **Ollama** — install from [ollama.com/download](https://ollama.com/download). The app spawns `ollama serve` for you on first launch; it backs note-search embeddings only.
-- **An agent CLI** — install the [Claude Code CLI](https://claude.com/claude-code) or the **GitHub Copilot CLI** (`npm install -g @github/copilot`) and sign in. Pick which one Sediment uses in Settings.
+- **Platform build tools:**
+  - **macOS** — **Xcode Command Line Tools** — `xcode-select --install`
+  - **Windows** — **Visual Studio Build Tools** with the *Desktop development with C++* workload (the MSVC linker + Windows SDK the Rust deps compile against), and the **WebView2 runtime** (preinstalled on Windows 11; the installer also provisions it). See [docs/windows.md](docs/windows.md).
+- **Ollama** *(optional)* — install from [ollama.com/download](https://ollama.com/download). It backs the Ollama note-search embedding option; the app spawns `ollama serve` for you once it is on PATH. The default on-device embedder (ADR-0014) needs no Ollama at all.
+- **An agent CLI** — install the [Claude Code CLI](https://claude.com/claude-code) or the **GitHub Copilot CLI** (`npm install -g @github/copilot`) and sign in. Pick which one Sediment uses in Settings. On Windows these install as npm `.cmd` shims under `%APPDATA%\npm`; Sediment finds and launches them there.
 
 ## Quickstart
 
@@ -37,7 +39,7 @@ npm install
 npm run tauri dev
 ```
 
-The first build compiles a large Rust dep tree (Tauri, SurrealDB) — expect ~5-10 min cold. Subsequent builds are incremental.
+The same two commands work on macOS and Windows (`npm run tauri dev` from PowerShell or Windows Terminal). The first build compiles a large Rust dep tree (Tauri, SurrealDB) — expect ~5-10 min cold, longer on Windows the first time `ort` fetches the ONNX runtime for the on-device embedder. Subsequent builds are incremental. Windows-specific setup and gotchas (build tools, WebView2, frameless window chrome, reminder toasts) live in [docs/windows.md](docs/windows.md).
 
 On first launch Sediment checks the embedding model and downloads it if missing:
 

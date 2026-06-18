@@ -8,8 +8,15 @@ on:
 jobs:
   rust:
     name: Rust (clippy + test)
-    runs-on: macos-latest
-    timeout-minutes: 30
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is in the matrix so the cfg!(windows) launch branches
+        # (core::cli_launch and the engines) actually compile and their unit
+        # tests run on the target OS, not just type-check in the macOS build.
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

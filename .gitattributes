@@ -1,0 +1,9 @@
+# Normalise line endings: keep LF in the repo on every platform so a Windows
+# checkout doesn't churn diffs, trip `rustfmt --check` / `biome`, or alter the
+# `include_str!`'d agent prompt. Binary assets are marked so Git never touches them.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.icns binary
+*.surql text eol=lf
