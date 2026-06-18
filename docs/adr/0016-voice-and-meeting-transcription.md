@@ -1,11 +1,11 @@
 # ADR-0016: Voice and meeting transcription — the formation listens
 
 **Status:** Proposed (2026-06-18) — the design captured here before any code, in
-the ADR-first discipline of ADR-0008/0009; open questions refined through a
-structured grilling session the same day (Q1, Q2, Q4, Q6 resolved; Gaps A and B
-surfaced and resolved as Q7/Q8; Q3 deferred to felt-test; **Q5 awaiting one product
-input — see below**). New domain terms (**Session**, **Transcript segment**,
-**Voiceprint**) to be lifted into [CONTEXT.md](../../CONTEXT.md) on acceptance.
+the ADR-first discipline of ADR-0008/0009; all open questions refined through a
+structured grilling session the same day (Q1, Q2, Q4, Q5, Q6 resolved; Gaps A and B
+surfaced and resolved as Q7/Q8; Q3 deferred to a felt-test loop). Ready to accept.
+New domain terms (**Session**, **Transcript segment**, **Voiceprint**) to be lifted
+into [CONTEXT.md](../../CONTEXT.md) on acceptance.
 Build order in [docs/plans/voice-and-meeting-transcription.md](../plans/voice-and-meeting-transcription.md).
 **Extends:** [ADR-0009](0009-conversational-agent.md) (a meeting is a new *source*
 that lands in the **single conversation**, not a new mode), [ADR-0011](0011-working-set-and-push-grounding.md)
@@ -322,13 +322,14 @@ the decisions and their rationale, ADR-0015 style.
    centroid; asymmetric confidence.** One running-centroid Voiceprint per person.
    Labels are liberal (visible, one-click fix), Fact attribution is gated (silent,
    propagates) — see §6/§7. Cross-talk degradation accepted for V1.
-5. **Default local model (§2).** Open, *pending one product input: is non-English
-   meeting support a V1 requirement?* If **no**, lean `sherpa-onnx`/**Parakeet** —
-   true streaming partials on the `ort` runtime we already ship (no second native
-   runtime), which §4's live transcript needs. If **yes**, **Whisper** (whisper.cpp)
-   wins on multilingual breadth, at the cost of a batch-leaning second runtime. Either
-   way, **M0 benches the choice on real hardware** before locking — the leaderboard
-   does not decide this.
+5. ~~**Default local model (§2).**~~ **Resolved (2026-06-18) — sherpa-onnx/Parakeet.**
+   Non-English meetings are *not* a V1 requirement, so the default is
+   **sherpa-onnx/Parakeet**: true streaming partials (which §4's live transcript
+   needs) on the `ort` ONNX runtime Sediment **already ships** — no second native
+   runtime. Multilingual is served later by the BYOK cloud opt-in (§2), not by
+   swapping in a heavier local runtime. **M0 still benches it on real hardware**
+   before locking the exact model size; the *direction* (streaming ONNX, not
+   whisper.cpp) is now fixed.
 6. ~~**Quick-capture scope (Appendix A).**~~ **Resolved (2026-06-18) — typed in V1,
    voice as fast-follow.** The typed path (global hotkey → `chat_turn`/Daily-note
    append) is nearly free and directly answers "with typing, not just voice," so it

@@ -39,11 +39,12 @@ machine (ADR-0008's "verify against the binary, don't assume"):
 
 - Stand up `cpal` mic capture + **system loopback** (macOS ScreenCaptureKit,
   Windows WASAPI) behind a throwaway Tauri command; mix to 16 kHz mono PCM.
-- Run a streaming `sherpa-onnx`/Parakeet model **and** `whisper.cpp` (`whisper-rs`)
-  over it; measure real-time-factor and partial latency on a mid-range CPU and an
-  Apple-Silicon machine.
-- **Decision gate:** pick the V1 default local model (ADR-0016 open Q5) from
-  measured numbers, not the leaderboard.
+- Run a streaming `sherpa-onnx`/Parakeet model (the locked V1 default — ADR-0016
+  Q5) over it; measure real-time-factor and partial latency on a mid-range CPU and
+  an Apple-Silicon machine.
+- **Decision gate:** confirm the exact Parakeet *model size* from measured numbers
+  (the streaming-ONNX *direction* is fixed; only the size is open) — and confirm the
+  CPU floor below which V1 should nudge the user toward the cloud opt-in.
 
 Output: a benchmark note in `docs/plans/`, no production code retained.
 
