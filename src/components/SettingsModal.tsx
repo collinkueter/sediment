@@ -56,6 +56,9 @@ export function SettingsModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchMode, setSearchMode] = useState<SearchMode>("ollama");
+  const [ollamaUrl, setOllamaUrl] = useState("");
+  const [initialOllamaUrl, setInitialOllamaUrl] = useState("");
+  const [ollamaUrlError, setOllamaUrlError] = useState<string | null>(null);
   const [tone, setTone] = useState<Tone>("warm");
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -69,8 +72,9 @@ export function SettingsModal({
       tauri.getConversationEngine(),
       tauri.getEmbeddingProvider(),
       tauri.getAgentTone(),
+      tauri.getOllamaUrl(),
     ])
-      .then(([dir, ce, provider, agentTone]) => {
+      .then(([dir, ce, provider, agentTone, oUrl]) => {
         setModelsDir(dir);
         setInitialModelsDir(dir);
         setEngine((ce.engine as Engine) ?? "claude-code");
@@ -78,6 +82,8 @@ export function SettingsModal({
         setCopilotModel(ce.copilot_model ?? "");
         setSearchMode(provider === "none" ? "none" : provider === "bundled" ? "bundled" : "ollama");
         setTone(agentTone === "stoic" || agentTone === "sassy" ? agentTone : "warm");
+        setOllamaUrl(oUrl ?? "");
+        setInitialOllamaUrl(oUrl ?? "");
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
@@ -197,6 +203,22 @@ export function SettingsModal({
     } catch (e) {
       setTone(prev);
       setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // The Ollama endpoint applies immediately (independent of Save), like the
+  // search mode: it reconfigures the live sidecar, so re-running readiness keeps
+  // the setup gate honest against whatever the new endpoint reports.
+  const ollamaUrlChanged = ollamaUrl.trim() !== initialOllamaUrl.trim();
+  async function saveOllamaUrl() {
+    const trimmed = ollamaUrl.trim();
+    setOllamaUrlError(null);
+    try {
+      await tauri.setOllamaUrl(trimmed === "" ? null : trimmed);
+      setInitialOllamaUrl(trimmed);
+      onModelConfigChanged();
+    } catch (e) {
+      setOllamaUrlError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -527,6 +549,58 @@ export function SettingsModal({
                 ]}
               />
             </div>
+
+            {/* Custom Ollama endpoint — run the model yourself (Docker/Podman/
+                remote). For locked-down networks where direct model downloads are
+                blocked but a container image can be pulled through approved channels. */}
+            {searchMode === "ollama" && (
+              <div className="py-[11px]">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13.5px] font-medium text-ink">Ollama endpoint</p>
+                    <p className="mt-0.5 text-[11.5px] text-muted">
+                      Leave blank to auto-manage a local daemon. Or run Ollama yourself — e.g. in
+                      Docker/Podman — and point Sediment at it.
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={ollamaUrl}
+                    onChange={(e) => setOllamaUrl(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && ollamaUrlChanged) void saveOllamaUrl();
+                    }}
+                    placeholder="http://localhost:11434"
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-[12px] text-ink placeholder:text-faint focus:border-accent-ink focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void saveOllamaUrl()}
+                    disabled={!ollamaUrlChanged}
+                    className="shrink-0 rounded-md border border-line px-3 py-1.5 text-[12px] font-semibold text-accent-ink hover:bg-raised disabled:cursor-default disabled:opacity-40"
+                  >
+                    Save
+                  </button>
+                  {ollamaUrl.trim() !== "" && (
+                    <button
+                      type="button"
+                      onClick={() => setOllamaUrl("")}
+                      className="shrink-0 text-[12px] text-muted hover:text-ink-soft"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                {ollamaUrlError && (
+                  <p className="mt-1.5 text-[11.5px] text-warn">{ollamaUrlError}</p>
+                )}
+              </div>
+            )}
           </section>
 
           {/* ── Formation ── */}

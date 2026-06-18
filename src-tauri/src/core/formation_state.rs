@@ -72,6 +72,15 @@ pub struct AppConfig {
     /// environment variable. See `commands::models::download_bundled_model`.
     #[serde(default)]
     pub bundled_model_url: Option<String>,
+    /// Custom Ollama endpoint for users who run the model themselves —
+    /// e.g. Ollama in Docker/Podman, or a remote host (`"http://localhost:11434"`,
+    /// `"dockerhost:11434"`). For locked-down environments where direct model
+    /// downloads are blocked but a container image can be pulled through approved
+    /// channels. `None`/blank uses the local default and the bundled auto-spawn
+    /// behaviour. Also overridable via the `SEDIMENT_OLLAMA_URL` environment
+    /// variable. See `core::ollama_sidecar`.
+    #[serde(default)]
+    pub ollama_url: Option<String>,
 }
 
 impl AppConfig {

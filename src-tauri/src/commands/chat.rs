@@ -19,7 +19,7 @@ use crate::core::daily_note;
 use crate::core::embedding::EmbeddingProvider;
 use crate::core::formation_state::{AppConfig, FormationState};
 use crate::core::memory::MemoryHandle;
-use crate::core::ollama_sidecar::OllamaSidecar;
+use crate::core::ollama_sidecar::{self, OllamaSidecar};
 use crate::core::pre_pass;
 use crate::core::self_model;
 use crate::core::working_set::{self, WorkingSet};
@@ -161,19 +161,19 @@ pub async fn chat_turn(
     //    closure at this edge so the engine layer never depends on Tauri IPC.
     let cfg = AppConfig::load(&app);
     let embedding_provider = EmbeddingProvider::from_config(cfg.embedding_provider.as_deref());
+    // The Ollama endpoint the user runs themselves (Docker/Podman/remote), if any.
+    // Threaded into both the pre-pass embedder and the MCP subprocess so every
+    // embedding this turn hits the same Ollama.
+    let ollama_url = ollama_sidecar::resolved_endpoint(cfg.ollama_url.clone());
+    let pre_pass_sidecar = OllamaSidecar::default();
+    pre_pass_sidecar.set_endpoint(ollama_url.clone());
     // ADR-0011 §2–§3, §6: deterministic pre-pass + Working Set, pushed into the
     // turn so grounding never depends on the agent choosing to search. Assembled
     // in priority order under a budget (§6): resolved identity + Facts first (the
     // reliability fix), then the Working Set, then related-note excerpts (the
     // first droppable thing). Best-effort — a failing signal degrades to less
     // grounding, never a failed turn.
-    let pre = pre_pass::build_pre_pass(
-        store,
-        &OllamaSidecar::default(),
-        embedding_provider,
-        &message,
-    )
-    .await;
+    let pre = pre_pass::build_pre_pass(store, &pre_pass_sidecar, embedding_provider, &message).await;
     let working_set = working_set::derive_working_set(store).await;
     // ADR-0015 §3: the Self — the durable, authored model of the user — leads the
     // grounding, ranked above the recency-derived Working Set so *who you are* is
@@ -197,6 +197,7 @@ pub async fn chat_turn(
         formation_root: formation_root.clone(),
         source_chat_id: source_chat_id.clone(),
         embedding_provider: embedding_provider.as_str().to_string(),
+        ollama_url: ollama_url.clone(),
         injected_context,
         tone: agent_tone::AgentTone::from_config(cfg.agent_tone.as_deref())
             .as_str()

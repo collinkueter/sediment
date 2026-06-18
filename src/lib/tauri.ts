@@ -376,6 +376,17 @@ export const tauri = {
   getEmbeddingProvider: () => invoke<string>("get_embedding_provider"),
   /** Persist the note-search backend ("ollama" | "bundled" | "none"). */
   setEmbeddingProvider: (provider: string) => invoke<void>("set_embedding_provider", { provider }),
+  /**
+   * The custom Ollama endpoint (Docker/Podman/remote), or null when Sediment
+   * manages a local daemon. Reflects the SEDIMENT_OLLAMA_URL env override too.
+   */
+  getOllamaUrl: () => invoke<string | null>("get_ollama_url"),
+  /**
+   * Point Sediment at an Ollama the user runs themselves (e.g. in Docker), or
+   * clear it (null/empty) to fall back to the bundled local daemon. A scheme
+   * defaults to http:// when omitted. Throws on an invalid URL.
+   */
+  setOllamaUrl: (url: string | null) => invoke<void>("set_ollama_url", { url }),
 
   // Tasks & reminders (ADR-0007)
   listTasks: () => invoke<Task[]>("list_tasks"),

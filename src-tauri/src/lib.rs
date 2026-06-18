@@ -81,6 +81,11 @@ pub fn run_mcp_stdio() -> std::process::ExitCode {
         std::env::var("SEDIMENT_EMBEDDING_PROVIDER").ok().as_deref(),
     );
 
+    // The custom Ollama endpoint (Docker/Podman/remote), forwarded by the engine's
+    // MCP env block. `None` (or blank) keeps the local default. Reads the env var
+    // directly — the parent already resolved config-vs-env precedence.
+    let ollama_url = core::ollama_sidecar::resolved_endpoint(None);
+
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -93,6 +98,7 @@ pub fn run_mcp_stdio() -> std::process::ExitCode {
         formation,
         source_chat_id,
         embedding_provider,
+        ollama_url,
     )) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
@@ -119,6 +125,15 @@ pub fn run() {
             // Logging guard is owned by the app so the appender keeps draining.
             let guard = init_logging(app.handle()).expect("init logging");
             app.manage(LoggingGuard(guard));
+            // Point the shared Ollama sidecar at the user's endpoint (Docker/
+            // Podman/remote) if one is configured, so the indexer and Ollama
+            // commands talk to it instead of auto-spawning a local daemon.
+            {
+                let cfg = core::formation_state::AppConfig::load(app.handle());
+                let endpoint = core::ollama_sidecar::resolved_endpoint(cfg.ollama_url);
+                app.state::<core::ollama_sidecar::OllamaSidecar>()
+                    .set_endpoint(endpoint);
+            }
             // The background indexer needs an AppHandle, only available here.
             let indexer = core::indexer::Indexer::start(app.handle().clone());
             app.manage(indexer);
@@ -163,6 +178,8 @@ pub fn run() {
             commands::settings::set_models_dir,
             commands::settings::get_embedding_provider,
             commands::settings::set_embedding_provider,
+            commands::settings::get_ollama_url,
+            commands::settings::set_ollama_url,
             commands::settings::detect_claude_code,
             commands::settings::detect_copilot,
             commands::settings::get_conversation_engine,

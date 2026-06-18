@@ -57,6 +57,11 @@ pub struct TurnRequest {
     /// subprocess via `SEDIMENT_EMBEDDING_PROVIDER` so `search_notes` matches
     /// the user's choice. See `core::embedding::EmbeddingProvider`.
     pub embedding_provider: String,
+    /// Custom Ollama endpoint (Docker/Podman/remote) forwarded to the MCP
+    /// subprocess via `SEDIMENT_OLLAMA_URL` so `search_notes` embeds against the
+    /// same Ollama the user configured. `None` uses the local default. See
+    /// `core::ollama_sidecar`.
+    pub ollama_url: Option<String>,
     /// Deterministic grounding the orchestrator pushes into the turn *before* the
     /// agent runs (ADR-0011): resolved entities + their current facts, the top
     /// related notes, and the Working Set — pre-rendered as one Markdown block.
