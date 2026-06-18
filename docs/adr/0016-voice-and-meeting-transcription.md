@@ -296,3 +296,69 @@ not an afterthought.
    vs a `sherpa-onnx` streaming model (lower-latency partials, reuses `ort`). Lean
    `sherpa-onnx`/Parakeet for true streaming on the runtime we already ship; bench
    on real hardware before locking.
+6. **Quick-capture scope (Appendix A).** Does the lightweight voice/typed
+   quick-capture ship in this ADR's V1, or as a fast-follow once the Session spine
+   exists? It is mostly a smaller Session + an existing `chat_turn`, so the cost is
+   UI + a global hotkey, not new subsystems — leaning fast-follow right after M6.
+
+---
+
+## Appendix A: Pocket-style capture — feature mapping
+
+The user pointed at **Pocket** (heypocket.com) — a card-sized always-on wearable
+that captures speech, then summarises, extracts action items, draws "mind maps"
+that connect ideas, auto-detects speaker names (Pro), and answers questions over
+your captures via **"Ask Pocket"**. Tellingly, Pocket's headline power-user feature
+is an **MCP server that lets Claude Code query every capture** — and it offers
+**Claude Opus** as a summarisation model. Pocket is **cloud-based** (button →
+record → *cloud upload* → transcribe → summarise); its privacy story is "enterprise
+encryption," not on-device.
+
+The fit is striking: **Sediment is already the local-first, Claude-driven, graph-backed
+version of what Pocket bolts onto a cloud.** Pocket exposes an MCP server *so that
+Claude Code can reach its notes*; Sediment **is** a Claude-Code/Copilot agent with a
+graph MCP server over a persistent Entity/Fact store. Most of Pocket's value is
+already core Sediment; the rest is small.
+
+| Pocket feature | Sediment mapping | Status |
+|---|---|---|
+| Always-on / instant capture (hardware button) | **Quick-capture** — a global hotkey / menu-bar voice memo that opens a *lightweight Session* (a Session with no meeting framing). Honours §3: bounded, user-initiated, **not** an always-on wearable mic. | **New** (Appendix A §1) |
+| *…and with typing, not just voice* (user's ask) | Quick-capture has a **typed** twin: a global-hotkey quick-note that drops a line into the conversation / Daily note `## Did` (ADR-0010) and runs as a `chat_turn`. Same friction-free capture, text path. | **New** (Appendix A §1) |
+| Auto summaries, multiple **styles** | The end-of-Session distillation turn (§7) already summarises; add a small **summary-style** setting (brief / decisions-only / narrative) as prompt presets. | **Extends §7** |
+| Action items pulled out | `record_task` / open loops (ADR-0007) in distillation (§7). | **Covered** |
+| **Mind maps** that "connect ideas" | Sediment's **knowledge graph** (Entities + bi-temporal Facts) is a *persistent, cross-meeting* superset of Pocket's per-recording mind map. A read-only **graph view** of an entity's neighbourhood would surface it visually. | **Covered** (graph view = new UI, not new model) |
+| Speaker-name auto-detection | **Voiceprints** (§6). | **Covered** |
+| **"Ask Pocket"** (chat over captures) | The conversational **Agent** (ADR-0009) over the whole formation — Sediment's primary surface, not a bolt-on. | **Covered** (core) |
+| Projects, tags, pinning | `project` entity type already exists; tags via Obsidian frontmatter; "pin" = a Working-Set / favourites affordance. | **Mostly covered** |
+| MCP server for Claude Code to query captures | Inverted: Sediment's Agent already runs *on* Claude Code with a graph MCP server. (Optional later: *consume* Pocket's MCP as an **ingestion source** for users who own the device — captures flow in as Meeting notes.) | **Core** (consume = optional) |
+| Model-agnostic, incl. Claude Opus | Runs under the user's own Claude Code / Copilot subscription (ADR-0008/0012) — their model, their bill. | **Covered** |
+| 120+ languages | Bounded by the chosen STT model (open Q5); Whisper/Parakeet are strongly multilingual. | **Model-dependent** |
+| Cloud upload of all audio | **Rejected as default** — the core divergence. Sediment stays on-device + transcribe-and-delete (§2, §9); cloud STT is an explicit opt-in only (§2). This is the *differentiator*, not a gap. | **Deliberately differ** |
+
+**The takeaway:** Pocket validates the demand and the workflow (capture → summarise →
+action items → connect → ask), but its architecture is the cloud inverse of Sediment's.
+Adopting its *workflow* costs almost nothing here because the graph, the Agent, the
+distillation turn, and Voiceprints already cover it. The only genuinely new surface
+Pocket inspires is **§1 quick-capture** — and it directly answers the user's "with
+typing, not just voice," since quick-capture ships a voice path *and* a typed path
+into the same conversation.
+
+### A§1. Quick-capture — friction-free voice *or* typed capture into the conversation
+
+A **global hotkey** (and menu-bar item) opens a tiny capture popover from anywhere,
+without raising the full app — Pocket's "capture the instant it happens," for a
+desktop:
+
+- **Voice mode** starts a *lightweight Session* (capture + transcribe + diarise, §1–§6)
+  with no meeting framing; on close it lands as a short note (a `Captures/<date>.md`
+  entry or appended to the Daily note `## Notes`, ADR-0010) and runs a distillation
+  turn (§7) at memo scale.
+- **Typed mode** is a one-field quick-note that posts a `chat_turn` (ADR-0009) or
+  appends to the Daily note — the same friction-free capture, text path. This is the
+  explicit answer to "also with typing, not just voice": one capture surface, two
+  input modes, **one conversation** behind both.
+
+Quick-capture **reuses** the Session lifecycle (§3), the transcription/diarization
+stack (§2–§6), the distillation turn (§7), and `chat_turn` — it is **UI + a hotkey**,
+not a new subsystem, and it stays inside the no-daemon / no-second-surface line
+because it is momentary, user-invoked, and collapses into the conversation + a Note.

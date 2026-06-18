@@ -120,6 +120,24 @@ spine:
   (attendees, decisions, action items; suppress per-utterance Facts — distil, don't
   dump).
 
+### M6.5 — Quick-capture (Pocket-style): voice *and* typed (ADR-0016 Appendix A)
+
+Fast-follow once the Session spine (M1–M6) exists — mostly UI, no new subsystems:
+
+- Global hotkey + menu-bar item opening a small capture popover from anywhere
+  (Tauri global-shortcut + a lightweight always-available window).
+- **Voice mode:** start a *lightweight Session* (no meeting framing) reusing
+  M2–M6; on close, land a `Captures/<date>.md` entry (or append to the Daily note
+  `## Notes`, ADR-0010) and run a memo-scale distillation turn (M6).
+- **Typed mode:** one-field quick-note → `chat_turn` (ADR-0009) or Daily-note
+  append. The explicit "with typing, not just voice" path — one surface, two input
+  modes, one conversation behind both.
+- Summary-style presets (brief / decisions-only / narrative) as prompt options
+  (ADR-0016 Appendix A, extends §7).
+- *(Optional, later)* a read-only **graph view** of an entity's neighbourhood —
+  the persistent answer to Pocket's per-recording "mind map" (no new model, just
+  a view over existing Entities/Facts).
+
 ### M7 — Polish, settings, docs
 
 - Settings: transcription engine (local default / cloud opt-in BYOK with warning),
@@ -139,8 +157,10 @@ on-device latency) before any architecture is committed. M1 nails the Session/No
 (M4) deliberately lands **after** plain transcription (M3) works — a labelled-but-
 imperfect transcript is already useful, and Voiceprints reuse infra M3 doesn't need.
 Live chat (M5) and distillation (M6) are the payoff and come last because they only
-need the transcript to exist, however attributed. Each milestone is independently
-shippable and leaves the app working.
+need the transcript to exist, however attributed. Quick-capture (M6.5, ADR-0016
+Appendix A — the Pocket-style voice/typed capture) is a fast-follow that reuses the
+whole stack as UI + a hotkey. Each milestone is independently shippable and leaves
+the app working.
 
 ## Risks / watch-items
 
