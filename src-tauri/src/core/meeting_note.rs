@@ -240,6 +240,48 @@ pub fn recent_transcript_grounding(note_abs: &Path, budget: usize) -> AppResult<
     )))
 }
 
+/// Default per-window character budget for distillation (ADR-0017 §7). Sized to
+/// stay well inside the agent's `INJECTED_CONTEXT_BUDGET` once the meeting note,
+/// prompt, and per-window grounding are added.
+pub const DISTILL_WINDOW_BUDGET: usize = 4000;
+
+/// Group the `## Transcript` bullets into windows each at most `budget` chars,
+/// **never splitting a segment line**. Feeds the segment-windowed distillation
+/// turn (ADR-0017 §7): the Agent processes one window at a time so a long meeting
+/// never blows its context budget. Oldest-first; a single oversized segment
+/// becomes its own window. Empty transcript → no windows.
+pub fn transcript_windows(note_abs: &Path, budget: usize) -> AppResult<Vec<String>> {
+    let content = read(note_abs)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let Some((h, end)) = find_section(&lines, TRANSCRIPT_HEADING) else {
+        return Ok(Vec::new());
+    };
+    let budget = budget.max(1);
+    let mut windows = Vec::new();
+    let mut cur = String::new();
+    for bullet in lines[h + 1..end]
+        .iter()
+        .filter(|l| l.trim_start().starts_with("- `["))
+    {
+        // Flush before adding when the current window can't take this bullet.
+        if !cur.is_empty() && cur.len() + bullet.len() + 1 > budget {
+            windows.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push('\n');
+        }
+        cur.push_str(bullet);
+        // A lone segment larger than the budget stands as its own window.
+        if cur.len() >= budget {
+            windows.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        windows.push(cur);
+    }
+    Ok(windows)
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Section splice (pure, testable) — parameterised by heading
 // ──────────────────────────────────────────────────────────────────────────
@@ -456,6 +498,40 @@ mod tests {
 
         let body = std::fs::read_to_string(&abs).unwrap();
         assert_eq!(body.matches("- [[Sarah Chen]]").count(), 1);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn transcript_windows_pack_by_budget_without_splitting_segments() {
+        let root = tempdir();
+        let rel = meeting_note_relative_path(started(), "Sync");
+        let abs = ensure_meeting_note(&root, &rel, "Sync", started()).unwrap();
+        for i in 0..6 {
+            append_transcript_segment(&abs, i * 1000, "Sarah", &format!("line number {i}")).unwrap();
+        }
+
+        // Huge budget → a single window holding every segment.
+        let one = transcript_windows(&abs, 100_000).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].matches("- `[").count(), 6);
+
+        // Small budget → multiple windows, each within budget, no segment split.
+        let many = transcript_windows(&abs, 60).unwrap();
+        assert!(many.len() > 1, "expected several windows, got {}", many.len());
+        let total: usize = many.iter().map(|w| w.matches("- `[").count()).sum();
+        assert_eq!(total, 6, "every segment lands in exactly one window");
+        assert!(
+            many.iter().all(|w| w.lines().all(|l| l.starts_with("- `["))),
+            "windows contain only whole segment lines"
+        );
+    }
+
+    #[test]
+    fn transcript_windows_empty_when_no_transcript() {
+        let root = tempdir();
+        let rel = meeting_note_relative_path(started(), "Sync");
+        let abs = ensure_meeting_note(&root, &rel, "Sync", started()).unwrap();
+        assert!(transcript_windows(&abs, DISTILL_WINDOW_BUDGET).unwrap().is_empty());
         std::fs::remove_dir_all(root).ok();
     }
 }
