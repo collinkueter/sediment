@@ -1,9 +1,12 @@
 # ADR-0016: Voice and meeting transcription — the formation listens
 
 **Status:** Proposed (2026-06-18) — the design captured here before any code, in
-the ADR-first discipline of ADR-0008/0009. New domain terms (**Session**,
-**Transcript segment**, **Voiceprint**) to be lifted into [CONTEXT.md](../../CONTEXT.md)
-on acceptance. Build order in [docs/plans/voice-and-meeting-transcription.md](../plans/voice-and-meeting-transcription.md).
+the ADR-first discipline of ADR-0008/0009; open questions refined through a
+structured grilling session the same day (Q1, Q2, Q4, Q6 resolved; Gaps A and B
+surfaced and resolved as Q7/Q8; Q3 deferred to felt-test; **Q5 awaiting one product
+input — see below**). New domain terms (**Session**, **Transcript segment**,
+**Voiceprint**) to be lifted into [CONTEXT.md](../../CONTEXT.md) on acceptance.
+Build order in [docs/plans/voice-and-meeting-transcription.md](../plans/voice-and-meeting-transcription.md).
 **Extends:** [ADR-0009](0009-conversational-agent.md) (a meeting is a new *source*
 that lands in the **single conversation**, not a new mode), [ADR-0011](0011-working-set-and-push-grounding.md)
 (the live transcript is grounding pushed into the turn, like the Working Set),
@@ -193,6 +196,15 @@ her. A match above threshold auto-labels; below threshold stays "Unknown speaker
 until named. Identity is **suggested, never asserted** — a wrong guess is one edit
 from corrected, like every other Agent output.
 
+**Labels and Facts treat confidence asymmetrically** (Resolved Q4 + Gap B,
+2026-06-18). A transcript **label** is liberal — guess the speaker even when
+unsure, because the error is *visible* in the live transcript and one click to fix.
+A **Fact** attributed to that speaker is conservative — gated behind a higher
+identification-confidence threshold (§7), because that error is *silent* and
+propagates into a real person's Note. Cheap-to-correct guesses run free; expensive,
+invisible ones do not. Voiceprints start as a running centroid per person and
+accept cross-talk degradation for V1.
+
 ### 7. Knowledge-building runs through the *existing* Agent — speech is just a
 bigger turn
 
@@ -206,16 +218,28 @@ The whole point: a transcribed meeting must **update the people's Notes** and
   transcript window is pushed as grounding** (ADR-0011), so "what does Sarah mean
   by the Q3 number?" is answered against what was *just said*, time-aligned. The
   user's notes get context because they are written *beside* the transcript on the
-  same timeline.
+  same timeline. **Live chat requires the warm engine** (Copilot ACP, ADR-0012):
+  cold-spawning Claude Code per turn (~6 s) is unusable mid-meeting, so in-meeting
+  chat is gated to the resident engine (~100 ms); cold Claude Code is used for the
+  post-meeting distillation turn only, where 6 s is irrelevant. (Resolved Gap A,
+  2026-06-18.)
 - **On Session end, a distillation turn.** The Agent reads the Meeting note and
   does what it already does: records Facts about attendees (`record_fact` —
   "Sarah now leads the migration" supersedes the old fact, ADR-0004), updates each
   attendee's People Note with its file tools, opens loops/Tasks for action items
-  (ADR-0007), and surfaces connections (`related_facts`, `search_notes`). Because a
-  full transcript can blow the context budget, distillation runs **segment-windowed**
-  (chunk the `## Transcript` by speaker-turn/topic, ground per-window) — the same
-  budgeting discipline ADR-0011 applies to injected context, applied to a long
-  source. Output is **audited and undoable** per Fact, like any turn.
+  (ADR-0007), and surfaces connections (`related_facts`, `search_notes`). It runs
+  **automatically and quietly**, surfacing a **one-line summary + undo** rather than
+  asking first or writing silently (Resolved Q2, 2026-06-18) — "the agent records
+  what it learns," but the user always sees that it did and can revert per Fact.
+  **A Fact is attributed to a *named* speaker only above an identification-confidence
+  threshold**; below it, the Fact is recorded *unattributed* (or to "a participant"),
+  never pinned to the wrong person — because a mis-attributed Fact is *silently*
+  wrong and propagates into a real person's Note, unlike a visibly-wrong transcript
+  line (Resolved Gap B, 2026-06-18). Because a full transcript can blow the context
+  budget, distillation runs **segment-windowed** (chunk the `## Transcript` by
+  speaker-turn/topic, ground per-window) — the same budgeting discipline ADR-0011
+  applies to injected context, applied to a long source. Output is **audited and
+  undoable** per Fact, like any turn.
 
 ### 8. Time-alignment is an offset, recorded as the spine of the Meeting note
 
@@ -276,30 +300,47 @@ not an afterthought.
 
 ## Open questions
 
-1. **Transcription engine seam (§2).** Ship the `TranscriptionEngine` trait in V1
-   (local wired, cloud stubbed), or stay concrete until the cloud engine is actually
-   built? Leaning trait-now, since two real engines clear ADR-0008/0012's bar — but
-   the cloud path may reveal the seam is wrong-shaped (streaming vs batch, partials).
-2. **Distillation trigger (§7).** Always auto-run the end-of-Session distillation
-   turn, or offer it ("process this meeting?")? Auto matches "the agent records what
-   it learns"; offered respects the user's attention and the one-beat budget
-   (ADR-0011 §4). Likely: auto-distil quietly, surface only a one-line summary +
-   undo.
-3. **Live grounding budget (§7).** How large a rolling transcript window to push per
-   live turn before it crowds the Self/Working-Set slots (ADR-0011 §2, ADR-0015 §3)?
-   Needs a cap like `SELF_SUMMARY_BUDGET`, felt-tested.
-4. **Voiceprint drift & multi-enrolment (§6).** One voiceprint per person, or a
-   centroid over several enrolments (voices vary by room/mic/health)? Start with a
-   running centroid; revisit if false-matches appear. Cross-talk (two people at once)
-   degrades both diarization and identification — accept for V1.
-5. **Default local model (§2).** `whisper.cpp` (mature, Metal-fast, batch-leaning)
-   vs a `sherpa-onnx` streaming model (lower-latency partials, reuses `ort`). Lean
-   `sherpa-onnx`/Parakeet for true streaming on the runtime we already ship; bench
-   on real hardware before locking.
-6. **Quick-capture scope (Appendix A).** Does the lightweight voice/typed
-   quick-capture ship in this ADR's V1, or as a fast-follow once the Session spine
-   exists? It is mostly a smaller Session + an existing `chat_turn`, so the cost is
-   UI + a global hotkey, not new subsystems — leaning fast-follow right after M6.
+Most were resolved in a grilling session (2026-06-18); the strikethroughs record
+the decisions and their rationale, ADR-0015 style.
+
+1. ~~**Transcription engine seam (§2).**~~ **Resolved (2026-06-18) — stay concrete.**
+   Ship `LocalTranscriber` as a plain struct; extract the `TranscriptionEngine` trait
+   only when the cloud engine is *actually built*. A trait designed against one real
+   implementation and one stub is shaped by a guess — and local (raw frame-driven
+   partials) vs cloud (a vendor's websocket endpointing/partial/reconnect semantics)
+   are not symmetric. This is exactly how `ConversationEngine` earned its trait
+   (ADR-0008/0012): *two real engines*, never one and a promise.
+2. ~~**Distillation trigger (§7).**~~ **Resolved (2026-06-18) — auto-run, surface a
+   one-line summary + undo.** Matches "the agent records what it learns" while keeping
+   the write *visible*: never silent, never a gating prompt. Per-Fact undo (the audit
+   log) is the safety net; the summary is the receipt. See §7.
+3. **Live grounding budget (§7).** *Deferred to a felt-test loop* — not a desk
+   decision. Start at ≈2000 chars / most-recent ~90 s of transcript, ranked **below**
+   the Self (ADR-0015 §3) and Working Set (ADR-0011 §2); tune in the running app like
+   `SELF_SUMMARY_BUDGET`. No design change pending.
+4. ~~**Voiceprint drift & multi-enrolment (§6).**~~ **Resolved (2026-06-18) — running
+   centroid; asymmetric confidence.** One running-centroid Voiceprint per person.
+   Labels are liberal (visible, one-click fix), Fact attribution is gated (silent,
+   propagates) — see §6/§7. Cross-talk degradation accepted for V1.
+5. **Default local model (§2).** Open, *pending one product input: is non-English
+   meeting support a V1 requirement?* If **no**, lean `sherpa-onnx`/**Parakeet** —
+   true streaming partials on the `ort` runtime we already ship (no second native
+   runtime), which §4's live transcript needs. If **yes**, **Whisper** (whisper.cpp)
+   wins on multilingual breadth, at the cost of a batch-leaning second runtime. Either
+   way, **M0 benches the choice on real hardware** before locking — the leaderboard
+   does not decide this.
+6. ~~**Quick-capture scope (Appendix A).**~~ **Resolved (2026-06-18) — typed in V1,
+   voice as fast-follow.** The typed path (global hotkey → `chat_turn`/Daily-note
+   append) is nearly free and directly answers "with typing, not just voice," so it
+   ships with the core. The voice path waits for the meeting stack (M2–M6) to land.
+   See plan M6.5.
+7. ~~**Live-chat engine constraint (Gap A, §7).**~~ **Resolved (2026-06-18) — live
+   chat requires the warm engine.** In-meeting chat is gated to the resident Copilot
+   ACP engine (~100 ms); cold Claude Code (~6 s spawn) is used for post-meeting
+   distillation only. See §7.
+8. ~~**Low-confidence Fact attribution (Gap B, §7).**~~ **Resolved (2026-06-18) —
+   threshold-gate named attribution.** Below the identification-confidence threshold,
+   a Fact is recorded unattributed rather than pinned to a guessed person. See §6/§7.
 
 ---
 
