@@ -14,6 +14,60 @@ sequence.
 
 ---
 
+## Implementation status (2026-06-18)
+
+Built and **verified in CI** (the default build + tests, 134 passing; the `audio`
+feature additionally `cargo check`ed):
+
+- **M1 — Session + Meeting note.** `core::session` (`MeetingSession`,
+  `SessionRegistry`, `SessionEvent`), `core::meeting_note` (writer + section
+  splices), `commands::session` (`session_start/push_segment/push_note/
+  rename_speaker/stop`), `MeetingSessionBar.tsx`. The manual `push_segment` is the
+  fake source that proves the spine.
+- **M2 — capture→transcription pipeline.** `core::audio` (downmix + resampler),
+  `core::transcription` (`Transcriber` seam + `MockTranscriber`), `core::capture`
+  (`CaptureSource` + cpal `MicSource` behind the **`audio`** feature),
+  `core::capture_pipeline` (orchestrator + `CaptureController` lifecycle). Segments
+  flow through the shared `session::record_segment` path.
+- **M4 (data layer) — Voiceprints.** `entity.voiceprint`/`voiceprint_n` schema +
+  `enroll_voiceprint` (running centroid) + `match_voiceprint` (cosine, threshold).
+- **M5 — live transcript grounding.** `meeting_note::recent_transcript_grounding`
+  + `SessionRegistry::live_transcript_grounding`, injected by `chat_turn` below the
+  Self/Working-Set slots.
+- **M6 (core) — segment-windowing.** `meeting_note::transcript_windows`.
+- **Naming speakers.** `meeting_note::rename_speaker` + `session_rename_speaker`
+  (the "that was Sarah" hand-correction).
+
+### Hardware / runtime handoff — the gated remainder
+
+These need native libs or the agent CLI runtime, so they could not be compiled or
+run in the CI container and are deliberately **not** written blind. Each slots into
+a seam that already exists; no rework of the above is expected.
+
+- **M3 — real on-device ASR.** Add `sherpa-onnx` behind a **`local-asr`** feature;
+  implement `LocalTranscriber: Transcriber` (the seam in `core::transcription`).
+  API verified by the M0 spike (`OnlineRecognizer`, `accept_waveform`,
+  `is_ready`/`decode`, `get_result`). Swap it for `MockTranscriber` in
+  `commands::session::spawn_capture`. *Gate:* the crate links a native lib it
+  downloads from a host the CI sandbox blocks. **Note (ADR-0017 Q5):** Parakeet-TDT
+  is offline+VAD in sherpa-onnx, not natively streaming — use streaming-zipformer
+  for continuous partials; bench both via M0 first.
+- **Loopback capture.** A second `CaptureSource` — macOS ScreenCaptureKit
+  (`screencapturekit` crate, 13+), Windows WASAPI loopback (`wasapi` crate) — mixed
+  with `MicSource` in the pipeline. macOS/Windows-only; can't compile on Linux.
+  Mind the OS permission prompts (mic + Screen Recording) and the consent reminder
+  (ADR-0017 §10).
+- **M4 runtime — diarization + embedding extraction.** Per-segment speaker
+  embedding (ECAPA/x-vector ONNX) feeding `enroll_voiceprint`/`match_voiceprint`
+  (already built); diarization to assign `speaker_local_id`. Replaces the pipeline's
+  single placeholder speaker. sherpa-onnx, same native gate as M3.
+- **M6 — distillation turn.** On `session_stop`, run a distillation turn over
+  `transcript_windows` (already built) through the existing conversation engine
+  (cold Claude Code per Gap A), recording Facts / updating People notes / opening
+  Tasks, auto-run with a one-line summary + undo (Q2). Needs the agent CLI runtime.
+
+---
+
 ## Context for a fresh session
 
 Today there is **no audio path at all** (Explore confirmed: no mic, no upload, no
