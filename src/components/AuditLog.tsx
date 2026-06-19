@@ -17,15 +17,15 @@ export function AuditLog() {
       : `${entries.length} entr${entries.length === 1 ? "y" : "ies"}`;
 
   return (
-    <div className="border-t border-line bg-surface">
+    <div className="border-t border-line-strong bg-surface">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="flex w-full items-center justify-between px-4 py-1.5 text-xs text-muted hover:bg-bg-sunk"
+        className="flex w-full items-center justify-between px-4 py-1.5 text-xs text-ink-soft hover:bg-bg-sunk"
       >
         <span className="flex items-center gap-2">
-          <Icon.Undo className="h-3.5 w-3.5 text-faint" aria-hidden />
+          <Icon.Clock className="h-3.5 w-3.5 text-muted" aria-hidden />
           <span>
             History &amp; undo <span className="ml-1 text-faint">— {summary}</span>
           </span>

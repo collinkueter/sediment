@@ -110,6 +110,7 @@ function Welcome({ onNext }: { onNext: () => void }) {
 }
 
 function FormationStep({ onPick }: { onPick: () => Promise<void> }) {
+  const [error, setError] = useState<string | null>(null);
   return (
     <div className="space-y-4">
       <h2 className="font-serif text-lg font-semibold text-ink">Pick a formation</h2>
@@ -120,16 +121,19 @@ function FormationStep({ onPick }: { onPick: () => Promise<void> }) {
       </p>
       <button
         type="button"
-        onClick={() =>
+        onClick={() => {
+          setError(null);
+          // Cancelling the native dialog resolves with no path — only a thrown
+          // error is a genuine failure worth surfacing.
           onPick().catch((e: unknown) => {
-            // pick errors are surfaced by the native dialog — no UI needed
-            void e;
-          })
-        }
+            setError(e instanceof Error ? e.message : String(e));
+          });
+        }}
         className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-ink"
       >
         Choose folder…
       </button>
+      {error && <p className="text-xs text-danger">{error}</p>}
     </div>
   );
 }
@@ -138,26 +142,40 @@ function EngineStep({ onNext }: { onNext: () => void }) {
   const [claudeCode, setClaudeCode] = useState<ClaudeCodeStatus | null>(null);
   const [copilot, setCopilot] = useState<CopilotStatus | null>(null);
   const [checked, setChecked] = useState(false);
+  const [rechecking, setRechecking] = useState(false);
 
+  // Detect both CLIs in parallel — each call is ~1s. Re-runnable so a user who
+  // installs or signs in mid-onboarding can verify without restarting.
+  async function detect() {
+    const [cc, cp] = await Promise.allSettled([tauri.detectClaudeCode(), tauri.detectCopilot()]);
+    setClaudeCode(
+      cc.status === "fulfilled"
+        ? cc.value
+        : {
+            installed: false,
+            binary_path: null,
+            logged_in: false,
+            auth_method: null,
+            subscription_type: null,
+            email: null,
+          },
+    );
+    setCopilot(cp.status === "fulfilled" ? cp.value : { installed: false, binary_path: null });
+    setChecked(true);
+  }
+
+  async function recheck() {
+    setRechecking(true);
+    try {
+      await detect();
+    } finally {
+      setRechecking(false);
+    }
+  }
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only detection; detect reads no reactive value and the setters are stable.
   useEffect(() => {
-    // Detect both CLIs in parallel — each call is ~1s.
-    Promise.allSettled([tauri.detectClaudeCode(), tauri.detectCopilot()])
-      .then(([cc, cp]) => {
-        setClaudeCode(
-          cc.status === "fulfilled"
-            ? cc.value
-            : {
-                installed: false,
-                binary_path: null,
-                logged_in: false,
-                auth_method: null,
-                subscription_type: null,
-                email: null,
-              },
-        );
-        setCopilot(cp.status === "fulfilled" ? cp.value : { installed: false, binary_path: null });
-      })
-      .finally(() => setChecked(true));
+    void detect();
   }, []);
 
   const claudeReady = !!claudeCode?.installed && !!claudeCode?.logged_in;
@@ -211,19 +229,39 @@ function EngineStep({ onNext }: { onNext: () => void }) {
       )}
       {checked && !anyReady && (
         <p className="rounded-md border border-line px-3 py-2 text-[11px] text-gold bg-gold-tint">
-          No engine is ready yet. You can finish onboarding and set one up later in Settings — turns
-          will fail until you do.
+          No engine is ready yet. Install one and re-check below, or finish onboarding and set one
+          up later in Settings — turns will fail until you do.
         </p>
       )}
 
-      <button
-        type="button"
-        onClick={onNext}
-        disabled={!checked}
-        className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-ink disabled:opacity-50"
-      >
-        {anyReady ? "Continue" : "Set up later in Settings"}
-      </button>
+      {checked && !anyReady ? (
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => void recheck()}
+            disabled={rechecking}
+            className="rounded-md border border-line px-3 py-2 text-sm font-medium text-accent-ink hover:bg-raised disabled:opacity-50"
+          >
+            {rechecking ? "Re-checking…" : "Re-check"}
+          </button>
+          <button
+            type="button"
+            onClick={onNext}
+            className="flex-1 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-ink"
+          >
+            Set up later in Settings
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onNext}
+          disabled={!checked}
+          className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-ink disabled:opacity-50"
+        >
+          Continue
+        </button>
+      )}
     </div>
   );
 }
@@ -257,7 +295,7 @@ const SEARCH_OPTIONS: {
     mode: "bundled",
     title: "On-device model",
     badge: "Recommended",
-    body: "Sediment downloads a small embedding model (~80 MB, once) and runs it inside the app. Best search quality, and fully offline after setup — no separate server.",
+    body: "Sediment downloads the embedding model (~0.5 GB, once) and runs it inside the app. Best search quality, and fully offline after setup — no separate server.",
   },
   {
     mode: "ollama",

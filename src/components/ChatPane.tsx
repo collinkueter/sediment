@@ -42,6 +42,7 @@ export function ChatPane() {
   // the interrupt buttons can't race two cancels against one turn.
   const [cancelling, setCancelling] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Messages waiting to run, paired with the turn already shown for each. The
   // engine processes them in order; a single `pump` loop guarded by
   // `pumpingRef` keeps turns strictly serial even as new ones are enqueued.
@@ -75,6 +76,19 @@ export function ChatPane() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turns]);
+
+  // Auto-grow the composer to fit the draft, capped at ~8 rows; beyond that it
+  // scrolls. Reset to `auto` first so the textarea can shrink when text is
+  // removed, then clamp `scrollHeight` to the max.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `draft` is the trigger; the element is read from a stable ref.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const maxHeight = 8 * 24; // ~8 rows at the composer's line height
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [draft]);
 
   // A New conversation mints a fresh `sessionId` (from the header button or the
   // command palette). React to it here so both entry points get the same
@@ -166,15 +180,23 @@ export function ChatPane() {
     }
   }
 
-  function handleSend() {
-    const text = draft.trim();
+  // Capture a message as a turn and queue it. The single send path shared by the
+  // composer, the empty-state example chips, and any retry/resume flows.
+  function sendMessage(raw: string) {
+    const text = raw.trim();
     if (!text) return;
-    setDraft("");
     // Capture the turn immediately so the thought lands on the page now, then
     // queue it. It shows as "Queued" until the engine reaches it.
     const turnLocalId = startTurn(text, true);
     queueRef.current.push({ id: turnLocalId, message: text });
     void pump();
+  }
+
+  function handleSend() {
+    if (!draft.trim()) return;
+    const text = draft;
+    setDraft("");
+    sendMessage(text);
   }
 
   // Re-run a failed turn in place, using the message captured when it failed.
@@ -296,7 +318,7 @@ export function ChatPane() {
       {/* Transcript — a centered reading column. */}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-[22px] pt-[30px] pb-[10px]">
         {turns.length === 0 ? (
-          <EmptyState />
+          <EmptyState onExample={sendMessage} />
         ) : (
           <div className="mx-auto flex max-w-[680px] flex-col gap-6">
             <DayMark />
@@ -327,12 +349,13 @@ export function ChatPane() {
         <div className="mx-auto max-w-[680px]">
           <div className="rounded-2xl border border-line-strong bg-raised px-[15px] pt-[13px] pb-[11px] shadow-sm transition-colors focus-within:border-accent">
             <textarea
+              ref={textareaRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Tell Sediment a thought, or ask what it knows…"
               rows={2}
-              className="block min-h-[50px] w-full resize-none border-none bg-transparent text-[14.5px] leading-relaxed text-ink outline-none placeholder:text-faint"
+              className="block min-h-[50px] max-h-[192px] w-full resize-none border-none bg-transparent text-[14.5px] leading-relaxed text-ink outline-none placeholder:text-faint"
             />
             <div className="mt-2 flex items-center gap-[10px]">
               <span className="flex items-center gap-[7px] text-[11px] text-faint">
@@ -382,12 +405,42 @@ function DayMark() {
   );
 }
 
-function EmptyState() {
+/// A few example prompts to break the blank page. Each sends through the
+/// composer's real send path, so the chip behaves exactly like a typed message.
+const EXAMPLE_PROMPTS = [
+  "What do you already know about me?",
+  "I just met Priya — she leads design at Northwind.",
+  "Summarize what I worked on this week.",
+];
+
+function EmptyState({ onExample }: { onExample: (text: string) => void }) {
   return (
     <EmptyState_
       icon={Icon.Sparkle}
       title="A thinking partner"
-      description="Tell Sediment what's on your mind. It records what it learns into your notes, asks when it needs more, and answers from what it already knows. Each launch starts fresh — your formation is the long-term memory."
+      description={
+        <>
+          Tell Sediment what's on your mind. It records what it learns into your notes, asks when it
+          needs more, and answers from what it already knows.
+          <span className="mt-2 block text-faint">
+            Your formation is the long-term memory — each conversation starts fresh.
+          </span>
+        </>
+      }
+      action={
+        <div className="flex max-w-[22rem] flex-wrap items-center justify-center gap-[7px]">
+          {EXAMPLE_PROMPTS.map((prompt) => (
+            <button
+              key={prompt}
+              type="button"
+              onClick={() => onExample(prompt)}
+              className="rounded-full border border-line px-[12px] py-[5px] text-[12px] text-muted transition-colors hover:border-line-strong hover:bg-accent-tint hover:text-accent-ink"
+            >
+              {prompt}
+            </button>
+          ))}
+        </div>
+      }
     />
   );
 }

@@ -9,10 +9,13 @@ export function EmptyState({
   icon: IconComp,
   title,
   description,
+  action,
 }: {
   icon?: ComponentType<SVGProps<SVGSVGElement>>;
   title: string;
   description?: ReactNode;
+  /** Optional CTA rendered below the description (e.g. a button or link). */
+  action?: ReactNode;
 }) {
   return (
     <div className="flex h-full w-full flex-col items-center justify-center px-6 text-center">
@@ -25,6 +28,7 @@ export function EmptyState({
       {description && (
         <p className="mt-1.5 max-w-[19rem] text-[13px] leading-relaxed text-muted">{description}</p>
       )}
+      {action && <div className="mt-4">{action}</div>}
     </div>
   );
 }

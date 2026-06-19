@@ -50,6 +50,8 @@ function noteTypeLabel(path: string): string {
       return "Organization";
     case "Daily Notes":
       return "Daily note";
+    case "Meetings":
+      return "Meeting";
     default:
       return "Note";
   }

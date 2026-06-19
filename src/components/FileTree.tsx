@@ -69,6 +69,7 @@ const SECTION_ORDER = [
   "Organizations",
   "Daily Notes",
   "Weekly Notes",
+  "Meetings",
   "Templates",
 ];
 function sectionRank(name: string): number {
@@ -105,7 +106,26 @@ function folderIcon(name: string, depth: number): ComponentType<SVGProps<SVGSVGE
   if (lower === "people" || lower === "persons") return Icon.Person;
   if (lower === "organizations" || lower === "orgs") return Icon.Building;
   if (lower === "daily notes" || lower === "daily" || lower === "journal") return Icon.Calendar;
+  if (lower === "weekly notes" || lower === "weekly") return Icon.Calendar;
+  if (lower === "projects") return Icon.Layers;
+  if (lower === "meetings") return Icon.Mic;
   return Icon.Folder;
+}
+
+/**
+ * Derive a file's type icon from the section (top-level folder) it lives in, so
+ * a note reads as a Person / Project / Meeting at a glance. Loose root files —
+ * no section — fall back to the plain file glyph.
+ */
+function fileIcon(section: string | undefined): ComponentType<SVGProps<SVGSVGElement>> {
+  if (!section) return Icon.File;
+  const lower = section.toLowerCase();
+  if (lower === "people" || lower === "persons") return Icon.Person;
+  if (lower === "projects") return Icon.Layers;
+  if (lower === "organizations" || lower === "orgs") return Icon.Building;
+  if (lower === "daily notes" || lower === "weekly notes") return Icon.Calendar;
+  if (lower === "meetings") return Icon.Mic;
+  return Icon.File;
 }
 
 export function FileTree() {
@@ -203,7 +223,7 @@ export function FileTree() {
               <li>
                 <div className="flex items-center gap-1.5 px-2 pt-[9px] pb-1">
                   <span className="min-w-0 flex-1 truncate text-[10px] font-bold uppercase tracking-[0.08em] text-faint">
-                    Pinned
+                    Notes
                   </span>
                   <span className="ml-auto shrink-0 text-[10px] font-semibold text-faint">
                     {rootFiles.length}
@@ -217,7 +237,7 @@ export function FileTree() {
               </li>
             )}
             {folders.map((node) => (
-              <TreeNodeView key={nodeKey(node)} node={node} depth={0} />
+              <TreeNodeView key={nodeKey(node)} node={node} depth={0} section={node.name} />
             ))}
           </ul>
         )}
@@ -300,21 +320,42 @@ function NavItem({
   );
 }
 
-function TreeNodeView({ node, depth }: { node: TreeNode; depth: number }) {
+function TreeNodeView({
+  node,
+  depth,
+  section,
+}: {
+  node: TreeNode;
+  depth: number;
+  /** The top-level folder this node lives under — drives a file's type icon. */
+  section?: string;
+}) {
   return node.type === "folder" ? (
-    <FolderRow node={node} depth={depth} />
+    <FolderRow node={node} depth={depth} section={section} />
   ) : (
-    <FileRow node={node} depth={depth} />
+    <FileRow node={node} depth={depth} section={section} />
   );
 }
 
-function FolderRow({ node, depth }: { node: FolderNode; depth: number }) {
+function FolderRow({
+  node,
+  depth,
+  section,
+}: {
+  node: FolderNode;
+  depth: number;
+  section?: string;
+}) {
   const [expanded, setExpanded] = useState(true);
   const fileCount = countFiles(node);
   const isTopLevel = depth === 0;
+  // Files in a top-level section carry that section's name; nested folders pass
+  // the inherited section through so deeper files keep their type icon.
+  const childSection = isTopLevel ? node.name : section;
 
   if (isTopLevel) {
-    // Render as a section label (UPPERCASE, text-faint, tracking-wide)
+    // Render as a section label (UPPERCASE, text-faint, tracking-wide) with a
+    // disclosure chevron so the collapse is discoverable.
     return (
       <li>
         <button
@@ -322,8 +363,15 @@ function FolderRow({ node, depth }: { node: FolderNode; depth: number }) {
           onClick={() => setExpanded((e) => !e)}
           aria-expanded={expanded}
           aria-label={`${node.name} section, ${fileCount} notes`}
-          className="flex w-full items-center gap-1.5 px-2 pb-1 pt-[9px] text-left"
+          className="group flex w-full items-center gap-1 px-2 pb-1 pt-[9px] text-left"
         >
+          <span className="shrink-0 text-faint transition-colors group-hover:text-muted">
+            {expanded ? (
+              <Icon.ChevronDown className="h-[12px] w-[12px]" />
+            ) : (
+              <Icon.ChevronRight className="h-[12px] w-[12px]" />
+            )}
+          </span>
           <span className="min-w-0 flex-1 truncate text-[10px] font-bold uppercase tracking-[0.08em] text-faint">
             {node.name}
           </span>
@@ -332,7 +380,12 @@ function FolderRow({ node, depth }: { node: FolderNode; depth: number }) {
         {expanded && (
           <ul>
             {node.children.map((child) => (
-              <TreeNodeView key={nodeKey(child)} node={child} depth={depth + 1} />
+              <TreeNodeView
+                key={nodeKey(child)}
+                node={child}
+                depth={depth + 1}
+                section={childSection}
+              />
             ))}
           </ul>
         )}
@@ -367,7 +420,12 @@ function FolderRow({ node, depth }: { node: FolderNode; depth: number }) {
       {expanded && (
         <ul>
           {node.children.map((child) => (
-            <TreeNodeView key={nodeKey(child)} node={child} depth={depth + 1} />
+            <TreeNodeView
+              key={nodeKey(child)}
+              node={child}
+              depth={depth + 1}
+              section={childSection}
+            />
           ))}
         </ul>
       )}
@@ -375,13 +433,13 @@ function FolderRow({ node, depth }: { node: FolderNode; depth: number }) {
   );
 }
 
-function FileRow({ node, depth }: { node: FileNode; depth: number }) {
+function FileRow({ node, depth, section }: { node: FileNode; depth: number; section?: string }) {
   const currentPath = useFormationStore((s) => s.currentNotePath);
   const openNote = useFormationStore((s) => s.openNote);
   const isActive = node.note.relative_path === currentPath;
 
-  // Derive icon from parent folder name (depth 1 = top-level folder child)
-  const FileIconComp = Icon.File;
+  // Type icon derived from the section (top-level folder) this note lives in.
+  const FileIconComp = fileIcon(section);
 
   return (
     <li>

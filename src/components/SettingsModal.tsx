@@ -17,7 +17,7 @@ const TONE_DESCRIPTIONS: Record<Tone, string> = {
 };
 
 const SEARCH_MODE_DESCRIPTIONS: Record<SearchMode, string> = {
-  bundled: "On-device semantic search — runs in the app, no Ollama. Downloads ~80 MB once.",
+  bundled: "On-device semantic search — runs in the app, no Ollama. Downloads ~0.5 GB once.",
   ollama: "Semantic search via a local Ollama embedding model (needs the Ollama daemon).",
   none: "Keyword search — no model, fully offline.",
 };
@@ -383,7 +383,7 @@ export function SettingsModal({
       <button
         type="button"
         aria-label="Close settings"
-        className="absolute inset-0 cursor-default bg-black/40"
+        className="absolute inset-0 cursor-default bg-ink/40"
         onClick={onClose}
       />
       <div

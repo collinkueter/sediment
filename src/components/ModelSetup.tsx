@@ -251,7 +251,11 @@ function BundledSetup({
             <p className="mt-1 truncate text-[10px] text-muted">
               {active.phase}
               {percent !== undefined ? ` · ${percent}%` : ""}
+              {active.total > 0
+                ? ` · ${Math.round(active.completed / 1e6)}/${Math.round(active.total / 1e6)} MB`
+                : ""}
             </p>
+            <p className="mt-0.5 text-[10px] text-faint">One-time download · keep the app open</p>
           </div>
         )}
       </div>

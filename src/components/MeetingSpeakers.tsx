@@ -31,6 +31,9 @@ export function MeetingSpeakers({
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // When every speaker is already named there's no reconciliation work, so the
+  // band collapses to a quiet one-line summary; clicking it reveals the chips.
+  const [expanded, setExpanded] = useState(false);
 
   const refresh = useCallback(() => {
     tauri
@@ -82,12 +85,48 @@ export function MeetingSpeakers({
   const unknown = speakers.filter(isUnknown).length;
   const targets = assigning ? people.filter((p) => p !== assigning.from) : [];
 
+  // All named and not yet expanded: collapse to a quiet summary. The full
+  // interactive band is reserved for when there's naming work (unknown > 0).
+  if (unknown === 0 && !expanded) {
+    return (
+      <div className="border-line border-b bg-surface px-4 py-2">
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          aria-label="Show meeting speakers"
+          aria-expanded={false}
+          className="group inline-flex items-center gap-1.5 text-[11px] text-muted transition-colors hover:text-ink-soft"
+        >
+          <Icon.Mic className="h-3.5 w-3.5 text-faint" />
+          <span>
+            {speakers.length} {speakers.length === 1 ? "speaker" : "speakers"} · all assigned
+          </span>
+          <Icon.ChevronRight className="h-3 w-3 text-faint transition-transform group-hover:translate-x-0.5" />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-2 border-line border-b bg-surface px-4 py-2">
-      <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
-        <Icon.Mic className="h-3.5 w-3.5 text-muted" />
-        Speakers
-      </span>
+      {unknown === 0 ? (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          aria-label="Hide meeting speakers"
+          aria-expanded={true}
+          className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft transition-colors hover:text-ink"
+        >
+          <Icon.Mic className="h-3.5 w-3.5 text-muted" />
+          Speakers
+          <Icon.ChevronDown className="h-3 w-3 text-faint" />
+        </button>
+      ) : (
+        <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
+          <Icon.Mic className="h-3.5 w-3.5 text-muted" />
+          Speakers
+        </span>
+      )}
 
       {speakers.map((name) => {
         const unk = isUnknown(name);

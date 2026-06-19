@@ -61,6 +61,7 @@ export default function App() {
 
   const settingsOpen = useUiStore((s) => s.settingsOpen);
   const closeSettings = useUiStore((s) => s.closeSettings);
+  const openSettings = useUiStore((s) => s.openSettings);
   const togglePalette = useUiStore((s) => s.togglePalette);
   const toggleNotePane = useUiStore((s) => s.toggleNotePane);
   const notePaneCollapsed = useUiStore((s) => s.notePaneCollapsed);
@@ -135,7 +136,7 @@ export default function App() {
       .catch(() => {});
   }, [formationPath, setWorkingSet, setSelfSummary]);
 
-  // Global shortcuts: ⌘K command palette, ⌘\ toggle note pane, Esc closes overlays.
+  // Global shortcuts: ⌘K command palette, ⌘\ toggle note pane, ⌘, Settings, Esc closes overlays.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -144,13 +145,16 @@ export default function App() {
       } else if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
         e.preventDefault();
         toggleNotePane();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        openSettings();
       } else if (e.key === "Escape") {
         closeAllOverlays();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePalette, toggleNotePane, closeAllOverlays]);
+  }, [togglePalette, toggleNotePane, openSettings, closeAllOverlays]);
 
   const runModelCheck = useCallback(() => {
     if (onboardingComplete !== true || !formationPath) return;

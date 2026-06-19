@@ -40,6 +40,8 @@ export function CommandPalette() {
   const open = useUiStore((s) => s.paletteOpen);
   const close = useUiStore((s) => s.closePalette);
   const openSettings = useUiStore((s) => s.openSettings);
+  const toggleReminders = useUiStore((s) => s.toggleReminders);
+  const toggleNotePane = useUiStore((s) => s.toggleNotePane);
   const notes = useFormationStore((s) => s.notes);
   const openNote = useFormationStore((s) => s.openNote);
   const entities = useWorkingSetStore((s) => s.workingSet)?.activeEntities;
@@ -110,6 +112,19 @@ export function CommandPalette() {
       },
       {
         kind: "action",
+        key: "action:reminders",
+        title: "Open Reminders",
+        subtitle: "Switch to your tasks and reminders",
+      },
+      {
+        kind: "action",
+        key: "action:note-pane",
+        title: "Toggle note pane",
+        subtitle: "Show or hide the reference pane",
+        keycap: "⌘\\",
+      },
+      {
+        kind: "action",
         key: "action:theme",
         title: "Toggle theme",
         subtitle: "Paper for daylight, Strata for night",
@@ -145,6 +160,12 @@ export function CommandPalette() {
       }
     } else if (item.key === "action:settings") {
       openSettings();
+    } else if (item.key === "action:reminders") {
+      toggleReminders();
+      close();
+    } else if (item.key === "action:note-pane") {
+      toggleNotePane();
+      close();
     } else if (item.key === "action:theme") {
       useThemeStore.getState().toggle();
       close();
@@ -176,7 +197,7 @@ export function CommandPalette() {
       <button
         type="button"
         aria-label="Close"
-        className="fixed inset-0 z-[300] cursor-default bg-black/30"
+        className="fixed inset-0 z-[300] cursor-default bg-ink/30"
         onClick={close}
       />
       <div className="fixed top-20 left-1/2 z-[310] w-[min(620px,92vw)] -translate-x-1/2 overflow-hidden rounded-2xl border border-line-strong bg-raised shadow-2xl">
