@@ -227,12 +227,11 @@ export function MeetingSessionBar() {
     setDistill((d) => (d ? { ...d, suggestedTitle: null } : d));
   }, []);
 
-  // The distillation receipt rides as a bottom toast (the app's "quiet summary +
-  // undo" idiom, matching UndoToast) so it survives the bar collapsing on stop.
+  // The distillation receipt is a quiet "summary + undo" notification. Anchored to
+  // the bottom-right corner (not bottom-center) so it stays clear of the centered
+  // chat composer and the centered Undo/Reminder toasts — no overlap.
   const distillToast = distill ? (
-    // Tiered above UndoToast (bottom-6) and ReminderToast (bottom-20) so the three
-    // never stack on the same spot.
-    <div className="-translate-x-1/2 fixed bottom-[8.5rem] left-1/2 z-50 flex max-w-[34rem] flex-col gap-2 rounded-xl border border-line-strong bg-raised px-4 py-2.5 text-ink-soft shadow-2xl">
+    <div className="fixed right-5 bottom-5 z-50 flex w-[min(32rem,calc(100vw-2.5rem))] flex-col gap-2 rounded-xl border border-line-strong bg-raised px-4 py-2.5 text-ink-soft shadow-2xl">
       <div className="flex items-center gap-3">
         <Icon.Sparkle aria-hidden className="h-4 w-4 shrink-0 text-gold" />
         <span className="min-w-0 flex-1 truncate text-sm">{distill.summary}</span>
