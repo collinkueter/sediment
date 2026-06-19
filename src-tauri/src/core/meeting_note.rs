@@ -243,6 +243,9 @@ pub fn recent_transcript_grounding(note_abs: &Path, budget: usize) -> AppResult<
 /// Default per-window character budget for distillation (ADR-0017 §7). Sized to
 /// stay well inside the agent's `INJECTED_CONTEXT_BUDGET` once the meeting note,
 /// prompt, and per-window grounding are added.
+// M6 distillation scaffolding (ADR-0017 §7): tested; used when the end-of-session
+// distillation turn is wired. Unused in the default lib build.
+#[allow(dead_code)]
 pub const DISTILL_WINDOW_BUDGET: usize = 4000;
 
 /// Group the `## Transcript` bullets into windows each at most `budget` chars,
@@ -250,6 +253,7 @@ pub const DISTILL_WINDOW_BUDGET: usize = 4000;
 /// turn (ADR-0017 §7): the Agent processes one window at a time so a long meeting
 /// never blows its context budget. Oldest-first; a single oversized segment
 /// becomes its own window. Empty transcript → no windows.
+#[allow(dead_code)]
 pub fn transcript_windows(note_abs: &Path, budget: usize) -> AppResult<Vec<String>> {
     let content = read(note_abs)?;
     let lines: Vec<&str> = content.lines().collect();

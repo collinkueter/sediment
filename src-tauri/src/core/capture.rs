@@ -18,6 +18,11 @@
 //! on a dedicated thread and communicates via a channel + the shared stop flag,
 //! rather than moving the stream across threads.
 
+// M2 capture scaffolding: the trait + test source are exercised by unit tests and
+// the real backend lives behind the `audio` feature; unused in the default lib
+// build, so allow dead_code rather than delete the seams.
+#![allow(dead_code)]
+
 use crate::error::AppResult;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Receiver;

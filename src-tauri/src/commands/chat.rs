@@ -98,6 +98,9 @@ fn build_engine(cfg: &AppConfig) -> Box<dyn ConversationEngine> {
 /// `on_event` streams [`TurnEvent`]s — reply text deltas and tool-activity
 /// lines — to the UI as the turn runs; the returned [`ChatTurnResult`] is the
 /// authoritative outcome.
+// A Tauri command threads the message, ids, event channel, and several managed
+// State handles — inherently wide; splitting it would not aid clarity.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn chat_turn(
     message: String,

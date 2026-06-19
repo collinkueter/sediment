@@ -516,6 +516,8 @@ impl MemoryStore {
     /// updating a running centroid (ADR-0017 §6/Q4): the first sample seeds it,
     /// later samples average in by count. The matching primitive for "name the
     /// speaker" — same shape as the note/entity `embedding`, different signal.
+    // M4 Voiceprint scaffolding (ADR-0017 §6): tested, wired in when diarization lands.
+    #[allow(dead_code)]
     pub async fn enroll_voiceprint(&self, entity_id: &str, sample: &[f32]) -> AppResult<()> {
         if sample.is_empty() {
             return Err(AppError::other("enroll_voiceprint: empty sample"));
@@ -568,6 +570,7 @@ impl MemoryStore {
     /// the bar — the caller leaves the speaker "Unknown speaker N" rather than
     /// guess. Naming a Fact to a below-threshold match is never done (ADR-0017
     /// Gap B); this returns the *label* candidate only.
+    #[allow(dead_code)]
     pub async fn match_voiceprint(
         &self,
         sample: &[f32],
@@ -942,12 +945,14 @@ struct EntityRow {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+#[allow(dead_code)]
 struct VoiceprintRow {
     pub voiceprint: Option<Vec<f32>>,
     pub voiceprint_n: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+#[allow(dead_code)]
 struct VoiceprintMatchRow {
     pub id: RecordId,
     pub canonical_name: String,
@@ -957,6 +962,7 @@ struct VoiceprintMatchRow {
 /// A speaker-recognition hit (ADR-0017 §6): the matched person and the cosine
 /// score that cleared the threshold.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct VoiceprintMatch {
     pub entity_id: String,
     pub canonical_name: String,
@@ -965,6 +971,7 @@ pub struct VoiceprintMatch {
 
 /// Cosine similarity of two equal-length vectors; `0.0` on length mismatch or a
 /// zero vector. Pure — the matching maths behind [`MemoryStore::match_voiceprint`].
+#[allow(dead_code)]
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;

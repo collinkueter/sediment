@@ -1,7 +1,7 @@
 //! Capture → transcription pipeline (ADR-0017 §1/§2, plan M2).
 //!
 //! Connects a [`CaptureSource`] to a [`Transcriber`]: pull native frames, downmix
-//! + resample to 16 kHz ([`crate::core::audio`]), feed the transcriber, and hand
+//! and resample to 16 kHz ([`crate::core::audio`]), feed the transcriber, and hand
 //! each final utterance to a callback as a `(offset_ms, speaker, text)` segment —
 //! the same shape `session_push_segment` produces, so it lands in the Meeting note
 //! through the one [`crate::core::session::record_segment`] path.
@@ -12,6 +12,10 @@
 //!
 //! M2 has no diarization — every utterance is attributed to one placeholder
 //! `speaker`. M4 replaces that with per-segment diarization + Voiceprint matching.
+
+// M2 pipeline scaffolding: tested with VecSource + MockTranscriber and wired into
+// the app when the real capture/ASR backends land; unused in the default lib build.
+#![allow(dead_code)]
 
 use crate::core::audio::{downmix_to_mono, Resampler, TARGET_RATE};
 use crate::core::capture::CaptureSource;

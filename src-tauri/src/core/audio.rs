@@ -10,6 +10,11 @@
 //! fine for the M2 spine; if measured WER warrants it, swap in a sinc resampler
 //! (`rubato`) behind the `audio` feature — the call sites do not change.
 
+// M2 capture-pipeline scaffolding: exercised by unit tests and the `audio` feature,
+// wired into the running app when M3/M4 land. Unused in the default lib build, so
+// allow dead_code rather than delete the seams (keeps `clippy -D warnings` green).
+#![allow(dead_code)]
+
 /// Sample rate the transcription stack consumes (ADR-0017 §2).
 pub const TARGET_RATE: u32 = 16_000;
 
@@ -53,7 +58,7 @@ impl Resampler {
         let at = |i: usize| if i == 0 { self.prev } else { input[i - 1] };
 
         let mut out = Vec::with_capacity((n as f64 / self.step) as usize + 1);
-        while (self.t as usize) + 1 <= n {
+        while (self.t as usize) < n {
             let i = self.t as usize;
             let frac = (self.t - i as f64) as f32;
             out.push(at(i) * (1.0 - frac) + at(i + 1) * frac);

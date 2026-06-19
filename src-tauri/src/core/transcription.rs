@@ -10,6 +10,11 @@
 //! utterances out. Speaker attribution is NOT here — that is diarization +
 //! Voiceprints (M4); M2 attributes every utterance to a single placeholder speaker.
 
+// M2/M3 transcription seam: the mock + trait are exercised by tests and the real
+// engine lands behind `local-asr`; unused in the default lib build, so allow
+// dead_code rather than delete the seam.
+#![allow(dead_code)]
+
 /// One transcribed span. `is_final` marks an endpoint (a committed segment) vs an
 /// in-progress partial. M2's mock only emits finals; a streaming engine (M3) emits
 /// partials too.
