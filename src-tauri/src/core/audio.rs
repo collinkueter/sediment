@@ -71,9 +71,139 @@ impl Resampler {
     }
 }
 
+/// Split a 16 kHz mono buffer into utterance-ish ranges at silent gaps, for the
+/// offline second pass (ADR-0017 §2): each range is transcribed and diarized on its
+/// own, so boundaries land on natural pauses, not mid-word. Returns `(start, end)`
+/// index pairs (end exclusive). The silence threshold is adaptive — a fraction of the
+/// loudest frame — so it tracks recording gain; a long quiet run ends a range, and an
+/// over-long range is force-split so one pause-free monologue can't become a single
+/// huge chunk. Always yields at least one range for non-empty input (the whole buffer
+/// when it finds no usable split), so the second pass still runs.
+pub fn split_on_silence(samples: &[f32], rate: u32) -> Vec<(usize, usize)> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+    let rate = rate.max(1) as usize;
+    let frame = (rate / 50).max(1); // 20 ms analysis frames
+    let min_silence_frames = (rate * 6 / 10 / frame).max(1); // ~0.6 s gap splits
+    let min_seg = rate * 3 / 10; // drop ranges under ~0.3 s
+    let max_seg = rate * 30; // force a split past ~30 s
+
+    let rms: Vec<f32> = samples
+        .chunks(frame)
+        .map(|c| (c.iter().map(|s| s * s).sum::<f32>() / c.len() as f32).sqrt())
+        .collect();
+    let peak = rms.iter().copied().fold(0.0f32, f32::max);
+    // Quiet = below 12% of the peak, with a tiny absolute floor for true silence.
+    let thresh = (peak * 0.12).max(1e-4);
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut seg_start: Option<usize> = None;
+    let mut silence_run = 0usize;
+    for (fi, &r) in rms.iter().enumerate() {
+        let sample_i = fi * frame;
+        if r >= thresh {
+            silence_run = 0;
+            let start = *seg_start.get_or_insert(sample_i);
+            if sample_i - start >= max_seg {
+                ranges.push((start, (sample_i + frame).min(samples.len())));
+                seg_start = Some(sample_i);
+            }
+        } else {
+            silence_run += 1;
+            if let Some(start) = seg_start {
+                if silence_run >= min_silence_frames {
+                    let end = ((fi + 1 - silence_run) * frame).min(samples.len());
+                    if end > start {
+                        ranges.push((start, end));
+                    }
+                    seg_start = None;
+                }
+            }
+        }
+    }
+    if let Some(start) = seg_start {
+        ranges.push((start, samples.len()));
+    }
+    ranges.retain(|(s, e)| e - s >= min_seg);
+    if ranges.is_empty() {
+        ranges.push((0, samples.len()));
+    }
+    ranges
+}
+
+/// Write mono f32 `samples` as a 16-bit PCM WAV at `rate` — used to persist a
+/// person's short **voice clip** (ADR-0017 §6). Dependency-free (a minimal RIFF
+/// writer) so it's available in every build and keeps clips compact (16-bit). f32
+/// samples are clamped to [-1, 1] before scaling.
+pub fn write_wav_i16(path: &std::path::Path, samples: &[f32], rate: u32) -> std::io::Result<()> {
+    use std::io::Write;
+    let channels: u16 = 1;
+    let bits: u16 = 16;
+    let block_align = channels * bits / 8;
+    let byte_rate = rate * block_align as u32;
+    let data_len = (samples.len() * 2) as u32;
+
+    let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+    w.write_all(b"RIFF")?;
+    w.write_all(&(36 + data_len).to_le_bytes())?;
+    w.write_all(b"WAVE")?;
+    w.write_all(b"fmt ")?;
+    w.write_all(&16u32.to_le_bytes())?; // fmt chunk size
+    w.write_all(&1u16.to_le_bytes())?; // PCM
+    w.write_all(&channels.to_le_bytes())?;
+    w.write_all(&rate.to_le_bytes())?;
+    w.write_all(&byte_rate.to_le_bytes())?;
+    w.write_all(&block_align.to_le_bytes())?;
+    w.write_all(&bits.to_le_bytes())?;
+    w.write_all(b"data")?;
+    w.write_all(&data_len.to_le_bytes())?;
+    for &s in samples {
+        let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+        w.write_all(&v.to_le_bytes())?;
+    }
+    w.flush()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_wav_i16_emits_a_riff_header_and_pcm_payload() {
+        let dir = std::env::temp_dir().join(format!("sediment-wav-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clip.wav");
+        let samples = vec![0.0f32, 0.5, -0.5, 1.0, -1.0];
+        write_wav_i16(&path, &samples, TARGET_RATE).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        // 44-byte header + 2 bytes per sample.
+        assert_eq!(bytes.len(), 44 + samples.len() * 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn split_on_silence_separates_utterances_and_falls_back() {
+        let rate = TARGET_RATE as usize;
+        let tone = || (0..rate).map(|i| (i as f32 * 0.1).sin() * 0.5);
+        let mut buf: Vec<f32> = Vec::new();
+        buf.extend(tone()); // 1 s speech
+        buf.extend(std::iter::repeat(0.0).take(rate)); // 1 s pause
+        buf.extend(tone()); // 1 s speech
+        let ranges = split_on_silence(&buf, TARGET_RATE);
+        assert_eq!(ranges.len(), 2, "two utterances split by the pause: {ranges:?}");
+        assert!(ranges[0].0 < ranges[0].1 && ranges[1].0 > ranges[0].1);
+
+        // Pure silence → one fallback range spanning the whole buffer.
+        assert_eq!(
+            split_on_silence(&vec![0.0f32; rate], TARGET_RATE),
+            vec![(0, rate)]
+        );
+        // Empty input → no ranges.
+        assert!(split_on_silence(&[], TARGET_RATE).is_empty());
+    }
 
     #[test]
     fn downmix_averages_stereo_and_passes_mono() {

@@ -23,6 +23,7 @@ pub mod formation_tools;
 pub mod indexer;
 pub mod meeting_note;
 pub mod memory;
+pub mod name_detect;
 pub mod ollama_sidecar;
 #[cfg(feature = "local-asr")]
 pub mod ort_runtime;

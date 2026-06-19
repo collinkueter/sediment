@@ -24,6 +24,8 @@ the snapshot/audit/undo machinery, the Tauri `Channel<T>` streaming used by
 `chat_turn`.
 **Keeps:** the local-only / "never leaves your machine" promise; no-daemon; BYOK
 generation; no persistent second surface.
+**Amended (2026-06-19):** two-pass transcription, live speaker naming + verbal-name
+suggestion, and per-person voice clips — see [Amendment](#amendment-2026-06-19--two-pass-accuracy-live-naming-voice-clips) below.
 
 ## Context
 
@@ -351,6 +353,76 @@ the decisions and their rationale, ADR-0015 style.
 8. ~~**Low-confidence Fact attribution (Gap B, §7).**~~ **Resolved (2026-06-18) —
    threshold-gate named attribution.** Below the identification-confidence threshold,
    a Fact is recorded unattributed rather than pinned to a guessed person. See §6/§7.
+
+---
+
+## Amendment (2026-06-19) — two-pass accuracy, live naming, voice clips
+
+Dogfooding the V1 stack surfaced four gaps; resolved as follows, refining (not
+reversing) the decisions above.
+
+### A1. Transcription is **two-pass** (refines §2)
+
+The streaming-zipformer (§5/Q5) is tuned for sub-second partials, so its live
+transcript is rough. We keep it for the *live* surface (§4 needs partials) and add a
+**second pass**: when the **Session** stops, a non-streaming, high-accuracy **offline**
+recognizer (NeMo **Parakeet-TDT** by default, on the same `sherpa-onnx`/ONNX runtime —
+no new runtime, no cloud) re-transcribes the whole meeting and **replaces** the
+`## Transcript`. Distillation (§7) reads this refined transcript. The live engine also
+moves from greedy to `modified_beam_search` for a small no-cost lift. The offline model
+is provisioned exactly like the streaming one (download or folder import, validated
+before promote) and is part of the readiness gate. This keeps §2's "on-device by
+default" intact — accuracy now comes from a *second local model*, not the cloud
+opt-in.
+
+### A2. Re-diarization seeds from named live speakers (refines §6)
+
+The second pass re-diarizes each refined segment with the **existing** speaker-
+embedding `Diarizer`, **seeded** with the formation's enrolled **Voiceprints** *plus
+this meeting's named live speakers' centroids* — so anyone named during the call (by
+hand or by A4) keeps their name in the refined transcript; everyone else is freshly
+labelled `Unknown speaker N`. (The richer `OfflineSpeakerDiarization` pipeline — a
+pyannote segmentation model — is a future quality upgrade, deliberately deferred to
+avoid a third model download.)
+
+### A3. **Voice clips** — recognise a person by ear (extends §6, narrow §9 exception)
+
+A **Voiceprint** is a vector you can't listen to. We now also keep a short **voice
+clip** (a few seconds of the person's clearest speech) at `People/.voices/<Name>.wav`,
+pointed to from the `person` Entity, so you can *hear* who "Unknown speaker 2" was.
+Clips are written only for **named** speakers — when you name one live, or for each
+named speaker in the second pass. This is a **bounded, named exception** to §9's
+transcribe-and-delete: the *full* meeting audio is still buffered only in memory and
+discarded right after the second pass; only these short per-person clips persist.
+(Limitation: a speaker named *after* stop, when the audio is already gone, gets no
+clip.)
+
+### A4. Names heard aloud are **suggested** (extends §6)
+
+When a speaker says their own name ("I'm Sarah", "this is John"), a dependency-free
+on-device heuristic offers it as a one-tap rename for the current unnamed speaker —
+**suggested, never asserted**, consistent with §6 (a false positive is one dismissal).
+Accepting runs the same rename path (relabel + enrol Voiceprint + voice clip). The
+recording bar also tracks the **current speaker** so the *active* speaker can be named
+the moment they change, not only from the static attendee avatars.
+
+### A5. Discoverability — make the work *visible* (design psychology)
+
+A feature the user can't see or trust isn't shipped. Three rules applied:
+
+- **Narrate the background pass (visibility of system status; peak-end rule).** The
+  second pass runs after Stop, so without feedback the user's last impression is the
+  *rough* live transcript — and they'd conclude "still inaccurate." A bottom-right
+  receipt now narrates "Wrapping up — sharpening the transcript…" → "Transcript
+  sharpened ✓", then hands off to the distillation summary. The accuracy win is the
+  last thing seen.
+- **No false affordances (Norman's signifiers).** The ▶ "hear voice" control renders
+  only for speakers who *have* a clip on disk (`meeting_voice_clips`), never as a
+  button that errors — a speaker named after the audio is gone simply has no ▶.
+- **One alive element; explain auto-guesses.** The bar keeps a single motion cue (the
+  record pulse); the current-speaker chip is static. The heard-name suggestion states
+  *why* it appeared ("Heard a name — call them Sarah?") rather than asserting, and it
+  supersedes the generic "Name speaker" chip so the two never stack.
 
 ---
 

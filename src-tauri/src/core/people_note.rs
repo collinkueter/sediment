@@ -29,6 +29,16 @@ pub fn person_note_relative_path(name: &str) -> String {
     format!("{PEOPLE_DIR}/{}.md", sanitize_title(name))
 }
 
+/// `People/.voices/<Name>.wav` for `name`, as a formation-relative POSIX path — where
+/// a person's short **voice clip** is stored (ADR-0017 §6), co-located with their
+/// People note so it travels with the formation. The leading `.` keeps the clips out
+/// of the way of the human-facing `People/` listing.
+// Used only on the `local-asr` clip-writing path; unused in a headless build.
+#[allow(dead_code)]
+pub fn voice_clip_relative_path(name: &str) -> String {
+    format!("{PEOPLE_DIR}/.voices/{}.wav", sanitize_title(name))
+}
+
 /// Create the People note for `name` if it does not exist, returning its
 /// formation-relative path either way. Idempotent — a second call (or a note the
 /// agent already wrote) is a no-op; the existing file is never rewritten.

@@ -91,6 +91,8 @@ export interface ModelProgress {
 export interface AsrReadiness {
   asrPresent: boolean;
   speakerPresent: boolean;
+  /** The offline high-accuracy second-pass model (ADR-0017 §2 two-pass). */
+  offlinePresent: boolean;
   allPresent: boolean;
   sizeHint: string;
 }
@@ -305,7 +307,14 @@ export type SessionEvent =
   // receipt and the audit turn id, for a quiet summary + undo affordance.
   // `suggestedTitle` is a content-derived meeting name offered as an optional
   // rename, or null when the typed title already fits.
-  | { kind: "distilled"; summary: string; turnId: string; suggestedTitle: string | null };
+  | { kind: "distilled"; summary: string; turnId: string; suggestedTitle: string | null }
+  // A speaker said their own name (ADR-0017 §6): the recording bar offers `name` as
+  // a one-tap rename for `speaker` (usually an "Unknown speaker N"). Suggested, never
+  // auto-applied.
+  | { kind: "speakerNameSuggested"; speaker: string; name: string }
+  // The offline second pass rewrote the transcript (ADR-0017 §2): an open note view
+  // should reload to show the improved text.
+  | { kind: "transcriptRefined"; segmentCount: number };
 
 export interface SessionStartResult {
   sessionId: string;
@@ -465,6 +474,13 @@ export const tauri = {
    */
   assignMeetingSpeaker: (notePath: string, from: string, to: string) =>
     invoke<AssignSpeakerResult>("assign_meeting_speaker", { notePath, from, to }),
+  /** Attendees of a Meeting note that have a playable voice clip (ADR-0017 §6). */
+  meetingVoiceClips: (notePath: string) => invoke<string[]>("meeting_voice_clips", { notePath }),
+  /**
+   * The bytes of a person's voice clip WAV (ADR-0017 §6), or null when they have
+   * none — for playing a short sample to recognise them by ear.
+   */
+  readVoiceClip: (name: string) => invoke<number[] | null>("read_voice_clip", { name }),
 
   // Audit log — the browsable, revertable backstop (ADR-0009 §6, ADR-0010 §8)
   /** Every turn's audit entry, newest-first. */

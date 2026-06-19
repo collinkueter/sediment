@@ -19,11 +19,35 @@
 
 use crate::core::audio::{downmix_to_mono, Resampler, TARGET_RATE};
 use crate::core::capture::CaptureSource;
+use crate::core::session::{SharedAudio, SharedClips};
 use crate::core::transcription::Transcriber;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+/// Longest voice clip kept per speaker (≈6 s at 16 kHz) — enough to recognise a
+/// voice by ear without storing the whole meeting (ADR-0017 §6/§9).
+const MAX_CLIP_SAMPLES: usize = TARGET_RATE as usize * 6;
+/// Shortest segment worth keeping as a clip — matches the diarizer's embedding floor
+/// (`diarization::MIN_SAMPLES`, ≈0.5 s) so a clip is always long enough to be useful.
+const MIN_CLIP_SAMPLES: usize = 8_000;
+
+/// Keep `audio` as `label`'s representative clip when it is the longest clean
+/// segment seen so far (capped at [`MAX_CLIP_SAMPLES`]). Best-effort: a poisoned
+/// lock just skips the update.
+fn record_clip(clips: &SharedClips, label: &str, audio: &[f32]) {
+    if audio.len() < MIN_CLIP_SAMPLES {
+        return;
+    }
+    if let Ok(mut map) = clips.lock() {
+        let better = map.get(label).map(|c| audio.len() > c.len()).unwrap_or(true);
+        if better {
+            let take = audio.len().min(MAX_CLIP_SAMPLES);
+            map.insert(label.to_string(), audio[..take].to_vec());
+        }
+    }
+}
 
 /// Owns a running pipeline. Dropping it (or calling [`CaptureController::stop`])
 /// signals teardown and joins the worker — so a Session that drops its controller
@@ -71,6 +95,8 @@ pub fn spawn<S, F, R>(
     source: S,
     mut transcriber: Box<dyn Transcriber>,
     default_speaker: String,
+    audio: SharedAudio,
+    clips: SharedClips,
     mut resolve_speaker: R,
     mut on_segment: F,
 ) -> CaptureController
@@ -108,10 +134,16 @@ where
                     let samples = resampler.process(&mono);
                     total_16k += samples.len() as u64;
                     segment_audio.extend_from_slice(&samples);
+                    // Accumulate the whole session for the offline second pass; cleared
+                    // right after it runs at stop (ADR-0017 §2/§9).
+                    if let Ok(mut buf) = audio.lock() {
+                        buf.extend_from_slice(&samples);
+                    }
                     for u in transcriber.accept(&samples) {
                         if u.is_final {
                             let speaker = resolve_speaker(&segment_audio)
                                 .unwrap_or_else(|| default_speaker.clone());
+                            record_clip(&clips, &speaker, &segment_audio);
                             on_segment(offset_ms(total_16k), &speaker, &u.text);
                             segment_audio.clear();
                         }
@@ -124,6 +156,7 @@ where
         for u in transcriber.finish() {
             let speaker =
                 resolve_speaker(&segment_audio).unwrap_or_else(|| default_speaker.clone());
+            record_clip(&clips, &speaker, &segment_audio);
             on_segment(offset_ms(total_16k), &speaker, &u.text);
             segment_audio.clear();
         }
@@ -163,6 +196,8 @@ mod tests {
             source,
             Box::new(MockTranscriber::new(1.0)),
             "Unknown speaker 1".to_string(),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
             |_audio| None, // no diarization in the pipeline test
             move |offset, speaker, text| {
                 sink.lock()
@@ -252,6 +287,8 @@ mod tests {
             source,
             transcriber,
             "Unknown speaker 1".to_string(),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(HashMap::new())),
             move |audio| Some(diarizer.assign(audio)),
             move |offset, speaker, text| {
                 sink.lock()

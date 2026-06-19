@@ -654,6 +654,51 @@ impl MemoryStore {
         self.enroll_voiceprint(&entity.id, sample).await
     }
 
+    /// Attach a **voice clip** to a `person` Entity (ADR-0017 §6): a formation-relative
+    /// path to a short WAV so the speaker can be recognised by ear later. The audio
+    /// itself lives in the formation (written by the Session); this records the pointer.
+    #[allow(dead_code)]
+    pub async fn set_voice_clip(&self, entity_id: &str, path: &str) -> AppResult<()> {
+        let key = entity_id.strip_prefix("entity:").unwrap_or(entity_id);
+        self.db
+            .query(format!("UPDATE entity:{key} SET voice_clip = $path;"))
+            .bind(("path", path.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("set_voice_clip write: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("set_voice_clip check: {e}")))?;
+        Ok(())
+    }
+
+    /// Set the voice clip of the `person` named `name`, creating the Entity if needed
+    /// (lazy, like [`enroll_voiceprint_named`]). The naming-a-speaker path uses this
+    /// beside the Voiceprint enrolment.
+    #[allow(dead_code)]
+    pub async fn set_voice_clip_named(&self, name: &str, path: &str) -> AppResult<()> {
+        let entity = self.upsert_entity(name, "person", vec![]).await?;
+        self.set_voice_clip(&entity.id, path).await
+    }
+
+    /// The formation-relative voice-clip path of the `person` named `name` (matched by
+    /// canonical name or alias), or `None` when they have no clip. Drives playback in
+    /// the speaker panel (`read_voice_clip`).
+    #[allow(dead_code)]
+    pub async fn voice_clip_path(&self, name: &str) -> AppResult<Option<String>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT voice_clip FROM entity \
+                 WHERE (canonical_name = $name OR $name IN aliases) AND entity_type = 'person';",
+            )
+            .bind(("name", name.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("voice_clip_path: {e}")))?;
+        let rows: Vec<VoiceClipRow> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("voice_clip_path take: {e}")))?;
+        Ok(rows.into_iter().next().and_then(|r| r.voice_clip))
+    }
+
     /// Every enrolled **Voiceprint** as `(canonical_name, centroid)` — the seed a
     /// live Session's diarizer loads so a known voice is named on its first segment
     /// (ADR-0017 §6). Persons without a voiceprint are skipped.
@@ -1031,6 +1076,12 @@ struct VoiceprintMatchRow {
     pub id: RecordId,
     pub canonical_name: String,
     pub voiceprint: Option<Vec<f32>>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, SurrealValue)]
+#[allow(dead_code)]
+struct VoiceClipRow {
+    pub voice_clip: Option<String>,
 }
 
 /// A speaker-recognition hit (ADR-0017 §6): the matched person and the cosine

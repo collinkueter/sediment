@@ -203,6 +203,8 @@ pub fn run() {
             commands::session::rename_meeting_note,
             commands::meeting::meeting_speakers,
             commands::meeting::assign_meeting_speaker,
+            commands::meeting::meeting_voice_clips,
+            commands::meeting::read_voice_clip,
             commands::audit::list_audit,
             commands::audit::undo_turn,
             commands::audit::undo_fact,

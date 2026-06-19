@@ -24,21 +24,25 @@ use tokio::io::AsyncWriteExt;
 pub struct AsrReadiness {
     pub asr_present: bool,
     pub speaker_present: bool,
+    /// The offline high-accuracy second-pass model (ADR-0017 §2 two-pass).
+    pub offline_present: bool,
     pub all_present: bool,
     /// Human-readable size hint for the setup screen.
     pub size_hint: String,
 }
 
-/// Report whether the ASR and speaker models are on disk.
+/// Report whether the ASR, speaker, and offline second-pass models are on disk.
 #[tauri::command]
 pub async fn check_asr_readiness() -> AppResult<AsrReadiness> {
     let asr = asr_model::asr_present();
     let speaker = asr_model::speaker_present();
+    let offline = asr_model::offline_present();
     Ok(AsrReadiness {
         asr_present: asr,
         speaker_present: speaker,
-        all_present: asr && speaker,
-        size_hint: "~0.3 GB".into(),
+        offline_present: offline,
+        all_present: asr && speaker && offline,
+        size_hint: "~1 GB".into(),
     })
 }
 
@@ -96,40 +100,67 @@ async fn download_file(
 pub async fn download_asr_model(on_progress: Channel<ModelProgress>) -> AppResult<()> {
     let client = reqwest::Client::new();
 
-    // ASR transducer (four files) → staging → validate → promote.
-    let base = asr_model::asr_base_url();
-    let asr_staging = asr_model::asr_staging_dir();
-    if asr_staging.exists() {
-        std::fs::remove_dir_all(&asr_staging)
-            .map_err(|e| AppError::other(format!("clear ASR staging: {e}")))?;
+    // Streaming ASR transducer (four files) → staging → validate → promote. Skipped
+    // when already installed, so an upgrade only fetches the newly-added model below.
+    if !asr_model::asr_present() {
+        let base = asr_model::asr_base_url();
+        let asr_staging = asr_model::asr_staging_dir();
+        if asr_staging.exists() {
+            std::fs::remove_dir_all(&asr_staging)
+                .map_err(|e| AppError::other(format!("clear ASR staging: {e}")))?;
+        }
+        for file in asr_model::ASR_FILES {
+            download_file(
+                &client,
+                &format!("{base}/{file}"),
+                &asr_staging.join(file),
+                file,
+                &on_progress,
+            )
+            .await?;
+        }
+        asr_model::promote_asr_staging().await?;
     }
-    for file in asr_model::ASR_FILES {
+
+    // Speaker-embedding model (one file) → staging → validate → promote.
+    if !asr_model::speaker_present() {
+        let speaker_staging = asr_model::speaker_staging_dir();
+        if speaker_staging.exists() {
+            std::fs::remove_dir_all(&speaker_staging)
+                .map_err(|e| AppError::other(format!("clear speaker staging: {e}")))?;
+        }
         download_file(
             &client,
-            &format!("{base}/{file}"),
-            &asr_staging.join(file),
-            file,
+            &asr_model::speaker_url(),
+            &speaker_staging.join(asr_model::SPEAKER_FILE),
+            asr_model::SPEAKER_FILE,
             &on_progress,
         )
         .await?;
+        asr_model::promote_speaker_staging().await?;
     }
-    asr_model::promote_asr_staging().await?;
 
-    // Speaker-embedding model (one file) → staging → validate → promote.
-    let speaker_staging = asr_model::speaker_staging_dir();
-    if speaker_staging.exists() {
-        std::fs::remove_dir_all(&speaker_staging)
-            .map_err(|e| AppError::other(format!("clear speaker staging: {e}")))?;
+    // Offline high-accuracy second-pass model (four files) → staging → validate →
+    // promote (ADR-0017 §2 two-pass).
+    if !asr_model::offline_present() {
+        let base = asr_model::offline_base_url();
+        let offline_staging = asr_model::offline_staging_dir();
+        if offline_staging.exists() {
+            std::fs::remove_dir_all(&offline_staging)
+                .map_err(|e| AppError::other(format!("clear offline staging: {e}")))?;
+        }
+        for file in asr_model::OFFLINE_FILES {
+            download_file(
+                &client,
+                &format!("{base}/{file}"),
+                &offline_staging.join(file),
+                file,
+                &on_progress,
+            )
+            .await?;
+        }
+        asr_model::promote_offline_staging().await?;
     }
-    download_file(
-        &client,
-        &asr_model::speaker_url(),
-        &speaker_staging.join(asr_model::SPEAKER_FILE),
-        asr_model::SPEAKER_FILE,
-        &on_progress,
-    )
-    .await?;
-    asr_model::promote_speaker_staging().await?;
 
     let _ = on_progress.send(ModelProgress {
         model: asr_model::ASR_MODEL_NAME.into(),
@@ -154,7 +185,14 @@ pub async fn import_asr_model(source_dir: String) -> AppResult<()> {
     asr_model::import_asr_from_dir(src.clone()).await?;
     // The speaker model is optional in an import folder — install it if it's there.
     if src.join(asr_model::SPEAKER_FILE).is_file() {
-        asr_model::import_speaker_from_dir(src).await?;
+        asr_model::import_speaker_from_dir(src.clone()).await?;
+    }
+    // The offline second-pass model is likewise optional in the folder.
+    if asr_model::OFFLINE_FILES
+        .iter()
+        .all(|f| src.join(f).is_file())
+    {
+        asr_model::import_offline_from_dir(src).await?;
     }
     Ok(())
 }

@@ -33,6 +33,20 @@ pub type SharedCentroids = Arc<Mutex<HashMap<String, Vec<f32>>>>;
 /// segments too (ADR-0017 §6). Drained by the `Diarizer` on each `assign`.
 pub type SharedRelabels = Arc<Mutex<Vec<(String, String)>>>;
 
+/// The whole Session's captured audio (16 kHz mono f32), accumulated by the capture
+/// worker and read once at stop for the high-accuracy **second pass** (offline
+/// re-transcription) and per-person voice-clip extraction, then **cleared** — audio
+/// is held only long enough to use, never persisted (ADR-0017 §9). Defined here (not
+/// in the `local-asr`-gated modules) so the `MeetingSession` field exists in every
+/// build; only written/read under the `audio`/`local-asr` paths.
+pub type SharedAudio = Arc<Mutex<Vec<f32>>>;
+
+/// Per-speaker-label representative audio clip (16 kHz mono f32), the longest clean
+/// segment seen for each live label. Read by `session_rename_speaker` to persist a
+/// named person's **voice clip** beside their Voiceprint (ADR-0017 §6), so they can
+/// be identified by ear later. Empty until diarization assigns the first segment.
+pub type SharedClips = Arc<Mutex<HashMap<String, Vec<f32>>>>;
+
 /// Serialises formation-mutating turns — a `chat_turn` and the background meeting
 /// distillation — so their whole-formation snapshot→diff→audit windows never
 /// overlap. Without it, one turn's diff can attribute a *concurrent* turn's note
@@ -40,6 +54,16 @@ pub type SharedRelabels = Arc<Mutex<Vec<(String, String)>>>;
 /// (ADR-0009 §6 assumes serialized turns). Managed as Tauri app state.
 #[derive(Default)]
 pub struct FormationLock(pub tokio::sync::Mutex<()>);
+
+/// Whether `speaker` is an unnamed diarization label (`Unknown speaker N`) rather
+/// than a real person. Used to gate the live self-introduction suggestion (only
+/// offer a name for a speaker we haven't named yet) — the backend twin of the
+/// frontend's `isUnknown` (`src/lib/speakers.ts`).
+// Used on the capture/second-pass paths (`audio`/`local-asr`); unused in a headless build.
+#[allow(dead_code)]
+pub fn is_unknown_speaker(speaker: &str) -> bool {
+    speaker.trim_start().starts_with("Unknown speaker")
+}
 
 /// One speaker-attributed, timestamped span of transcribed speech (ADR-0017 §6,
 /// §8). `offset_ms` is measured from Session start — the spine that time-aligns
@@ -82,6 +106,21 @@ pub enum SessionEvent {
         turn_id: String,
         suggested_title: Option<String>,
     },
+    /// A speaker said their own name (ADR-0017 §6, suggest-not-assert): the capture
+    /// worker detected a self-introduction ("I'm Sarah") in `speaker`'s segment.
+    /// The recording bar offers `name` as a one-tap rename — never auto-applied, so
+    /// a false positive costs nothing. `speaker` is the current label (often an
+    /// `Unknown speaker N`).
+    // Sent only on the capture path (`audio`); unused in a headless build.
+    #[allow(dead_code)]
+    SpeakerNameSuggested { speaker: String, name: String },
+    /// The end-of-Session **second pass** finished: the `## Transcript` was rewritten
+    /// by the offline high-accuracy engine (ADR-0017 §2 two-pass). Tells an open note
+    /// view to reload its now-improved transcript. Arrives after `Status{stopped}`,
+    /// before `Distilled`.
+    // Sent only on the `local-asr` second pass; unused in a headless build.
+    #[allow(dead_code)]
+    TranscriptRefined { segment_count: usize },
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -124,6 +163,16 @@ pub struct MeetingSession {
     /// §6). Pushed by `session_rename_speaker`. Only read under `local-asr`.
     #[allow(dead_code)]
     pub relabels: SharedRelabels,
+    /// The Session's captured audio, accumulated by the capture worker and consumed
+    /// once at stop for the offline second pass + clip extraction, then cleared
+    /// (ADR-0017 §2/§9). Empty in builds without the `audio` feature.
+    #[allow(dead_code)]
+    pub audio: SharedAudio,
+    /// The longest clip seen per live speaker label, so naming a speaker persists a
+    /// voice clip beside their Voiceprint (ADR-0017 §6). Only written under
+    /// `local-asr` (the diarizer path).
+    #[allow(dead_code)]
+    pub clips: SharedClips,
 }
 
 impl MeetingSession {
@@ -142,6 +191,8 @@ impl MeetingSession {
             capture: None,
             centroids: Arc::new(Mutex::new(HashMap::new())),
             relabels: Arc::new(Mutex::new(Vec::new())),
+            audio: Arc::new(Mutex::new(Vec::new())),
+            clips: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

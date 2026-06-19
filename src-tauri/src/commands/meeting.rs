@@ -87,3 +87,52 @@ pub async fn assign_meeting_speaker(
         relabeled,
     })
 }
+
+/// Which of a Meeting note's attendees actually have a playable **voice clip** on
+/// disk (ADR-0017 §6) — so the speaker panel only shows a ▶ where there's a voice to
+/// hear, never a play control that does nothing (a speaker named after the meeting,
+/// when the audio is gone, has no clip). Returns the subset of attendee names.
+#[tauri::command]
+pub async fn meeting_voice_clips(
+    note_path: String,
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+) -> AppResult<Vec<String>> {
+    let root = formation.require()?;
+    let attendees = meeting_note::list_attendees(&root.join(&note_path)).unwrap_or_default();
+    let memory_dir = root.join(APP_DIR).join("memory");
+    let Ok(store) = memory.get_or_init(&memory_dir).await else {
+        return Ok(Vec::new());
+    };
+    let mut with_clips = Vec::new();
+    for name in attendees {
+        if let Ok(Some(rel)) = store.voice_clip_path(&name).await {
+            if root.join(&rel).is_file() {
+                with_clips.push(name);
+            }
+        }
+    }
+    Ok(with_clips)
+}
+
+/// The bytes of a person's **voice clip** WAV (ADR-0017 §6), or `None` when they have
+/// none. Lets the speaker panel play a short sample so you can recognise someone by
+/// ear. Reads from the formation by the path recorded on the person Entity — no audio
+/// model needed, so it's available in every build.
+#[tauri::command]
+pub async fn read_voice_clip(
+    name: String,
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+) -> AppResult<Option<Vec<u8>>> {
+    let root = formation.require()?;
+    let memory_dir = root.join(APP_DIR).join("memory");
+    let rel = match memory.get_or_init(&memory_dir).await {
+        Ok(store) => store.voice_clip_path(&name).await.unwrap_or(None),
+        Err(_) => None,
+    };
+    let Some(rel) = rel else {
+        return Ok(None);
+    };
+    Ok(std::fs::read(root.join(&rel)).ok())
+}

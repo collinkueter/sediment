@@ -46,12 +46,21 @@ pub fn speaker_dir() -> PathBuf {
     models_root().join("speaker-embedding")
 }
 
+/// Directory holding the offline (second-pass) high-accuracy ASR model files.
+pub fn offline_dir() -> PathBuf {
+    models_root().join(OFFLINE_MODEL_NAME)
+}
+
 fn asr_staging() -> PathBuf {
     models_root().join(".staging-asr")
 }
 
 fn speaker_staging() -> PathBuf {
     models_root().join(".staging-speaker")
+}
+
+fn offline_staging() -> PathBuf {
+    models_root().join(".staging-offline")
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -104,6 +113,35 @@ pub fn speaker_url() -> String {
         .unwrap_or_else(|| SPEAKER_URL.to_string())
 }
 
+/// The offline **second-pass** model (ADR-0017 §2 two-pass): a non-streaming,
+/// high-accuracy recognizer run once at stop. Default is the NeMo Parakeet-TDT
+/// transducer (English, int8 — compact, with word timestamps). The exact release /
+/// filenames are confirmed on real hardware like the streaming model (M0); the
+/// import-from-folder path works regardless of the chosen pack.
+pub const OFFLINE_MODEL_NAME: &str = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
+
+/// The four files of the offline transducer, mapped to encoder/decoder/joiner/tokens
+/// by [`offline_paths`] in this order.
+pub const OFFLINE_FILES: [&str; 4] = [
+    "encoder.int8.onnx",
+    "decoder.int8.onnx",
+    "joiner.int8.onnx",
+    "tokens.txt",
+];
+
+/// Where the offline files are fetched from when no mirror is set (`<base>/<file>`).
+pub const OFFLINE_BASE_URL: &str =
+    "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main";
+
+/// `SEDIMENT_OFFLINE_MODEL_BASE_URL` overrides [`OFFLINE_BASE_URL`].
+pub fn offline_base_url() -> String {
+    std::env::var("SEDIMENT_OFFLINE_MODEL_BASE_URL")
+        .ok()
+        .map(|u| u.trim().trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| OFFLINE_BASE_URL.to_string())
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Presence + path resolution
 // ──────────────────────────────────────────────────────────────────────────
@@ -117,6 +155,36 @@ pub fn asr_present() -> bool {
 /// True when the speaker-embedding model is present on disk.
 pub fn speaker_present() -> bool {
     speaker_dir().join(SPEAKER_FILE).is_file()
+}
+
+/// True when all four offline (second-pass) ASR files are present on disk.
+pub fn offline_present() -> bool {
+    let dir = offline_dir();
+    OFFLINE_FILES.iter().all(|f| dir.join(f).is_file())
+}
+
+/// Resolve the installed offline files into [`OfflineModelPaths`] for
+/// `OfflineTranscriber`. Errors (actionably) when the model is not installed.
+pub fn offline_paths() -> AppResult<crate::core::transcription::OfflineModelPaths> {
+    let dir = offline_dir();
+    let p = |f: &str| -> AppResult<String> {
+        let path = dir.join(f);
+        if path.is_file() {
+            Ok(path.to_string_lossy().into_owned())
+        } else {
+            Err(AppError::other(format!(
+                "Offline ASR model file missing: {f}. Run ASR model setup to download \
+                 or import the high-accuracy transcription model."
+            )))
+        }
+    };
+    Ok(crate::core::transcription::OfflineModelPaths {
+        encoder: p(OFFLINE_FILES[0])?,
+        decoder: p(OFFLINE_FILES[1])?,
+        joiner: p(OFFLINE_FILES[2])?,
+        tokens: p(OFFLINE_FILES[3])?,
+        provider: "cpu".to_string(),
+    })
 }
 
 /// Resolve the installed ASR files into [`AsrModelPaths`] for `LocalTranscriber`.
@@ -173,6 +241,19 @@ fn validate_asr_dir(dir: &Path) -> AppResult<()> {
     LocalTranscriber::new(&paths).map(|_| ())
 }
 
+/// Validate the offline files in `dir` by building an `OfflineTranscriber` from them.
+fn validate_offline_dir(dir: &Path) -> AppResult<()> {
+    let p = |f: &str| dir.join(f).to_string_lossy().into_owned();
+    let paths = crate::core::transcription::OfflineModelPaths {
+        encoder: p(OFFLINE_FILES[0]),
+        decoder: p(OFFLINE_FILES[1]),
+        joiner: p(OFFLINE_FILES[2]),
+        tokens: p(OFFLINE_FILES[3]),
+        provider: "cpu".to_string(),
+    };
+    crate::core::transcription::OfflineTranscriber::new(&paths).map(|_| ())
+}
+
 /// Validate the speaker model in `dir` by creating a `SpeakerEmbeddingExtractor`.
 fn validate_speaker_dir(dir: &Path) -> AppResult<()> {
     use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
@@ -225,6 +306,16 @@ pub async fn promote_speaker_staging() -> AppResult<()> {
     promote(&staging, &speaker_dir())
 }
 
+/// Validate the staged offline files and atomically promote them to [`offline_dir`].
+pub async fn promote_offline_staging() -> AppResult<()> {
+    let staging = offline_staging();
+    let s = staging.clone();
+    tokio::task::spawn_blocking(move || validate_offline_dir(&s))
+        .await
+        .map_err(|e| AppError::other(format!("validate offline model join: {e}")))??;
+    promote(&staging, &offline_dir())
+}
+
 /// Install the ASR model from a user-chosen folder (offline path). The folder must
 /// contain the four files by basename (the release layout). Validated before
 /// install. Reusable to seed the model dir from the M0 spike folder.
@@ -249,6 +340,19 @@ pub async fn import_speaker_from_dir(src: PathBuf) -> AppResult<()> {
     .await
     .map_err(|e| AppError::other(format!("import speaker model join: {e}")))??;
     promote_speaker_staging().await
+}
+
+/// Install the offline (second-pass) model from a user-chosen folder (air-gapped
+/// path). The folder must contain the four offline files by basename.
+pub async fn import_offline_from_dir(src: PathBuf) -> AppResult<()> {
+    let staging = offline_staging();
+    let staging_for_copy = staging.clone();
+    tokio::task::spawn_blocking(move || -> AppResult<()> {
+        stage_copy(&src, &staging_for_copy, &OFFLINE_FILES)
+    })
+    .await
+    .map_err(|e| AppError::other(format!("import offline model join: {e}")))??;
+    promote_offline_staging().await
 }
 
 /// Copy each required file from `src` (by basename, searched one level deep) into
@@ -299,4 +403,9 @@ pub fn asr_staging_dir() -> PathBuf {
 /// The staging dir for the speaker-model download.
 pub fn speaker_staging_dir() -> PathBuf {
     speaker_staging()
+}
+
+/// The staging dir for the offline-model download.
+pub fn offline_staging_dir() -> PathBuf {
+    offline_staging()
 }

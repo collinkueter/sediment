@@ -138,7 +138,10 @@ mod local {
             // Endpointing commits a segment on a natural pause — that boundary is
             // what becomes one `## Transcript` line and one diarization window.
             config.enable_endpoint = true;
-            config.decoding_method = Some("greedy_search".to_string());
+            // Beam search over greedy: a small accuracy lift on the live transcript for
+            // a modest decode cost, still comfortably real-time (the heavy accuracy work
+            // is the offline second pass, `OfflineTranscriber`). ADR-0017 §2.
+            config.decoding_method = Some("modified_beam_search".to_string());
 
             let recognizer = OnlineRecognizer::create(&config).ok_or_else(|| {
                 AppError::other(
@@ -210,6 +213,96 @@ mod local {
 
 #[cfg(feature = "local-asr")]
 pub use local::{AsrModelPaths, LocalTranscriber};
+
+// ──────────────────────────────────────────────────────────────────────────
+// Offline second pass (ADR-0017 §2 two-pass): a non-streaming, high-accuracy
+// recognizer run ONCE over the whole buffered meeting at stop. The streaming
+// engine above is tuned for sub-second partials; this one is tuned for accuracy,
+// and its transcript supersedes the live one in the Meeting note. Behind
+// `local-asr` like `LocalTranscriber`. Default model: Parakeet-TDT (NeMo
+// transducer); the config shape is model-family-specific but provisioned generically.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "local-asr")]
+mod offline {
+    use crate::core::audio::{split_on_silence, TARGET_RATE};
+    use crate::error::{AppError, AppResult};
+    use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig};
+
+    /// Filesystem paths of an offline transducer model (Parakeet-TDT / NeMo export:
+    /// encoder / decoder / joiner / tokens). Built by `core::asr_model`.
+    pub struct OfflineModelPaths {
+        pub encoder: String,
+        pub decoder: String,
+        pub joiner: String,
+        pub tokens: String,
+        pub provider: String,
+    }
+
+    /// One accurately-transcribed span from the second pass, timestamped (ms from the
+    /// start of the buffer) so the caller can slice the audio for re-diarization.
+    #[derive(Debug, Clone)]
+    pub struct OfflineSegment {
+        pub start_ms: i64,
+        pub end_ms: i64,
+        pub text: String,
+    }
+
+    /// The offline recognizer. Decodes a complete waveform per call (no streaming
+    /// state), so one instance transcribes every silence-split range of a meeting.
+    pub struct OfflineTranscriber {
+        recognizer: OfflineRecognizer,
+    }
+
+    impl OfflineTranscriber {
+        /// Build the recognizer from a NeMo-transducer model. Actionable error when
+        /// the native create fails (missing/corrupt files or a wrong model family).
+        pub fn new(m: &OfflineModelPaths) -> AppResult<Self> {
+            let mut config = OfflineRecognizerConfig::default();
+            config.model_config.transducer.encoder = Some(m.encoder.clone());
+            config.model_config.transducer.decoder = Some(m.decoder.clone());
+            config.model_config.transducer.joiner = Some(m.joiner.clone());
+            config.model_config.tokens = Some(m.tokens.clone());
+            config.model_config.provider = Some(m.provider.clone());
+            config.model_config.model_type = Some("nemo_transducer".to_string());
+
+            let recognizer = OfflineRecognizer::create(&config).ok_or_else(|| {
+                AppError::other(
+                    "Failed to create the offline ASR recognizer. The high-accuracy \
+                     transcription model may be missing or corrupt — run ASR model setup.",
+                )
+            })?;
+            Ok(Self { recognizer })
+        }
+
+        /// Transcribe `samples` (16 kHz mono) into timestamped segments, splitting on
+        /// natural pauses so each segment is one diarizable utterance.
+        pub fn transcribe(&self, samples: &[f32]) -> Vec<OfflineSegment> {
+            let ms = |i: usize| (i as i64 * 1000) / TARGET_RATE as i64;
+            let mut out = Vec::new();
+            for (start, end) in split_on_silence(samples, TARGET_RATE) {
+                let stream = self.recognizer.create_stream();
+                stream.accept_waveform(TARGET_RATE as i32, &samples[start..end]);
+                self.recognizer.decode(&stream);
+                let text = stream
+                    .get_result()
+                    .map(|r| r.text.trim().to_string())
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    out.push(OfflineSegment {
+                        start_ms: ms(start),
+                        end_ms: ms(end),
+                        text,
+                    });
+                }
+            }
+            out
+        }
+    }
+}
+
+#[cfg(feature = "local-asr")]
+pub use offline::{OfflineModelPaths, OfflineSegment, OfflineTranscriber};
 
 #[cfg(test)]
 mod tests {

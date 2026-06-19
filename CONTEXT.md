@@ -120,6 +120,21 @@ names an unknown speaker — never via a wizard. Not a new store: the existing g
 holds it, the way it holds a **Fact**.
 _Avoid_: voice signature, biometric, speaker model.
 
+**Voice clip**:
+A short WAV (a few seconds) of a **person**'s clearest speech, stored at
+`People/.voices/<Name>.wav` and pointed to from their **Entity** beside the
+**Voiceprint** — so a person can be recognised by *ear* after the fact, not only by
+the matching vector. Captured when a speaker is named (live or in the second pass);
+the full meeting audio is still transcribe-and-delete (ADR-0017 §9).
+_Avoid_: recording, sample dump, audio note.
+
+**Second pass** (also **refined transcript**):
+The end-of-**Session** re-transcription: the live streaming transcript is replaced by
+a high-accuracy *offline* recognizer run once over the whole buffered meeting, with
+speakers re-diarized (seeding from named live speakers so they keep their names). The
+`## Transcript` the **Agent** distils from is this refined one, not the rough live one.
+_Avoid_: rescan, reprocess, post-processing.
+
 ## Relationships
 
 - A **Formation** contains many **Notes**
@@ -132,7 +147,8 @@ _Avoid_: voice signature, biometric, speaker model.
 - The **Agent** reads the **Working Set** each turn; it is *derived* from recent activity across the **Formation**, the graph, and the conversation — never authored
 - A **Daily note** captures one calendar day; a **Weekly note** captures one ISO week
 - A **Session** produces a **Meeting note** and a stream of **Transcript segments**; the **Agent** distils **Facts**, **Tasks**, and **Open Loops** from the **Meeting note** when the **Session** ends
-- A **Voiceprint** is attached to a **person** **Entity** and names the speaker of a **Transcript segment**
+- A **Voiceprint** is attached to a **person** **Entity** and names the speaker of a **Transcript segment**; a **Voice clip** is its audible companion on the same **Entity**
+- On **Session** end the **Second pass** rewrites the **Meeting note**'s `## Transcript` before the **Agent** distils it
 
 ## Example dialogue
 

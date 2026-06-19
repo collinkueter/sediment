@@ -358,6 +358,48 @@ pub fn rename_speaker(note_abs: &Path, from: &str, to: &str) -> AppResult<usize>
     Ok(renamed)
 }
 
+/// Replace the whole `## Transcript` with `segments` `(offset_ms, speaker, text)` and
+/// rebuild `## Attendees` from their distinct speakers — the end-of-Session **second
+/// pass** (ADR-0017 §2): the offline high-accuracy engine re-transcribes and
+/// re-diarizes the meeting, and its result supersedes the live streaming transcript.
+/// `## Notes` (the user's time-anchored notes) and every other section are left
+/// untouched. A no-op (returns 0, no write) when `segments` is empty, so a failed or
+/// empty second pass never wipes the live transcript. Returns the segment count.
+// Called only on the `local-asr` second pass; unused in a headless build.
+#[allow(dead_code)]
+pub fn replace_transcript(note_abs: &Path, segments: &[(i64, String, String)]) -> AppResult<usize> {
+    if segments.is_empty() {
+        return Ok(0);
+    }
+    let transcript_body: Vec<String> = segments
+        .iter()
+        .map(|(offset_ms, speaker, text)| {
+            format!(
+                "- `[{}]` **{}:** {}",
+                format_offset(*offset_ms),
+                speaker.trim(),
+                text.trim()
+            )
+        })
+        .collect();
+
+    // Attendees = distinct speakers in first-appearance order (the re-diarized truth).
+    let mut seen = std::collections::HashSet::new();
+    let mut attendee_body: Vec<String> = Vec::new();
+    for (_, speaker, _) in segments {
+        let name = speaker.trim();
+        if !name.is_empty() && seen.insert(name.to_string()) {
+            attendee_body.push(format!("- [[{name}]]"));
+        }
+    }
+
+    let content = read(note_abs)?;
+    let updated = replace_section_body(&content, TRANSCRIPT_HEADING, &transcript_body);
+    let updated = replace_section_body(&updated, ATTENDEES_HEADING, &attendee_body);
+    atomic_write(note_abs, updated.as_bytes())?;
+    Ok(segments.len())
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Rename
 // ──────────────────────────────────────────────────────────────────────────
@@ -499,6 +541,38 @@ fn splice_append(content: &str, heading: &str, bullet: &str, dedupe: bool) -> Op
             out.push(String::new());
             out.push(bullet.to_string());
             Some(finalize(&out, content))
+        }
+    }
+}
+
+/// Swap the entire body of `heading`'s section for `body`, keeping the heading line
+/// and every other section verbatim. Appends the section (heading + body) at EOF when
+/// it is absent. The structural counterpart to [`splice_append`], which adds one line;
+/// this replaces all of them (used by [`replace_transcript`]).
+#[allow(dead_code)]
+fn replace_section_body(content: &str, heading: &str, body: &[String]) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    match find_section(&lines, heading) {
+        Some((h, end)) => {
+            let mut out: Vec<String> = Vec::with_capacity(lines.len() + body.len());
+            out.extend(lines[..=h].iter().map(|s| s.to_string()));
+            out.push(String::new());
+            out.extend(body.iter().cloned());
+            if end < lines.len() {
+                out.push(String::new());
+                out.extend(lines[end..].iter().map(|s| s.to_string()));
+            }
+            finalize(&out, content)
+        }
+        None => {
+            let mut out: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+            if !out.last().map(|l| l.trim().is_empty()).unwrap_or(true) {
+                out.push(String::new());
+            }
+            out.push(heading.to_string());
+            out.push(String::new());
+            out.extend(body.iter().cloned());
+            finalize(&out, content)
         }
     }
 }
@@ -733,6 +807,44 @@ mod tests {
 
         // Renaming a speaker that isn't present is a no-op.
         assert_eq!(rename_speaker(&abs, "Nobody", "X").unwrap(), 0);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn replace_transcript_rewrites_transcript_and_attendees_keeps_notes() {
+        let root = tempdir();
+        let rel = meeting_note_relative_path(started(), "Sync");
+        let abs = ensure_meeting_note(&root, &rel, "Sync", started()).unwrap();
+        // A live transcript + a user note + a live attendee list.
+        append_note_line(&abs, 4_000, "ping the vendor").unwrap();
+        append_transcript_segment(&abs, 1000, "Unknown speaker 1", "uh hello").unwrap();
+        append_transcript_segment(&abs, 2000, "Unknown speaker 2", "hi").unwrap();
+
+        // The second pass supersedes it with cleaner text + named speakers.
+        let refined = vec![
+            (1000i64, "Sarah Chen".to_string(), "Hello.".to_string()),
+            (2200, "Self".to_string(), "Hi Sarah.".to_string()),
+            (5000, "Sarah Chen".to_string(), "Let's begin.".to_string()),
+        ];
+        let n = replace_transcript(&abs, &refined).unwrap();
+        assert_eq!(n, 3);
+
+        let body = std::fs::read_to_string(&abs).unwrap();
+        // Old streaming text is gone; refined text is in.
+        assert!(!body.contains("uh hello"));
+        assert!(body.contains("- `[00:01]` **Sarah Chen:** Hello."));
+        assert!(body.contains("- `[00:05]` **Sarah Chen:** Let's begin."));
+        // Attendees rebuilt to the distinct refined speakers (deduped, first-seen order).
+        assert_eq!(body.matches("- [[Sarah Chen]]").count(), 1);
+        assert!(body.contains("- [[Self]]"));
+        assert!(!body.contains("Unknown speaker"));
+        // The user's note line survives untouched.
+        assert!(body.contains("- `[00:04]` ping the vendor"));
+
+        // Empty segments is a no-op (never wipes the transcript).
+        let before = std::fs::read_to_string(&abs).unwrap();
+        assert_eq!(replace_transcript(&abs, &[]).unwrap(), 0);
+        assert_eq!(std::fs::read_to_string(&abs).unwrap(), before);
         std::fs::remove_dir_all(root).ok();
     }
 

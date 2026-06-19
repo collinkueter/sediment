@@ -2,7 +2,7 @@ import { Icon, initials } from "@/components/icons";
 import { isUnknown, speakerTone } from "@/lib/speakers";
 import { useFormationStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Post-meeting speaker panel (ADR-0017 §6), shown atop a Meeting note.
@@ -27,6 +27,9 @@ export function MeetingSpeakers({
 }) {
   const notes = useFormationStore((s) => s.notes);
   const [speakers, setSpeakers] = useState<string[]>([]);
+  // Names with a playable voice clip — drives whether a chip shows a ▶ (never show a
+  // play control that would do nothing).
+  const [clipNames, setClipNames] = useState<string[]>([]);
   const [assigning, setAssigning] = useState<{ from: string; x: number; y: number } | null>(null);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -35,11 +38,48 @@ export function MeetingSpeakers({
   // band collapses to a quiet one-line summary; clicking it reveals the chips.
   const [expanded, setExpanded] = useState(false);
 
+  // Voice-clip playback (ADR-0017 §6): one reused <audio> element and a cache of
+  // blob URLs (revoked on unmount) so a chip's ▶ plays the person's sample.
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const clipCache = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const cache = clipCache.current;
+    return () => {
+      for (const url of cache.values()) URL.revokeObjectURL(url);
+    };
+  }, []);
+
+  const playClip = useCallback(async (name: string) => {
+    try {
+      let url = clipCache.current.get(name);
+      if (!url) {
+        const bytes = await tauri.readVoiceClip(name);
+        if (!bytes || bytes.length === 0) {
+          setError(`No voice clip for ${name} yet.`);
+          return;
+        }
+        url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "audio/wav" }));
+        clipCache.current.set(name, url);
+      }
+      if (!audioRef.current) audioRef.current = new Audio();
+      audioRef.current.src = url;
+      await audioRef.current.play();
+      setError(null);
+    } catch (err) {
+      console.error("play voice clip failed:", err);
+      setError("Couldn't play that clip.");
+    }
+  }, []);
+
   const refresh = useCallback(() => {
     tauri
       .meetingSpeakers(notePath)
       .then(setSpeakers)
       .catch(() => setSpeakers([]));
+    tauri
+      .meetingVoiceClips(notePath)
+      .then(setClipNames)
+      .catch(() => setClipNames([]));
   }, [notePath]);
 
   useEffect(() => {
@@ -70,6 +110,7 @@ export function MeetingSpeakers({
         const res = await tauri.assignMeetingSpeaker(notePath, from, next);
         setSpeakers(res.attendees);
         await onReload();
+        refresh(); // re-sync clip availability (a renamed speaker may now carry one)
       } catch (err) {
         console.error("assign speaker failed:", err);
         setError(typeof err === "string" ? err : "Couldn't assign that speaker.");
@@ -77,7 +118,7 @@ export function MeetingSpeakers({
         setBusy(false);
       }
     },
-    [assigning, notePath, onReload],
+    [assigning, notePath, onReload, refresh],
   );
 
   if (speakers.length === 0) return null;
@@ -134,32 +175,47 @@ export function MeetingSpeakers({
         {speakers.map((name) => {
           const unk = isUnknown(name);
           return (
-            <button
-              key={name}
-              type="button"
-              disabled={busy}
-              onClick={(e) => {
-                const r = e.currentTarget.getBoundingClientRect();
-                setValue("");
-                setAssigning({ from: name, x: r.left, y: r.bottom + 6 });
-              }}
-              title={unk ? `Assign ${name} to a person` : `Reassign ${name}`}
-              className={[
-                "group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12.5px] shadow-sm transition-[border-color,transform] duration-150",
-                "hover:-translate-y-px hover:border-accent disabled:opacity-50",
-                unk ? "border-line-strong border-dashed bg-bg-sunk" : "border-line bg-raised",
-              ].join(" ")}
-            >
-              <span
-                className="inline-grid h-[18px] w-[18px] flex-none place-items-center rounded-full text-[9px] font-bold text-white"
-                style={{ background: speakerTone(name) }}
-                aria-hidden
+            <span key={name} className="inline-flex items-center gap-1">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setValue("");
+                  setAssigning({ from: name, x: r.left, y: r.bottom + 6 });
+                }}
+                title={unk ? `Assign ${name} to a person` : `Reassign ${name}`}
+                className={[
+                  "group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12.5px] shadow-sm transition-[border-color,transform] duration-150",
+                  "hover:-translate-y-px hover:border-accent disabled:opacity-50",
+                  unk ? "border-line-strong border-dashed bg-bg-sunk" : "border-line bg-raised",
+                ].join(" ")}
               >
-                {unk ? "?" : initials(name)}
-              </span>
-              <span className={unk ? "text-muted" : "text-ink"}>{name}</span>
-              <Icon.Pencil className="h-3 w-3 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
-            </button>
+                <span
+                  className="inline-grid h-[18px] w-[18px] flex-none place-items-center rounded-full text-[9px] font-bold text-white"
+                  style={{ background: speakerTone(name) }}
+                  aria-hidden
+                >
+                  {unk ? "?" : initials(name)}
+                </span>
+                <span className={unk ? "text-muted" : "text-ink"}>{name}</span>
+                <Icon.Pencil className="h-3 w-3 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+              </button>
+              {/* Hear this person's voice — only when a clip actually exists, so the
+                  ▶ is never a control that does nothing (ADR-0017 §6). */}
+              {!unk && clipNames.includes(name) && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void playClip(name)}
+                  title={`Hear ${name}'s voice`}
+                  aria-label={`Hear ${name}'s voice`}
+                  className="grid h-[26px] w-[26px] flex-none place-items-center rounded-full border border-line bg-raised text-muted shadow-sm transition-colors hover:border-accent hover:text-accent-ink disabled:opacity-50"
+                >
+                  <Icon.Play className="h-3 w-3" />
+                </button>
+              )}
+            </span>
           );
         })}
 

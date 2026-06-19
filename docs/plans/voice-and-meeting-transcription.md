@@ -83,6 +83,28 @@ of the Windows loopback path.
   *Needs the Claude Code CLI at runtime; the orchestration + pure helpers are tested,
   the live agent turn validates on a real meeting.*
 
+### Post-V1 refinements (2026-06-19) — ADR-0017 [Amendment](../adr/0017-voice-and-meeting-transcription.md#amendment-2026-06-19--two-pass-accuracy-live-naming-voice-clips)
+
+Built and **verified** (both feature sets clippy-clean under `-D warnings`; 158 tests
+pass on the default build, 156 on `--no-default-features`; frontend `tsc`/Biome/Vite
+green):
+
+- **Two-pass transcription. DONE.** Live streaming + an offline second pass at stop:
+  `core::audio::split_on_silence` → `transcription::OfflineTranscriber`
+  (`sherpa-onnx` `OfflineRecognizer`, NeMo Parakeet-TDT) → re-diarize each segment with
+  the existing `Diarizer` seeded from named live speakers → `meeting_note::replace_transcript`,
+  then distillation reads the refined transcript. `asr_model` provisions the offline
+  model like the streaming one; streaming decode bumped to `modified_beam_search`.
+  *The offline model files are confirmed on hardware (M0-style) before locking.*
+- **Voice clips. DONE.** `audio::write_wav_i16` → `People/.voices/<Name>.wav`,
+  `entity.voice_clip` + `memory::{set_voice_clip,voice_clip_path}`, `read_voice_clip`
+  command; written for named speakers (live rename or second pass); played from the
+  post-meeting speaker panel. Full audio stays memory-only (§9).
+- **Live current-speaker naming + heard-name suggestion. DONE.** `core::name_detect`
+  (self-introduction heuristic) → `SessionEvent::SpeakerNameSuggested`; the recording
+  bar tracks the current speaker and surfaces a one-tap rename. `SessionEvent::TranscriptRefined`
+  reloads an open note after the rewrite.
+
 ---
 
 ## Context for a fresh session

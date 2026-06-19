@@ -53,11 +53,26 @@ export function MeetingSessionBar() {
   const [rename, setRename] = useState<{ from: string; x: number; y: number } | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
+  // The speaker of the most recent transcript segment — "who's talking now" — so the
+  // current speaker can be named the moment they change (ADR-0017 §6), not only from
+  // the static attendee avatars.
+  const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null);
+  // A name a speaker said out loud ("I'm Sarah"), offered as a one-tap rename for the
+  // still-unnamed current speaker (ADR-0017 §6, suggest-not-assert).
+  const [suggestion, setSuggestion] = useState<{ speaker: string; name: string } | null>(null);
+
   // ASR model readiness: null = checking, true = installed, false = needs download.
   // A build without `local-asr` lacks the command — treat as ready (manual only).
   const [asrReady, setAsrReady] = useState<boolean | null>(null);
   const [setupPhase, setSetupPhase] = useState<string | null>(null);
   const [setupPct, setSetupPct] = useState<number | null>(null);
+
+  // Post-stop progress (ADR-0017 §2): the meeting finishes in the background — the
+  // offline second pass sharpens the transcript, then distillation summarizes. We
+  // narrate it so the polish is *visible* (the user's last impression is the improved
+  // transcript, not the rough live one), then it hands off to the distill receipt.
+  // null = nothing pending; "refining" = working; "refined" = transcript sharpened.
+  const [finishPhase, setFinishPhase] = useState<null | "refining" | "refined">(null);
 
   // The end-of-session distillation receipt (ADR-0017 §7): a quiet summary + undo,
   // plus an optional content-derived title offered as a one-tap rename.
@@ -90,12 +105,35 @@ export function MeetingSessionBar() {
         if (e.state === "stopped") {
           setSessionId(null);
           setStartedAt(null);
+          setCurrentSpeaker(null);
+          setSuggestion(null);
         }
         break;
       case "attendeeChanged":
         setAttendees(e.attendees);
         break;
+      case "segment":
+        // Track who's speaking now so the strip can offer to name them on change.
+        setCurrentSpeaker(e.segment.speaker);
+        break;
+      case "speakerNameSuggested":
+        // Only surface while the named speaker is still the one talking and unnamed.
+        setSuggestion({ speaker: e.speaker, name: e.name });
+        break;
+      case "transcriptRefined": {
+        // The second pass sharpened the transcript — mark it so the receipt can show
+        // the win, and force-reload the note if the user is viewing this meeting
+        // (belt-and-suspenders with the file watcher).
+        setFinishPhase("refined");
+        const store = useFormationStore.getState();
+        if (store.currentNotePath && store.currentNotePath === notePathRef.current) {
+          store.openNote(store.currentNotePath).catch(() => {});
+        }
+        break;
+      }
       case "distilled":
+        // Distillation done — hand the progress receipt over to the summary receipt.
+        setFinishPhase(null);
         // Correlate to the meeting it belongs to (notePathRef), not whatever note
         // the bar happens to be pointing at now (a 2nd meeting may have started).
         setDistill({
@@ -138,6 +176,7 @@ export function MeetingSessionBar() {
       setAttendees([]);
       setStartedAt(Date.now());
       setDistill(null);
+      setFinishPhase(null);
     } catch (err) {
       console.error("session start failed:", err);
       setBarError("Couldn't start recording — check the mic permission, then retry.");
@@ -150,12 +189,14 @@ export function MeetingSessionBar() {
     if (!sessionId) return;
     setBarError(null);
     try {
-      await tauri.sessionStop(sessionId);
+      const res = await tauri.sessionStop(sessionId);
       // Only collapse the bar on a confirmed stop; otherwise capture may still be
       // running and we'd lie about the state. (The `status:stopped` event also
       // clears these, belt-and-suspenders.)
       setSessionId(null);
       setStartedAt(null);
+      // Surface the background finishing pass so the polish is visible, not silent.
+      if (res.segmentCount > 0) setFinishPhase("refining");
     } catch (err) {
       console.error("session stop failed:", err);
       setBarError("Couldn't stop the recording — it may still be running. Try again.");
@@ -187,6 +228,20 @@ export function MeetingSessionBar() {
     setRenameValue("");
     setRename({ from, x: r.left, y: r.bottom + 6 });
   }, []);
+
+  // Accept a heard-name suggestion (ADR-0017 §6): rename the speaker to the detected
+  // name, which also enrolls their Voiceprint + voice clip for next time.
+  const acceptSuggestion = useCallback(async () => {
+    if (!sessionId || !suggestion) return;
+    const { speaker, name } = suggestion;
+    setSuggestion(null);
+    setAttendees((prev) => prev.map((a) => (a === speaker ? name : a)));
+    try {
+      await tauri.sessionRenameSpeaker(sessionId, speaker, name);
+    } catch (err) {
+      console.error("accept name suggestion failed:", err);
+    }
+  }, [sessionId, suggestion]);
 
   const undoDistill = useCallback(async () => {
     if (!distill) return;
@@ -226,6 +281,30 @@ export function MeetingSessionBar() {
   const dismissRename = useCallback(() => {
     setDistill((d) => (d ? { ...d, suggestedTitle: null } : d));
   }, []);
+
+  // The background-finishing receipt (ADR-0017 §2): shown between Stop and the
+  // distillation summary so the work is *visible*. It ends on "Transcript sharpened",
+  // making the accuracy win the last thing the user sees (peak-end). Shares the
+  // bottom-right slot with the summary receipt and yields to it the moment it lands.
+  const finishToast =
+    finishPhase && !distill ? (
+      <div className="fixed right-5 bottom-5 z-50 flex w-[min(32rem,calc(100vw-2.5rem))] items-center gap-3 rounded-xl border border-line-strong bg-raised px-4 py-2.5 text-ink-soft shadow-2xl">
+        {finishPhase === "refined" ? (
+          <Icon.Check aria-hidden className="h-4 w-4 shrink-0 text-sage" />
+        ) : (
+          <span
+            className="h-[7px] w-[7px] shrink-0 rounded-full bg-accent"
+            style={{ animation: "infocus-pulse 1.6s ease-in-out infinite" }}
+            aria-hidden
+          />
+        )}
+        <span className="min-w-0 flex-1 truncate text-sm">
+          {finishPhase === "refined"
+            ? "Transcript sharpened — finishing the summary…"
+            : "Wrapping up — sharpening the transcript…"}
+        </span>
+      </div>
+    ) : null;
 
   // The distillation receipt is a quiet "summary + undo" notification. Anchored to
   // the bottom-right corner (not bottom-center) so it stays clear of the centered
@@ -297,7 +376,7 @@ export function MeetingSessionBar() {
             <p className="truncate text-[12.5px] text-ink-soft">
               {setupPhase
                 ? `Setting up transcription · ${setupPhase}${setupPct !== null ? ` · ${setupPct}%` : ""}`
-                : "On-device transcription model needed — once, ~0.3 GB, then it runs offline."}
+                : "On-device transcription models needed — once, ~1 GB, then it runs offline."}
             </p>
             {setupPhase && setupPhase !== "download failed — see logs" && (
               <div className="mt-1 h-1 overflow-hidden rounded-full bg-bg-sunk">
@@ -317,6 +396,7 @@ export function MeetingSessionBar() {
             Download models
           </button>
         </div>
+        {finishToast}
         {distillToast}
       </>
     );
@@ -350,6 +430,7 @@ export function MeetingSessionBar() {
             Record
           </button>
         </div>
+        {finishToast}
         {distillToast}
       </>
     );
@@ -395,6 +476,61 @@ export function MeetingSessionBar() {
           {attendees.length > 6 && (
             <span className="text-[11px] text-muted">+{attendees.length - 6}</span>
           )}
+        </div>
+      )}
+
+      {/* Who's talking now — name them the moment the speaker changes (ADR-0017 §6).
+          Unknown → a dashed "Name" affordance; named → click to reassign. Hidden when
+          a heard-name suggestion is already prompting for this same speaker, so the
+          two naming affordances never stack. */}
+      {currentSpeaker && suggestion?.speaker !== currentSpeaker && (
+        <button
+          type="button"
+          onClick={(e) => openRename(currentSpeaker, e.currentTarget)}
+          title={`Name the current speaker (${currentSpeaker})`}
+          className={[
+            "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] transition-colors",
+            isUnknown(currentSpeaker)
+              ? "border-dashed border-line-strong bg-bg-sunk text-ink-soft hover:border-accent"
+              : "border-line bg-raised text-ink hover:border-accent",
+          ].join(" ")}
+        >
+          {/* Static tone dot — the recording pulse stays the bar's one alive element. */}
+          <span
+            className="h-[7px] w-[7px] rounded-full"
+            style={{ background: speakerTone(currentSpeaker) }}
+            aria-hidden
+          />
+          <span className="text-[9px] font-bold uppercase tracking-[.08em] text-faint">Now</span>
+          {isUnknown(currentSpeaker) ? "Name speaker" : currentSpeaker}
+          <Icon.Pencil className="h-3 w-3 text-faint" />
+        </button>
+      )}
+
+      {/* Heard-name suggestion ("I'm Sarah") — suggested, one tap to accept (§6). */}
+      {suggestion && (
+        <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-accent bg-accent-tint px-2.5 py-1 text-[11.5px] text-accent-ink">
+          <Icon.Sparkle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          {/* Say *why* this appeared (we heard the name) — an unexplained auto-guess
+              erodes trust; a transparent one earns the tap. */}
+          <span className="truncate">
+            Heard a name — call them <span className="font-semibold">{suggestion.name}</span>?
+          </span>
+          <button
+            type="button"
+            onClick={() => void acceptSuggestion()}
+            className="rounded-md bg-accent px-2 py-0.5 font-semibold text-[11px] text-white hover:bg-accent-ink"
+          >
+            Name
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss name suggestion"
+            onClick={() => setSuggestion(null)}
+            className="grid h-5 w-5 place-items-center rounded text-accent-ink/70 hover:bg-accent/20 hover:text-accent-ink"
+          >
+            <Icon.X className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
 
@@ -484,6 +620,8 @@ export function MeetingSessionBar() {
           </div>
         </>
       )}
+
+      {finishToast}
 
       {distillToast}
     </div>
