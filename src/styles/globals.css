@@ -176,7 +176,6 @@ body {
   font-size: 15px;
   line-height: 1.62;
   max-width: 42rem;
-  margin: 0 auto;
   color: var(--ink-soft);
 }
 
@@ -444,7 +443,7 @@ body {
   flex-wrap: wrap;
   gap: 0.5rem;
   max-width: 42rem;
-  margin: 0 auto 1.4rem;
+  margin-bottom: 1.4rem;
   padding-bottom: 1.2rem;
   border-bottom: 1px solid var(--line);
 }
@@ -485,7 +484,7 @@ body {
 /* Backlinks slot — only rendered when data exists (deferred backend). */
 .note-backlinks {
   max-width: 42rem;
-  margin: 2.5rem auto 0;
+  margin-top: 2.5rem;
   padding-top: 1.3rem;
   border-top: 1px dashed var(--line-strong);
   font-family: var(--font-sans);

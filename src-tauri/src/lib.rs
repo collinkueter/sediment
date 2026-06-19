@@ -186,6 +186,7 @@ pub fn run() {
             commands::formation::restore_last_formation,
             commands::formation::list_notes,
             commands::formation::read_note,
+            commands::formation::note_backlinks,
             commands::formation::write_note,
             commands::memory::index_formation,
             commands::chat::chat_turn,

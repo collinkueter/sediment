@@ -99,14 +99,25 @@ pub fn ready() -> bool {
 
 /// Point `ort` at the installed runtime by setting `ORT_DYLIB_PATH`, unless it is
 /// already set to an existing file. No-op when nothing is installed yet.
+///
+/// `std::env::set_var` is not thread-safe against a concurrent `getenv` elsewhere,
+/// so the write is guarded to happen **at most once** per process (the first moment
+/// a lib is on disk — normally the startup call, before worker threads spin up). A
+/// single bounded write is the practical mitigation short of `ort`'s programmatic
+/// dylib API.
 pub fn set_env_if_present() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WRITTEN: AtomicBool = AtomicBool::new(false);
+
     if let Ok(existing) = std::env::var("ORT_DYLIB_PATH") {
         if Path::new(&existing).is_file() {
             return;
         }
     }
     if let Some(path) = installed() {
-        // SAFETY: set once at startup before any ORT use / threads touch it.
+        if WRITTEN.swap(true, Ordering::SeqCst) {
+            return; // already wrote it once — don't race another getenv
+        }
         std::env::set_var("ORT_DYLIB_PATH", path);
     }
 }

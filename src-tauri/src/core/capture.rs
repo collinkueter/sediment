@@ -217,9 +217,13 @@ pub struct Mixer {
 }
 
 impl Mixer {
-    /// Cap on the loopback (B) backlog — ~5 s at 16 kHz. If B outruns A (it should
-    /// not, both nominally 16 kHz) the oldest is dropped rather than grow forever.
-    const B_CAP: usize = 16_000 * 5;
+    /// Cap on the loopback (B) backlog — ~2 s at 16 kHz. Both streams are nominally
+    /// 16 kHz, but they run on independent hardware clocks; if B steadily outruns A
+    /// (clock drift) its backlog grows and the loopback channel drifts out of
+    /// alignment with the mic. Capping tightly bounds that drift: the oldest backlog
+    /// is dropped (a small amount of far-side audio) so the far side stays roughly
+    /// time-aligned with the mic rather than smearing over a long meeting.
+    const B_CAP: usize = 16_000 * 2;
 
     pub fn push_a(&mut self, samples: &[f32]) {
         self.a.extend(samples);
@@ -227,8 +231,10 @@ impl Mixer {
 
     pub fn push_b(&mut self, samples: &[f32]) {
         self.b.extend(samples);
-        while self.b.len() > Self::B_CAP {
-            self.b.pop_front();
+        if self.b.len() > Self::B_CAP {
+            let drop = self.b.len() - Self::B_CAP;
+            self.b.drain(..drop);
+            tracing::debug!("[mixer] loopback drift: dropped {drop} samples to stay aligned");
         }
     }
 

@@ -114,6 +114,77 @@ pub fn read_note(relative_path: String, state: State<'_, FormationState>) -> App
     Ok(std::fs::read_to_string(abs)?)
 }
 
+/// A note that links to the current one — `path` (formation-relative) + display
+/// `title` (basename without `.md`).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Backlink {
+    pub path: String,
+    pub title: String,
+}
+
+/// Notes that link to `note_path` via an Obsidian `[[wiki-link]]` to its title
+/// (basename without `.md`). Case-insensitive; matches `[[Title]]`, `[[Title|alias]]`,
+/// and `[[Title#heading]]`. Scans the formation's `.md` files (the `.chat-notes/`
+/// app dir is excluded by `walk_notes`).
+#[tauri::command]
+pub fn note_backlinks(
+    note_path: String,
+    state: State<'_, FormationState>,
+) -> AppResult<Vec<Backlink>> {
+    let formation = state.require()?;
+    let title = base_title(&note_path);
+    if title.is_empty() {
+        return Ok(Vec::new());
+    }
+    let title_lower = title.to_lowercase();
+    let mut out = Vec::new();
+    for note in walk_notes(&formation)? {
+        if note.relative_path == note_path {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(formation.join(&note.relative_path)) else {
+            continue;
+        };
+        if links_to(&content, &title_lower) {
+            out.push(Backlink {
+                title: base_title(&note.relative_path).to_string(),
+                path: note.relative_path,
+            });
+        }
+    }
+    out.sort_by_key(|b| b.title.to_lowercase());
+    Ok(out)
+}
+
+/// Basename of a formation-relative path without the `.md` extension.
+fn base_title(rel: &str) -> &str {
+    rel.rsplit('/')
+        .next()
+        .unwrap_or(rel)
+        .trim_end_matches(".md")
+}
+
+/// Whether `content` contains a wiki-link whose target (alias/heading stripped)
+/// equals `title_lower` (already lowercased).
+fn links_to(content: &str, title_lower: &str) -> bool {
+    let lower = content.to_lowercase();
+    let mut i = 0;
+    while let Some(pos) = lower[i..].find("[[") {
+        let start = i + pos + 2;
+        let Some(end_rel) = lower[start..].find("]]") else {
+            break;
+        };
+        let inner = &lower[start..start + end_rel];
+        let target = inner.split(['|', '#']).next().unwrap_or(inner).trim();
+        if target == title_lower {
+            return true;
+        }
+        i = start + end_rel + 2;
+    }
+    false
+}
+
 /// Write a note (atomic). Creates parent dirs if needed. Path stays formation-relative.
 /// After a successful write, queues the note for background re-indexing
 /// (debounced — rapid saves coalesce into one embed pass).

@@ -1,6 +1,7 @@
 import { useFormationStore } from "@/lib/store";
+import { type Backlink, tauri } from "@/lib/tauri";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -100,100 +101,164 @@ function resolveWikiTarget(target: string, notes: { relative_path: string }[]): 
   return byBase?.relative_path ?? null;
 }
 
-export function NotePreview({ source }: { source: string }) {
+export function NotePreview({ source, notePath }: { source: string; notePath?: string }) {
   const notes = useFormationStore((s) => s.notes);
   const openNote = useFormationStore((s) => s.openNote);
+  const refreshNotes = useFormationStore((s) => s.refreshNotes);
 
   const { body, entries } = useMemo(() => splitFrontmatter(source), [source]);
   const processed = useMemo(() => preprocessWikiLinks(body), [body]);
 
+  // Backlinks — notes that [[wiki-link]] to this one.
+  const [backlinks, setBacklinks] = useState<Backlink[]>([]);
+  useEffect(() => {
+    if (!notePath) {
+      setBacklinks([]);
+      return;
+    }
+    tauri
+      .noteBacklinks(notePath)
+      .then(setBacklinks)
+      .catch((err) => {
+        console.error("noteBacklinks failed:", err);
+        setBacklinks([]);
+      });
+  }, [notePath]);
+
+  // The prose column is max-width 42rem. Everything in the scroll area —
+  // frontmatter chips, body, backlinks — flows inside a shared centered
+  // column so they share the same optical left edge at any pane width.
   return (
     <div className="px-6 py-7">
-      {entries.length > 0 && (
-        <div className="note-frontmatter">
-          {entries.map((entry) => (
-            <span className="note-tag" key={entry.key}>
-              <span className="k">{entry.key}</span> {entry.value}
-            </span>
-          ))}
-        </div>
-      )}
-      <div className="note-prose">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          // react-markdown's default URL sanitiser rejects unknown protocols,
-          // which strips our `wiki:` prefix to an empty href. Allow `wiki:`
-          // through (and http(s)/mailto/tel as before); reject the dangerous
-          // ones explicitly.
-          urlTransform={(url) => {
-            if (typeof url !== "string") return url;
-            const lower = url.toLowerCase();
-            if (lower.startsWith("javascript:") || lower.startsWith("data:")) return "";
-            return url;
-          }}
-          components={{
-            a({ href, children, ...rest }) {
-              if (typeof href === "string" && href.startsWith(WIKI_PROTOCOL)) {
-                const target = href.slice(WIKI_PROTOCOL.length);
-                const resolved = resolveWikiTarget(target, notes);
-                const broken = resolved === null;
-                // Semantically a click-action, not a navigation — a button is
-                // the correct element. CSS keeps the link-like appearance.
+      <div className="mx-auto max-w-[42rem]">
+        {entries.length > 0 && (
+          <div className="note-frontmatter">
+            {entries.map((entry) => (
+              <span className="note-tag" key={entry.key}>
+                <span className="k">{entry.key}</span> {entry.value}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="note-prose">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            // react-markdown's default URL sanitiser rejects unknown protocols,
+            // which strips our `wiki:` prefix to an empty href. Allow `wiki:`
+            // through (and http(s)/mailto/tel as before); reject the dangerous
+            // ones explicitly.
+            urlTransform={(url) => {
+              if (typeof url !== "string") return url;
+              const lower = url.toLowerCase();
+              if (lower.startsWith("javascript:") || lower.startsWith("data:")) return "";
+              return url;
+            }}
+            components={{
+              a({ href, children, ...rest }) {
+                if (typeof href === "string" && href.startsWith(WIKI_PROTOCOL)) {
+                  const target = href.slice(WIKI_PROTOCOL.length);
+                  const resolved = resolveWikiTarget(target, notes);
+                  const broken = resolved === null;
+                  const linkName = decodeURIComponent(target);
+                  // Semantically a click-action, not a navigation — a button is
+                  // the correct element. CSS keeps the link-like appearance.
+                  if (!broken) {
+                    return (
+                      <button
+                        type="button"
+                        className="wikilink"
+                        title={resolved as string}
+                        onClick={() => {
+                          openNote(resolved as string).catch((err) =>
+                            console.error("openNote failed:", err),
+                          );
+                        }}
+                      >
+                        {children}
+                      </button>
+                    );
+                  }
+                  // Broken link — create the note on click, then open it.
+                  return (
+                    <button
+                      type="button"
+                      className="wikilink-broken"
+                      title={`Create note: ${linkName}`}
+                      style={{ cursor: "pointer" }}
+                      onClick={() => {
+                        if (!linkName) return;
+                        const newPath = `${linkName}.md`;
+                        const newContent = `# ${linkName}\n`;
+                        tauri
+                          .writeNote(newPath, newContent)
+                          .then(() => refreshNotes())
+                          .then(() => openNote(newPath))
+                          .catch((err) => console.error("create note failed:", err));
+                      }}
+                    >
+                      {children}
+                    </button>
+                  );
+                }
+                // External http(s) — punt to the OS browser. Other schemes
+                // (mailto:, internal anchors) follow default behaviour.
+                if (typeof href === "string" && /^https?:\/\//i.test(href)) {
+                  return (
+                    <a
+                      href={href}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        openExternal(href).catch((err) =>
+                          console.error("open external failed:", err),
+                        );
+                      }}
+                      {...rest}
+                    >
+                      {children}
+                    </a>
+                  );
+                }
                 return (
-                  <button
-                    type="button"
-                    className={broken ? "wikilink-broken" : "wikilink"}
-                    title={
-                      broken
-                        ? `No note found for [[${decodeURIComponent(target)}]]`
-                        : (resolved as string)
-                    }
-                    onClick={() => {
-                      if (resolved) {
-                        openNote(resolved).catch((err) => console.error("openNote failed:", err));
-                      }
-                    }}
-                  >
-                    {children}
-                  </button>
-                );
-              }
-              // External http(s) — punt to the OS browser. Other schemes
-              // (mailto:, internal anchors) follow default behaviour.
-              if (typeof href === "string" && /^https?:\/\//i.test(href)) {
-                return (
-                  <a
-                    href={href}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      openExternal(href).catch((err) =>
-                        console.error("open external failed:", err),
-                      );
-                    }}
-                    {...rest}
-                  >
+                  <a href={href} {...rest}>
                     {children}
                   </a>
                 );
-              }
-              return (
-                <a href={href} {...rest}>
-                  {children}
-                </a>
-              );
-            },
-            // GFM task-list checkboxes — render but disabled in V1 (flipping a
-            // box requires editing the underlying file; the agent owns that).
-            input(props) {
-              if (props.type === "checkbox") {
-                return <input {...props} disabled readOnly />;
-              }
-              return <input {...props} />;
-            },
-          }}
-        >
-          {processed}
-        </ReactMarkdown>
+              },
+              // GFM task-list checkboxes — render but disabled in V1 (flipping a
+              // box requires editing the underlying file; the agent owns that).
+              input(props) {
+                if (props.type === "checkbox") {
+                  return <input {...props} disabled readOnly />;
+                }
+                return <input {...props} />;
+              },
+            }}
+          >
+            {processed}
+          </ReactMarkdown>
+        </div>
+        {backlinks.length > 0 && (
+          <div className="note-backlinks">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-muted">
+              Linked from
+            </p>
+            <div className="flex flex-col gap-1">
+              {backlinks.map((bl) => (
+                <button
+                  key={bl.path}
+                  type="button"
+                  aria-label={`Open note: ${bl.title}`}
+                  onClick={() =>
+                    openNote(bl.path).catch((err) => console.error("openNote failed:", err))
+                  }
+                  className="wikilink w-fit text-left text-[13.5px]"
+                >
+                  {bl.title}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

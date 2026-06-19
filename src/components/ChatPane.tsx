@@ -12,6 +12,39 @@ import type { ToolActivity } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import { useEffect, useRef, useState } from "react";
 
+// ── Tool-type helpers ─────────────────────────────────────────────────────────
+
+/** Classify a tool name into a broad semantic bucket for labelling. */
+function toolKind(tool: string): "search" | "record" | "read" | "write" | "other" {
+  const t = tool.toLowerCase();
+  if (t.includes("search") || t.includes("grep") || t.includes("find")) return "search";
+  if (t.includes("record") || t.includes("fact")) return "record";
+  if (t.includes("read") || t.includes("view") || t.includes("cat")) return "read";
+  if (t.includes("write") || t.includes("edit") || t.includes("create") || t.includes("insert"))
+    return "write";
+  return "other";
+}
+
+/** Pick a compact label for the collapsed trail summary. */
+function trailSummary(activities: ToolActivity[]): string {
+  if (activities.length === 0) return "";
+  const counts: Record<string, number> = { search: 0, record: 0, read: 0, write: 0, other: 0 };
+  for (const a of activities) {
+    const kind = toolKind(a.tool);
+    counts[kind] = (counts[kind] ?? 0) + 1;
+  }
+  const parts: string[] = [];
+  if (counts.search) parts.push(`Searched${counts.search > 1 ? ` ×${counts.search}` : ""}`);
+  if (counts.read) parts.push(`Read${counts.read > 1 ? ` ×${counts.read}` : ""}`);
+  if (counts.write) parts.push(`Wrote${counts.write > 1 ? ` ×${counts.write}` : ""}`);
+  if (counts.record) parts.push(`Recorded${counts.record > 1 ? ` ×${counts.record}` : ""}`);
+  if (counts.other) parts.push(`Used ${counts.other} tool${counts.other > 1 ? "s" : ""}`);
+  // Fall back to plain count when nothing maps
+  return parts.length
+    ? parts.join(" · ")
+    : `Used ${activities.length} tool${activities.length === 1 ? "" : "s"}`;
+}
+
 /// The conversation surface (ADR-0009). One conversation: the user types, the
 /// agent grounds itself, records what it learns into the formation, and replies
 /// — all in the same turn. Each turn streams the agent's reply plus an inline
@@ -300,16 +333,17 @@ export function ChatPane() {
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col bg-bg">
-      {/* Slim header — a quiet "New conversation" affordance, shown once there's
-          something to clear. The formation (long-term memory) is untouched. */}
+      {/* Ghost "New conversation" affordance — no band/border, just a quiet
+          floating button so it doesn't read as another chrome stripe. */}
       {(turns.length > 0 || queueRef.current.length > 0) && (
-        <div className="flex flex-none items-center justify-end px-[22px] pt-3">
+        <div className="flex flex-none items-center justify-end px-[22px] pt-2.5">
           <button
             type="button"
             onClick={handleNewConversation}
-            className="inline-flex items-center gap-[6px] rounded-[8px] border border-line px-[10px] py-[5px] text-[11.5px] font-semibold text-muted transition-colors hover:border-line-strong hover:text-ink"
+            aria-label="Start a new conversation"
+            className="inline-flex items-center gap-[5px] rounded-[8px] px-[8px] py-[4px] text-[11px] font-medium text-faint transition-colors hover:bg-surface hover:text-muted"
           >
-            <Icon.Plus className="h-[13px] w-[13px]" />
+            <Icon.Plus className="h-[11px] w-[11px]" />
             New conversation
           </button>
         </div>
@@ -508,17 +542,10 @@ function TurnView({
         <RedirectedTombstone onResume={onResume} />
       ) : (
         <>
-          {/* Fact-trail — a subtle muted line per tool call. */}
+          {/* Fact-trail — expanded while streaming; collapses to a single
+              summary line once the turn settles. Click to expand/re-collapse. */}
           {turn.activity.length > 0 && (
-            <ul className="flex flex-col gap-[3px] self-start pl-[42px]">
-              {turn.activity.map((a, i) => (
-                <ActivityLine
-                  // biome-ignore lint/suspicious/noArrayIndexKey: activity is append-only and positional
-                  key={i}
-                  activity={a}
-                />
-              ))}
-            </ul>
+            <ActivityTrail activities={turn.activity} streaming={Boolean(turn.pending)} />
           )}
 
           {/* Assistant reply, or a failed-turn retry affordance. */}
@@ -708,6 +735,69 @@ function Receipt({ turn, onUndo }: { turn: ChatTurn; onUndo: () => void }) {
         Undo
       </button>
     </div>
+  );
+}
+
+/// Collapsible activity trail. While the turn is streaming it stays expanded
+/// so the user sees live progress. Once the turn settles it collapses to a
+/// single summary line; clicking it toggles the full list back.
+function ActivityTrail({
+  activities,
+  streaming,
+}: {
+  activities: ToolActivity[];
+  streaming: boolean;
+}) {
+  // Default: expanded while streaming, collapsed once done.
+  const [expanded, setExpanded] = useState(streaming);
+
+  // When the turn flips from streaming → settled, collapse.
+  useEffect(() => {
+    if (!streaming) setExpanded(false);
+  }, [streaming]);
+
+  if (expanded || streaming) {
+    return (
+      <div className="self-start pl-[42px]">
+        {/* Collapsed-toggle header when there's more than one tool and the
+            turn has already settled (so the user can re-collapse). */}
+        {!streaming && activities.length > 1 && (
+          <button
+            type="button"
+            onClick={() => setExpanded(false)}
+            aria-label="Collapse tool activity"
+            aria-expanded={true}
+            className="mb-[3px] flex items-center gap-[5px] text-[11px] text-faint transition-colors hover:text-muted"
+          >
+            <Icon.ChevronDown className="h-[11px] w-[11px] flex-none" />
+            <span>{trailSummary(activities)}</span>
+          </button>
+        )}
+        <ul className="flex flex-col gap-[3px]">
+          {activities.map((a, i) => (
+            <ActivityLine
+              // biome-ignore lint/suspicious/noArrayIndexKey: activity is append-only and positional
+              key={i}
+              activity={a}
+            />
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  // Collapsed state — single summary button.
+  return (
+    <button
+      type="button"
+      onClick={() => setExpanded(true)}
+      aria-label={`Expand tool activity — ${trailSummary(activities)}`}
+      aria-expanded={false}
+      className="flex items-center gap-[5px] self-start pl-[42px] text-[11px] text-faint transition-colors hover:text-muted"
+    >
+      <Icon.ChevronRight className="h-[11px] w-[11px] flex-none" />
+      <span>{trailSummary(activities)}</span>
+    </button>
   );
 }
 

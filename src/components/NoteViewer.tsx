@@ -115,6 +115,8 @@ function Editor() {
 
   return (
     <div className="flex h-full w-full flex-col">
+      {/* The header uses the same max-width column as the prose so the title's
+          left edge is optically aligned with the body text on wide panes. */}
       <header className="flex items-center gap-2 border-b border-line px-4 py-3">
         <button
           type="button"
@@ -125,19 +127,23 @@ function Editor() {
         >
           <Icon.ChevronRight className="h-4 w-4" />
         </button>
+        {/* Inner title block grows to fill available space and is itself capped
+            at the prose column width so it tracks the reading spine. */}
         <div className="min-w-0 flex-1">
-          <div className="truncate font-serif text-[15.5px] font-semibold text-ink">{title}</div>
-          <div className="flex items-center gap-1 text-[11px] text-muted">
-            <span className="h-1.5 w-1.5 rounded-full bg-sage" aria-hidden />
-            <span className="truncate">
-              {typeLabel} · {editedLabel}
-            </span>
-            {isDirty && (
-              <span
-                className="ml-0.5 h-1.5 w-1.5 rounded-full bg-gold"
-                aria-label="Unsaved changes"
-              />
-            )}
+          <div className="mx-auto max-w-[42rem]">
+            <div className="truncate font-serif text-[15.5px] font-semibold text-ink">{title}</div>
+            <div className="flex items-center gap-1 text-[11px] text-muted">
+              <span className="h-1.5 w-1.5 rounded-full bg-sage" aria-hidden />
+              <span className="truncate">
+                {typeLabel} · {editedLabel}
+              </span>
+              {isDirty && (
+                <span
+                  className="ml-0.5 h-1.5 w-1.5 rounded-full bg-gold"
+                  aria-label="Unsaved changes"
+                />
+              )}
+            </div>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -160,7 +166,7 @@ function Editor() {
       )}
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "preview" ? (
-          <NotePreview source={content} />
+          <NotePreview source={content} notePath={path} />
         ) : (
           <CodeMirror
             value={content}

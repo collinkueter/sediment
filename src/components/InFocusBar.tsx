@@ -103,10 +103,10 @@ function EntityChip({ entity }: { entity: ActiveEntity }) {
       aria-label={`Open note for ${entity.name}`}
       title={entity.notePath ?? entity.name}
       className={[
-        "inline-flex items-center gap-1.5 rounded-full border border-line bg-raised px-2.5 py-1",
-        "text-[12.5px] text-ink shadow-sm transition-[border-color,transform] duration-150",
+        "inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5",
+        "text-[12px] text-ink-soft transition-[border-color,transform] duration-150",
         canOpen
-          ? "cursor-pointer hover:-translate-y-px hover:border-accent"
+          ? "cursor-pointer hover:-translate-y-px hover:border-accent hover:text-ink"
           : "cursor-default opacity-60",
       ].join(" ")}
     >
@@ -134,7 +134,7 @@ function TaskPill({ task, today }: { task: OpenTask; today: Date }) {
       type="button"
       onClick={toggleReminders}
       aria-label={`Task: ${task.title}${task.due ? `, due ${task.due}` : ""}`}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-raised px-2.5 py-1 text-[12px] text-ink shadow-sm transition-[border-color] hover:border-line-strong"
+      className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2 py-0.5 text-[12px] text-ink-soft transition-[border-color] hover:border-line-strong hover:text-ink"
     >
       {/* Gold lead dot */}
       <span
@@ -159,7 +159,7 @@ function LoopPill({
   onDismiss: (id: string) => void;
 }) {
   return (
-    <span className="group inline-flex items-center gap-1.5 rounded-lg border border-line bg-raised px-2.5 py-1 text-[12px] text-ink shadow-sm">
+    <span className="group inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2 py-0.5 text-[12px] text-ink-soft">
       {/* Sage lead dot */}
       <span
         className="inline-block h-[7px] w-[7px] flex-none rounded-full bg-sage"
@@ -194,9 +194,9 @@ function SelfChip({ summary }: { summary: string }) {
       aria-label="Open your Self note — what the agent knows about you"
       title={summary}
       className={[
-        "inline-flex items-center gap-1.5 rounded-full border border-line bg-raised px-2.5 py-1",
-        "text-[12.5px] font-medium text-ink shadow-sm transition-[border-color,transform] duration-150",
-        "cursor-pointer hover:-translate-y-px hover:border-accent",
+        "inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5",
+        "text-[12px] font-medium text-ink-soft transition-[border-color,transform] duration-150",
+        "cursor-pointer hover:-translate-y-px hover:border-accent hover:text-ink",
       ].join(" ")}
     >
       <span
@@ -248,9 +248,9 @@ export function InFocusBar() {
   const hasPills = visiblePills.length > 0;
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-5 py-2.5">
+    <div className="flex flex-wrap items-center gap-2 border-b border-line bg-bg px-5 py-1.5">
       {/* "In focus" label with live dot */}
-      <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
+      <span className="inline-flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[.07em] text-faint">
         <span
           className="inline-block h-[6px] w-[6px] rounded-full bg-sage"
           style={{ animation: "infocus-pulse 2.4s ease-in-out infinite" }}

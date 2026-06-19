@@ -20,6 +20,12 @@ export interface FormationNote {
   modified_secs: number;
 }
 
+/** A note that links to the current one (ADR-0009 backlinks). */
+export interface Backlink {
+  path: string;
+  title: string;
+}
+
 export interface FormationSummary {
   path: string;
   note_count: number;
@@ -334,6 +340,8 @@ export const tauri = {
   restoreLastFormation: () => invoke<FormationSummary | null>("restore_last_formation"),
   listNotes: () => invoke<FormationNote[]>("list_notes"),
   readNote: (relativePath: string) => invoke<string>("read_note", { relativePath }),
+  /** Notes that `[[wiki-link]]` to the given note (by its title). */
+  noteBacklinks: (notePath: string) => invoke<Backlink[]>("note_backlinks", { notePath }),
   writeNote: (relativePath: string, content: string) =>
     invoke<void>("write_note", { relativePath, content }),
   indexFormation: (force: boolean) => invoke<IndexFormationResult>("index_formation", { force }),

@@ -191,7 +191,6 @@ export default function App() {
         {formationPath ? <Workspace collapsedNote={notePaneCollapsed} /> : <FormationPicker />}
       </main>
 
-      <AuditLog />
       <CommandPalette />
       <UndoToast />
       <ReminderToast />
@@ -236,6 +235,7 @@ function Workspace({ collapsedNote }: { collapsedNote: boolean }) {
             <div className="min-h-0 flex-1">
               <ChatPane />
             </div>
+            <AuditLog />
           </>
         )}
       </section>

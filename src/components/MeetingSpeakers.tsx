@@ -90,137 +90,141 @@ export function MeetingSpeakers({
   if (unknown === 0 && !expanded) {
     return (
       <div className="border-line border-b bg-surface px-4 py-2">
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          aria-label="Show meeting speakers"
-          aria-expanded={false}
-          className="group inline-flex items-center gap-1.5 text-[11px] text-muted transition-colors hover:text-ink-soft"
-        >
-          <Icon.Mic className="h-3.5 w-3.5 text-faint" />
-          <span>
-            {speakers.length} {speakers.length === 1 ? "speaker" : "speakers"} · all assigned
-          </span>
-          <Icon.ChevronRight className="h-3 w-3 text-faint transition-transform group-hover:translate-x-0.5" />
-        </button>
+        <div className="mx-auto max-w-[42rem]">
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            aria-label="Show meeting speakers"
+            aria-expanded={false}
+            className="group inline-flex items-center gap-1.5 text-[11px] text-muted transition-colors hover:text-ink-soft"
+          >
+            <Icon.Mic className="h-3.5 w-3.5 text-faint" />
+            <span>
+              {speakers.length} {speakers.length === 1 ? "speaker" : "speakers"} · all assigned
+            </span>
+            <Icon.ChevronRight className="h-3 w-3 text-faint transition-transform group-hover:translate-x-0.5" />
+          </button>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-line border-b bg-surface px-4 py-2">
-      {unknown === 0 ? (
-        <button
-          type="button"
-          onClick={() => setExpanded(false)}
-          aria-label="Hide meeting speakers"
-          aria-expanded={true}
-          className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft transition-colors hover:text-ink"
-        >
-          <Icon.Mic className="h-3.5 w-3.5 text-muted" />
-          Speakers
-          <Icon.ChevronDown className="h-3 w-3 text-faint" />
-        </button>
-      ) : (
-        <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
-          <Icon.Mic className="h-3.5 w-3.5 text-muted" />
-          Speakers
-        </span>
-      )}
-
-      {speakers.map((name) => {
-        const unk = isUnknown(name);
-        return (
+    <div className="border-line border-b bg-surface px-4 py-2">
+      <div className="mx-auto flex max-w-[42rem] flex-wrap items-center gap-2">
+        {unknown === 0 ? (
           <button
-            key={name}
             type="button"
-            disabled={busy}
-            onClick={(e) => {
-              const r = e.currentTarget.getBoundingClientRect();
-              setValue("");
-              setAssigning({ from: name, x: r.left, y: r.bottom + 6 });
-            }}
-            title={unk ? `Assign ${name} to a person` : `Reassign ${name}`}
-            className={[
-              "group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12.5px] shadow-sm transition-[border-color,transform] duration-150",
-              "hover:-translate-y-px hover:border-accent disabled:opacity-50",
-              unk ? "border-line-strong border-dashed bg-bg-sunk" : "border-line bg-raised",
-            ].join(" ")}
+            onClick={() => setExpanded(false)}
+            aria-label="Hide meeting speakers"
+            aria-expanded={true}
+            className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft transition-colors hover:text-ink"
           >
-            <span
-              className="inline-grid h-[18px] w-[18px] flex-none place-items-center rounded-full text-[9px] font-bold text-white"
-              style={{ background: speakerTone(name) }}
-              aria-hidden
-            >
-              {unk ? "?" : initials(name)}
-            </span>
-            <span className={unk ? "text-muted" : "text-ink"}>{name}</span>
-            <Icon.Pencil className="h-3 w-3 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+            <Icon.Mic className="h-3.5 w-3.5 text-muted" />
+            Speakers
+            <Icon.ChevronDown className="h-3 w-3 text-faint" />
           </button>
-        );
-      })}
+        ) : (
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
+            <Icon.Mic className="h-3.5 w-3.5 text-muted" />
+            Speakers
+          </span>
+        )}
 
-      {unknown > 0 && !error && <span className="text-[11px] text-muted">{unknown} to name</span>}
-      {error && <span className="truncate text-[11px] text-danger">{error}</span>}
-
-      {/* Assign popover */}
-      {assigning && (
-        <>
-          <button
-            type="button"
-            aria-label="Close"
-            className="fixed inset-0 z-40 cursor-default"
-            onClick={() => setAssigning(null)}
-          />
-          <div
-            className="fixed z-50 w-64 rounded-lg border border-line-strong bg-raised p-3 shadow-2xl"
-            style={{
-              left: Math.min(assigning.x, window.innerWidth - 268),
-              top: Math.min(assigning.y, window.innerHeight - 200),
-            }}
-          >
-            <p className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-muted">
-              Assign {assigning.from} to…
-            </p>
-            {targets.length > 0 && (
-              <div className="mb-2 flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
-                {targets.map((name) => (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => void assign(name)}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[12px] text-ink hover:border-accent"
-                  >
-                    <span
-                      className="inline-grid h-[16px] w-[16px] place-items-center rounded-full text-[8px] font-bold text-white"
-                      style={{ background: speakerTone(name) }}
-                      aria-hidden
-                    >
-                      {initials(name)}
-                    </span>
-                    {name}
-                  </button>
-                ))}
-              </div>
-            )}
-            <input
-              // biome-ignore lint/a11y/noAutofocus: a popover opened on intent should focus its field
-              autoFocus
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void assign(value);
-                else if (e.key === "Escape") setAssigning(null);
+        {speakers.map((name) => {
+          const unk = isUnknown(name);
+          return (
+            <button
+              key={name}
+              type="button"
+              disabled={busy}
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                setValue("");
+                setAssigning({ from: name, x: r.left, y: r.bottom + 6 });
               }}
-              placeholder="New person…"
-              className="w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-[13px] text-ink placeholder:text-faint focus:border-accent-ink focus:outline-none"
+              title={unk ? `Assign ${name} to a person` : `Reassign ${name}`}
+              className={[
+                "group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12.5px] shadow-sm transition-[border-color,transform] duration-150",
+                "hover:-translate-y-px hover:border-accent disabled:opacity-50",
+                unk ? "border-line-strong border-dashed bg-bg-sunk" : "border-line bg-raised",
+              ].join(" ")}
+            >
+              <span
+                className="inline-grid h-[18px] w-[18px] flex-none place-items-center rounded-full text-[9px] font-bold text-white"
+                style={{ background: speakerTone(name) }}
+                aria-hidden
+              >
+                {unk ? "?" : initials(name)}
+              </span>
+              <span className={unk ? "text-muted" : "text-ink"}>{name}</span>
+              <Icon.Pencil className="h-3 w-3 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+            </button>
+          );
+        })}
+
+        {unknown > 0 && !error && <span className="text-[11px] text-muted">{unknown} to name</span>}
+        {error && <span className="truncate text-[11px] text-danger">{error}</span>}
+
+        {/* Assign popover */}
+        {assigning && (
+          <>
+            <button
+              type="button"
+              aria-label="Close"
+              className="fixed inset-0 z-40 cursor-default"
+              onClick={() => setAssigning(null)}
             />
-            <p className="mt-1.5 text-[10px] leading-snug text-faint">
-              Relabels the transcript and gives them a note in People.
-            </p>
-          </div>
-        </>
-      )}
+            <div
+              className="fixed z-50 w-64 rounded-lg border border-line-strong bg-raised p-3 shadow-2xl"
+              style={{
+                left: Math.min(assigning.x, window.innerWidth - 268),
+                top: Math.min(assigning.y, window.innerHeight - 200),
+              }}
+            >
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-muted">
+                Assign {assigning.from} to…
+              </p>
+              {targets.length > 0 && (
+                <div className="mb-2 flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
+                  {targets.map((name) => (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => void assign(name)}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[12px] text-ink hover:border-accent"
+                    >
+                      <span
+                        className="inline-grid h-[16px] w-[16px] place-items-center rounded-full text-[8px] font-bold text-white"
+                        style={{ background: speakerTone(name) }}
+                        aria-hidden
+                      >
+                        {initials(name)}
+                      </span>
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <input
+                // biome-ignore lint/a11y/noAutofocus: a popover opened on intent should focus its field
+                autoFocus
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void assign(value);
+                  else if (e.key === "Escape") setAssigning(null);
+                }}
+                placeholder="New person…"
+                className="w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-[13px] text-ink placeholder:text-faint focus:border-accent-ink focus:outline-none"
+              />
+              <p className="mt-1.5 text-[10px] leading-snug text-faint">
+                Relabels the transcript and gives them a note in People.
+              </p>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

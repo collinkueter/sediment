@@ -1,6 +1,29 @@
 import { Icon } from "@/components/icons";
 import { type ModelProgress, type ModelReadiness, type ModelRequirement, tauri } from "@/lib/tauri";
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
+
+/** Collapsible "More options" disclosure used to hide secondary actions. */
+function MoreOptions({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex items-center gap-1 text-[11px] font-medium text-muted hover:text-ink-soft"
+      >
+        <Icon.ChevronRight
+          aria-hidden
+          className={["h-3 w-3 shrink-0 transition-transform", open ? "rotate-90" : ""].join(" ")}
+        />
+        More options
+      </button>
+      {open && <div className="mt-2 flex flex-col gap-1.5">{children}</div>}
+    </div>
+  );
+}
 
 /** Where to download the on-device model files for the offline / import path. */
 const BUNDLED_MODEL_SOURCE = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5";
@@ -263,7 +286,7 @@ function BundledSetup({
       {error && <p className="text-xs text-danger">{error}</p>}
 
       <div className="flex items-start justify-between gap-3">
-        <div className="flex flex-col gap-1.5">
+        <MoreOptions>
           <button
             type="button"
             onClick={() => void importFolder()}
@@ -294,7 +317,7 @@ function BundledSetup({
             folder — it must contain onnx/model.onnx plus the tokenizer JSON files. Change anytime
             in Settings.
           </p>
-        </div>
+        </MoreOptions>
         {present ? (
           <button
             type="button"
@@ -501,7 +524,7 @@ function OllamaSetup({
       {error && <p className="text-xs text-danger">{error}</p>}
 
       <div className="flex items-start justify-between gap-3">
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-2">
           <button
             type="button"
             onClick={() => void recheck()}
@@ -510,26 +533,28 @@ function OllamaSetup({
           >
             Re-check
           </button>
-          <button
-            type="button"
-            onClick={onUseOnDevice}
-            disabled={running || preparing}
-            className="text-left text-xs font-medium text-muted hover:text-ink-soft disabled:opacity-40"
-          >
-            {preparing ? "Switching to on-device…" : "Use on-device search instead (no Ollama)"}
-          </button>
-          <button
-            type="button"
-            onClick={onUseKeyword}
-            disabled={running || preparing}
-            className="text-left text-xs font-medium text-muted hover:text-ink-soft disabled:opacity-40"
-          >
-            Or use keyword search
-          </button>
-          <p className="max-w-xs text-[10px] leading-snug text-faint">
-            On-device runs the embedding model inside Sediment (no Ollama). Keyword search needs no
-            model at all. Change anytime in Settings.
-          </p>
+          <MoreOptions>
+            <button
+              type="button"
+              onClick={onUseOnDevice}
+              disabled={running || preparing}
+              className="text-left text-xs font-medium text-muted hover:text-ink-soft disabled:opacity-40"
+            >
+              {preparing ? "Switching to on-device…" : "Use on-device search instead (no Ollama)"}
+            </button>
+            <button
+              type="button"
+              onClick={onUseKeyword}
+              disabled={running || preparing}
+              className="text-left text-xs font-medium text-muted hover:text-ink-soft disabled:opacity-40"
+            >
+              Or use keyword search
+            </button>
+            <p className="max-w-xs text-[10px] leading-snug text-faint">
+              On-device runs the embedding model inside Sediment (no Ollama). Keyword search needs
+              no model at all. Change anytime in Settings.
+            </p>
+          </MoreOptions>
         </div>
         {missing.length === 0 ? (
           <button

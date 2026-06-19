@@ -250,6 +250,7 @@ const RESPONSES: Record<string, unknown> = {
   },
   detect_copilot: { installed: false, binary_path: null },
   index_formation: { total: NOTES.length, indexed: NOTES.length, skipped: 0, failed: 0 },
+  note_backlinks: [],
   write_note: null,
   dismiss_open_loop: null,
   complete_task: null,

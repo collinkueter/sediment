@@ -4,7 +4,7 @@ import { useFormationStore } from "@/lib/store";
 import type { ClaudeCodeStatus, CopilotModels, CopilotStatus, ModelReadiness } from "@/lib/tauri";
 import { tauri } from "@/lib/tauri";
 import { type Theme, useThemeStore } from "@/lib/theme";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type Engine = "claude-code" | "copilot";
 type SearchMode = "bundled" | "ollama" | "none";
@@ -112,7 +112,18 @@ export function SettingsModal({
   const [readiness, setReadiness] = useState<ModelReadiness | null>(null);
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState<string | null>(null);
+  // "Applied" flash key — briefly set to the id of the control that just
+  // persisted immediately (tone | theme | retrieval | ollama-url) so a subtle
+  // microlabel appears. Cleared after 2 s via the timer below.
+  const [appliedKey, setAppliedKey] = useState<string | null>(null);
+  const appliedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+
+  const flashApplied = useCallback((key: string) => {
+    if (appliedTimer.current) clearTimeout(appliedTimer.current);
+    setAppliedKey(key);
+    appliedTimer.current = setTimeout(() => setAppliedKey(null), 2000);
+  }, []);
 
   // Honest readout of the active note-search model. Loaded separately from the
   // form (an Ollama check can spin up the daemon) so it never blocks the dialog.
@@ -185,6 +196,13 @@ export function SettingsModal({
       .finally(() => setCopilotModelsLoading(false));
   }, [engine, copilot?.installed, copilotModels]);
 
+  // Clear the "Applied" flash timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (appliedTimer.current) clearTimeout(appliedTimer.current);
+    };
+  }, []);
+
   // Dialog accessibility: close on Escape, focus the first focusable element
   // on mount, and trap Tab/Shift+Tab so focus wraps within the dialog.
   useEffect(() => {
@@ -252,6 +270,7 @@ export function SettingsModal({
       } else {
         refreshReadiness();
       }
+      flashApplied("retrieval");
     } catch (e) {
       setSearchMode(previous);
       setError(e instanceof Error ? e.message : String(e));
@@ -300,6 +319,7 @@ export function SettingsModal({
     setTone(next);
     try {
       await tauri.setAgentTone(next);
+      flashApplied("tone");
     } catch (e) {
       setTone(prev);
       setError(e instanceof Error ? e.message : String(e));
@@ -318,6 +338,7 @@ export function SettingsModal({
       setInitialOllamaUrl(trimmed);
       onModelConfigChanged();
       refreshReadiness();
+      flashApplied("ollama-url");
     } catch (e) {
       setOllamaUrlError(e instanceof Error ? e.message : String(e));
     }
@@ -586,16 +607,23 @@ export function SettingsModal({
                     <p className="text-[13.5px] font-medium text-ink">Tone</p>
                     <p className="mt-0.5 text-[11.5px] text-muted">{TONE_DESCRIPTIONS[tone]}</p>
                   </div>
-                  <Segmented<Tone>
-                    value={tone}
-                    onChange={(t) => void changeTone(t)}
-                    ariaLabel="Agent tone"
-                    options={[
-                      { value: "stoic", label: "Stoic" },
-                      { value: "warm", label: "Warm" },
-                      { value: "sassy", label: "Sassy" },
-                    ]}
-                  />
+                  <div className="flex flex-col items-end gap-1">
+                    <Segmented<Tone>
+                      value={tone}
+                      onChange={(t) => void changeTone(t)}
+                      ariaLabel="Agent tone"
+                      options={[
+                        { value: "stoic", label: "Stoic" },
+                        { value: "warm", label: "Warm" },
+                        { value: "sassy", label: "Sassy" },
+                      ]}
+                    />
+                    {appliedKey === "tone" && (
+                      <span aria-live="polite" className="text-[10px] font-medium text-sage">
+                        Applied
+                      </span>
+                    )}
+                  </div>
                 </div>
               </>
             )}
@@ -615,15 +643,25 @@ export function SettingsModal({
                   Paper for daylight, Strata for night
                 </p>
               </div>
-              <Segmented<Theme>
-                value={theme}
-                onChange={setTheme}
-                ariaLabel="Theme"
-                options={[
-                  { value: "paper", label: "Paper" },
-                  { value: "strata", label: "Strata" },
-                ]}
-              />
+              <div className="flex flex-col items-end gap-1">
+                <Segmented<Theme>
+                  value={theme}
+                  onChange={(t) => {
+                    setTheme(t);
+                    flashApplied("theme");
+                  }}
+                  ariaLabel="Theme"
+                  options={[
+                    { value: "paper", label: "Paper" },
+                    { value: "strata", label: "Strata" },
+                  ]}
+                />
+                {appliedKey === "theme" && (
+                  <span aria-live="polite" className="text-[10px] font-medium text-sage">
+                    Applied
+                  </span>
+                )}
+              </div>
             </div>
           </section>
 
@@ -639,16 +677,23 @@ export function SettingsModal({
                   {SEARCH_MODE_DESCRIPTIONS[searchMode]} Switching re-indexes your notes.
                 </p>
               </div>
-              <Segmented<SearchMode>
-                value={searchMode}
-                onChange={(m) => void changeSearchMode(m)}
-                ariaLabel="Note search mode"
-                options={[
-                  { value: "bundled", label: "On-device" },
-                  { value: "ollama", label: "Ollama" },
-                  { value: "none", label: "Keyword" },
-                ]}
-              />
+              <div className="flex flex-col items-end gap-1">
+                <Segmented<SearchMode>
+                  value={searchMode}
+                  onChange={(m) => void changeSearchMode(m)}
+                  ariaLabel="Note search mode"
+                  options={[
+                    { value: "bundled", label: "On-device" },
+                    { value: "ollama", label: "Ollama" },
+                    { value: "none", label: "Keyword" },
+                  ]}
+                />
+                {appliedKey === "retrieval" && (
+                  <span aria-live="polite" className="text-[10px] font-medium text-sage">
+                    Applied
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* Custom Ollama endpoint — run the model yourself (Docker/Podman/
@@ -699,6 +744,11 @@ export function SettingsModal({
                 </div>
                 {ollamaUrlError && (
                   <p className="mt-1.5 text-[11.5px] text-warn">{ollamaUrlError}</p>
+                )}
+                {appliedKey === "ollama-url" && !ollamaUrlError && (
+                  <p aria-live="polite" className="mt-1 text-[10px] font-medium text-sage">
+                    Applied
+                  </p>
                 )}
               </div>
             )}
