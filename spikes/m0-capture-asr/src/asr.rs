@@ -46,7 +46,8 @@ impl Asr {
         config.enable_endpoint = true;
         config.decoding_method = Some("greedy_search".to_string());
 
-        let recognizer = OnlineRecognizer::create(&config)?;
+        let recognizer = OnlineRecognizer::create(&config)
+            .ok_or_else(|| anyhow::anyhow!("failed to create OnlineRecognizer (check model paths/provider)"))?;
         let stream = recognizer.create_stream();
         Ok(Self { recognizer, stream })
     }
