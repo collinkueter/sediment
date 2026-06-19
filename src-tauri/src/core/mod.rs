@@ -26,6 +26,7 @@ pub mod memory;
 pub mod ollama_sidecar;
 #[cfg(feature = "local-asr")]
 pub mod ort_runtime;
+pub mod people_note;
 pub mod pre_pass;
 pub mod reminders;
 pub mod self_model;

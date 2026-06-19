@@ -167,6 +167,37 @@ impl MemoryStore {
         })
     }
 
+    /// Rename an entity's `canonical_name`, preserving identity (same record id)
+    /// across the change: the old name is pushed onto `canonical_name_history`
+    /// and kept as an alias so existing `[[Old name]]` references still resolve.
+    /// Scoped by `entity_type` so a `meeting` rename can't collide with a person.
+    /// Best-effort: a no-op `Ok(())` when nothing matches `from` (or the names are
+    /// equal/empty) — the meeting-rename flow leans on this to keep the graph node
+    /// in step with the renamed note file without failing the rename if it can't.
+    pub async fn rename_entity(&self, from: &str, to: &str, entity_type: &str) -> AppResult<()> {
+        let from = from.trim();
+        let to = to.trim();
+        if from.is_empty() || to.is_empty() || from == to {
+            return Ok(());
+        }
+        let extra = vec![from.to_string()];
+        self.db
+            .query(
+                "UPDATE entity SET canonical_name = $to, \
+                 canonical_name_history += $extra, aliases += $extra \
+                 WHERE canonical_name = $from AND entity_type = $etype;",
+            )
+            .bind(("to", to.to_string()))
+            .bind(("from", from.to_string()))
+            .bind(("etype", entity_type.to_string()))
+            .bind(("extra", extra))
+            .await
+            .map_err(|e| AppError::other(format!("rename entity: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("rename entity check: {e}")))?;
+        Ok(())
+    }
+
     /// Returns `base` if no row with that id exists, otherwise tries
     /// `base_2`, `base_3`, ... up to 9 attempts before giving up.
     async fn pick_available_slug(&self, base: &str) -> AppResult<String> {

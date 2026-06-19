@@ -347,6 +347,11 @@ pub async fn session_stop(
         state: SessionLifecycle::Stopped,
     });
 
+    // Keep this meeting "in play" briefly so chat turns right after it are still
+    // grounded on it (ADR-0017 §7 — recognise we're talking about the meeting,
+    // during *and* after).
+    sessions.mark_meeting_ended(session.note_path.clone());
+
     // Derive the summary from the note — the single source of truth.
     let formation_root = formation.require()?;
     let note_abs = formation_root.join(&session.note_path);
@@ -389,6 +394,7 @@ pub async fn session_stop(
                     let _ = events.send(SessionEvent::Distilled {
                         summary: result.summary,
                         turn_id: result.turn_id,
+                        suggested_title: result.suggested_title,
                     });
                 }
                 Ok(None) => tracing::info!("distillation: no transcript to distil"),
@@ -403,4 +409,46 @@ pub async fn session_stop(
         segment_count,
         attendees,
     })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameMeetingResult {
+    /// The note's new formation-relative path after the rename.
+    pub note_path: String,
+}
+
+/// Rename a finished Meeting note from the end-of-session suggestion (ADR-0017 §7):
+/// rewrite the note's H1 and move the file (keeping its timestamp prefix), then
+/// best-effort rename the `meeting` graph entity so the node tracks the file. The
+/// current title is read from the note's own filename — the single source of truth
+/// — so the caller only passes the path and the new title. Returns the new path so
+/// the UI can re-point its note link. Runs after Stop, when the Session is closed
+/// and nothing holds the old path.
+#[tauri::command]
+pub async fn rename_meeting_note(
+    note_path: String,
+    new_title: String,
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+) -> AppResult<RenameMeetingResult> {
+    let formation_root = formation.require()?;
+    let old_title = meeting_note::title_from_path(&note_path);
+    let new_rel = meeting_note::rename_meeting_note(&formation_root, &note_path, &new_title)?;
+
+    // Keep the graph node's name in step with the file. Best-effort: the file
+    // rename has already succeeded and must not be undone by a store hiccup.
+    let new_clean = meeting_note::sanitize_title(&new_title);
+    let memory_dir = formation_root.join(APP_DIR).join("memory");
+    match memory.get_or_init(&memory_dir).await {
+        Ok(store) => {
+            if let Err(e) = store.rename_entity(&old_title, &new_clean, "meeting").await {
+                tracing::warn!("rename_meeting_note: entity rename failed: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("rename_meeting_note: memory init failed: {e}"),
+    }
+
+    tracing::info!(from = %note_path, to = %new_rel, "meeting note renamed");
+    Ok(RenameMeetingResult { note_path: new_rel })
 }

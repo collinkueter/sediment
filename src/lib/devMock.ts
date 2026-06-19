@@ -199,6 +199,12 @@ const RESPONSES: Record<string, unknown> = {
   },
   download_asr_model: null,
   import_asr_model: null,
+  meeting_speakers: ["Self", "Sarah Chen", "Unknown speaker 2"],
+  assign_meeting_speaker: {
+    attendees: ["Self", "Sarah Chen"],
+    personNotePath: "People/Sarah Chen.md",
+    relabeled: 2,
+  },
   list_notes: NOTES,
   get_working_set: WORKING_SET,
   get_self_summary: "- Prefers async over meetings\n- Shipping Sediment V1 by August",

@@ -1,4 +1,5 @@
 import { EmptyState } from "@/components/EmptyState";
+import { MeetingSpeakers } from "@/components/MeetingSpeakers";
 import { NotePreview } from "@/components/NotePreview";
 import { Segmented } from "@/components/Segmented";
 import { Icon } from "@/components/icons";
@@ -83,6 +84,9 @@ function Editor() {
   const typeLabel = useMemo(() => noteTypeLabel(path), [path]);
   const note = useMemo(() => notes.find((n) => n.relative_path === path), [notes, path]);
   const editedLabel = note ? relativeEdited(note.modified_secs) : "edited just now";
+  const openNote = useFormationStore((s) => s.openNote);
+  // A Meeting note gets a speaker-reconciliation band (ADR-0017 §6).
+  const isMeeting = path.startsWith("Meetings/");
 
   // Cmd+S / Ctrl+S to save the current note (Source mode only — Read has
   // nothing to save). Cmd+E toggles between modes, matching Obsidian.
@@ -149,6 +153,9 @@ function Editor() {
           )}
         </div>
       </header>
+      {isMeeting && mode === "preview" && (
+        <MeetingSpeakers notePath={path} onReload={() => openNote(path)} />
+      )}
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "preview" ? (
           <NotePreview source={content} />

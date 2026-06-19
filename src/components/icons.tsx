@@ -176,6 +176,18 @@ export const Icon = {
       <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
     </svg>
   ),
+  Mic: (p: IconProps) => (
+    <svg {...base(p)}>
+      <rect x="9" y="2" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <path d="M12 18v3" />
+    </svg>
+  ),
+  Stop: (p: IconProps) => (
+    <svg {...base(p)}>
+      <rect x="6" y="6" width="12" height="12" rx="2.5" />
+    </svg>
+  ),
 };
 
 /** Two-letter avatar initials from an entity name (e.g. "Keaton Vale" → "KV"). */

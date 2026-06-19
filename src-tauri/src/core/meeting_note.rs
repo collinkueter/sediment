@@ -47,6 +47,23 @@ pub fn meeting_note_relative_path(started: DateTime<Local>, title: &str) -> Stri
     format!("{MEETINGS_DIR}/{stamp} — {}.md", sanitize_title(title))
 }
 
+/// The title component of a `Meetings/<stamp> — <title>.md` path: the text after
+/// the ` — ` separator, sans extension and directory. Falls back to the whole
+/// stem when the separator is absent. The inverse of [`meeting_note_relative_path`]
+/// for the title half — used by the rename flow to learn the current title from
+/// the filename without threading it through the frontend.
+pub fn title_from_path(relative_path: &str) -> String {
+    let file = relative_path
+        .rsplit_once('/')
+        .map(|(_, f)| f)
+        .unwrap_or(relative_path);
+    let stem = file.strip_suffix(".md").unwrap_or(file);
+    stem.split_once(" — ")
+        .map(|(_, t)| t)
+        .unwrap_or(stem)
+        .to_string()
+}
+
 /// Make a title safe to use as a filename component: drop path separators and
 /// control characters, collapse whitespace, and fall back to "Meeting" when the
 /// result is empty. Keeps spaces and case — these are real Obsidian filenames.
@@ -342,6 +359,86 @@ pub fn rename_speaker(note_abs: &Path, from: &str, to: &str) -> AppResult<usize>
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Rename
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Rename a finished Meeting note to `new_title` (ADR-0017 §7): rewrite its `# `
+/// H1 and move the file to `Meetings/<same stamp> — <new title>.md`, keeping the
+/// `<YYYY-MM-DD HHmm>` prefix so the chronological filename ordering survives the
+/// rename. Returns the new formation-relative POSIX path. A no-op move when the
+/// sanitized title resolves to the existing filename (only the H1 is touched).
+/// Errors if the note is missing or a different note already occupies the target.
+pub fn rename_meeting_note(
+    formation_root: &Path,
+    old_relative_path: &str,
+    new_title: &str,
+) -> AppResult<String> {
+    let new_title = sanitize_title(new_title);
+    let old_abs = formation_root.join(old_relative_path);
+    if !old_abs.is_file() {
+        return Err(AppError::other(format!(
+            "meeting note not found: {old_relative_path}"
+        )));
+    }
+    let new_relative_path = swap_title_in_path(old_relative_path, &new_title);
+    let new_abs = formation_root.join(&new_relative_path);
+
+    // Rewrite the note's H1 to the new title (the in-file half of the rename).
+    let content = read(&old_abs)?;
+    atomic_write(&old_abs, rewrite_h1(&content, &new_title).as_bytes())?;
+
+    // Move the file unless the path is unchanged (title sanitised to the same).
+    if new_abs != old_abs {
+        if new_abs.exists() {
+            return Err(AppError::other(format!(
+                "a meeting note already exists at {new_relative_path}"
+            )));
+        }
+        std::fs::rename(&old_abs, &new_abs)
+            .map_err(|e| AppError::other(format!("rename meeting note: {e}")))?;
+    }
+    Ok(new_relative_path)
+}
+
+/// Replace the title component of a `Meetings/<stamp> — <title>.md` path, keeping
+/// the directory and stamp prefix. Falls back to appending the title next to the
+/// original stem when the expected ` — ` separator is absent.
+fn swap_title_in_path(old_relative_path: &str, new_title: &str) -> String {
+    let (dir, file) = match old_relative_path.rsplit_once('/') {
+        Some((d, f)) => (Some(d), f),
+        None => (None, old_relative_path),
+    };
+    let stem = file.strip_suffix(".md").unwrap_or(file);
+    let stamp = stem.split_once(" — ").map(|(s, _)| s).unwrap_or(stem);
+    let new_file = format!("{stamp} — {new_title}.md");
+    match dir {
+        Some(d) => format!("{d}/{new_file}"),
+        None => new_file,
+    }
+}
+
+/// Replace the first ATX `# ` heading with `# {title}`, leaving the rest of the
+/// note untouched. Prepends a heading when the note has none.
+fn rewrite_h1(content: &str, title: &str) -> String {
+    let mut replaced = false;
+    let out: Vec<String> = content
+        .lines()
+        .map(|line| {
+            if !replaced && line.trim_start().starts_with("# ") {
+                replaced = true;
+                format!("# {title}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    if !replaced {
+        return format!("# {title}\n\n{content}");
+    }
+    finalize(&out, content)
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Section splice (pure, testable) — parameterised by heading
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -633,5 +730,61 @@ mod tests {
         // Renaming a speaker that isn't present is a no-op.
         assert_eq!(rename_speaker(&abs, "Nobody", "X").unwrap(), 0);
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn title_from_path_unwraps_the_stamp_separator() {
+        assert_eq!(
+            title_from_path("Meetings/2026-06-18 1530 — Q3 Planning.md"),
+            "Q3 Planning"
+        );
+        // No separator → the whole stem.
+        assert_eq!(title_from_path("Meetings/loose.md"), "loose");
+    }
+
+    #[test]
+    fn rename_meeting_note_moves_file_keeps_stamp_and_rewrites_h1() {
+        let root = tempdir();
+        let rel = meeting_note_relative_path(started(), "Untitled");
+        let abs = ensure_meeting_note(&root, &rel, "Untitled", started()).unwrap();
+        append_transcript_segment(&abs, 1000, "Sarah", "Let's plan Q3.").unwrap();
+
+        let new_rel = rename_meeting_note(&root, &rel, "Q3 Planning").unwrap();
+        assert_eq!(new_rel, "Meetings/2026-06-18 1530 — Q3 Planning.md");
+        assert!(!root.join(&rel).exists(), "old file moved");
+
+        let body = std::fs::read_to_string(root.join(&new_rel)).unwrap();
+        assert!(body.starts_with("# Q3 Planning"), "H1 rewritten: {body}");
+        // The transcript (and everything below the H1) is carried over intact.
+        assert!(body.contains("**Sarah:** Let's plan Q3."));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rename_meeting_note_errors_on_collision_and_missing() {
+        let root = tempdir();
+        let rel = meeting_note_relative_path(started(), "Sync");
+        ensure_meeting_note(&root, &rel, "Sync", started()).unwrap();
+        // A second note the rename would collide with.
+        let taken = meeting_note_relative_path(started(), "Q3 Planning");
+        ensure_meeting_note(&root, &taken, "Q3 Planning", started()).unwrap();
+
+        assert!(rename_meeting_note(&root, &rel, "Q3 Planning").is_err());
+        // Original is untouched after the failed rename.
+        assert!(root.join(&rel).exists());
+        // Renaming a note that does not exist errors too.
+        assert!(rename_meeting_note(&root, "Meetings/ghost.md", "X").is_err());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rewrite_h1_replaces_only_the_first_heading() {
+        let content = "# Old\n\n## Notes\n\n# not a real h1 inside\n";
+        let out = rewrite_h1(content, "New");
+        assert!(out.starts_with("# New\n"));
+        assert_eq!(out.matches("# New").count(), 1);
+        assert!(out.contains("# not a real h1 inside"), "later lines kept");
+        // No H1 at all → one is prepended.
+        assert!(rewrite_h1("## Notes\n", "New").starts_with("# New\n\n## Notes"));
     }
 }

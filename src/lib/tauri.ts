@@ -297,7 +297,9 @@ export type SessionEvent =
   | { kind: "note"; offsetMs: number; text: string }
   // The end-of-Session distillation turn finished (ADR-0017 §7): a one-line
   // receipt and the audit turn id, for a quiet summary + undo affordance.
-  | { kind: "distilled"; summary: string; turnId: string };
+  // `suggestedTitle` is a content-derived meeting name offered as an optional
+  // rename, or null when the typed title already fits.
+  | { kind: "distilled"; summary: string; turnId: string; suggestedTitle: string | null };
 
 export interface SessionStartResult {
   sessionId: string;
@@ -309,6 +311,16 @@ export interface SessionStopResult {
   notePath: string;
   segmentCount: number;
   attendees: string[];
+}
+
+/** Result of `assign_meeting_speaker` — the post-meeting speaker→person assignment. */
+export interface AssignSpeakerResult {
+  /** The refreshed attendee list after the rename. */
+  attendees: string[];
+  /** Formation-relative path of the person's People note (created if needed). */
+  personNotePath: string;
+  /** How many transcript segments were relabelled. */
+  relabeled: number;
 }
 
 export const tauri = {
@@ -430,6 +442,21 @@ export const tauri = {
     invoke<void>("session_rename_speaker", { sessionId, from, to }),
   /** Close the Session and return its summary (distillation turn is M6). */
   sessionStop: (sessionId: string) => invoke<SessionStopResult>("session_stop", { sessionId }),
+  /**
+   * Rename a finished Meeting note from the end-of-session suggestion (ADR-0017
+   * §7): rewrites the note's H1 and moves the file (keeping its timestamp prefix),
+   * renames the `meeting` graph entity, and resolves with the note's new path.
+   */
+  renameMeetingNote: (notePath: string, newTitle: string) =>
+    invoke<{ notePath: string }>("rename_meeting_note", { notePath, newTitle }),
+  /** Distinct speakers in a finished Meeting note (post-meeting assignment panel). */
+  meetingSpeakers: (notePath: string) => invoke<string[]>("meeting_speakers", { notePath }),
+  /**
+   * Assign a Meeting-note speaker to a person after the meeting (ADR-0017 §6):
+   * relabels the transcript + attendees and ensures the person has a `People/` note.
+   */
+  assignMeetingSpeaker: (notePath: string, from: string, to: string) =>
+    invoke<AssignSpeakerResult>("assign_meeting_speaker", { notePath, from, to }),
 
   // Audit log — the browsable, revertable backstop (ADR-0009 §6, ADR-0010 §8)
   /** Every turn's audit entry, newest-first. */

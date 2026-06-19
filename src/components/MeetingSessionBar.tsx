@@ -1,34 +1,68 @@
-import { type SessionEvent, type TranscriptSegment, tauri } from "@/lib/tauri";
+import { Icon, initials } from "@/components/icons";
+import { isUnknown, speakerTone } from "@/lib/speakers";
+import { useFormationStore } from "@/lib/store";
+import { type SessionEvent, tauri } from "@/lib/tauri";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * Meeting Session capture bar (ADR-0017 §4).
+ * Meeting Session capture bar (ADR-0017 §4) — a *slim* recording strip.
  *
- * The transient capture surface: it exists only while a Session is open and
- * collapses back to nothing on stop — the durable artifact is the Meeting note.
- * On Start the backend runs real capture (mic + system-output loopback) → on-device
- * ASR → diarization, streaming `segment` events as people speak. The text field
- * below stays available for a hand-typed note or a manual correction; it is no
- * longer the source of transcript text.
+ * The meeting collapses into the single conversation (ADR-0017 §4): this bar is
+ * just the recording control + live status, not a second surface. While recording,
+ * the backend captures (mic + system-output loopback) → on-device ASR → diarization
+ * and streams the transcript into the **Meeting note** (open it to watch it grow);
+ * your chat in the main conversation is automatically grounded on the meeting,
+ * during it and for a window after (so "what did Sarah say about Q3?" just works).
+ * Speakers show as coloured avatars — click one to name them ("that was Sarah"),
+ * which also enrolls their Voiceprint. On stop, a background distillation turn
+ * surfaces a one-line receipt + undo (and an optional content-derived title).
+ *
+ * Design language: Strata — `bg-surface` chrome at the InFocusBar height, Plex Mono
+ * for the elapsed clock, the terracotta accent for the primary action, and one
+ * alive element: the danger-red recording pulse.
  */
+
+function fmtOffset(ms: number): string {
+  const t = Math.max(0, Math.floor(ms / 1000));
+  const s = String(t % 60).padStart(2, "0");
+  const m = Math.floor(t / 60);
+  if (m < 60) return `${String(m).padStart(2, "0")}:${s}`;
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
+}
+
+function basename(path: string): string {
+  const cut = path.replace(/\\/g, "/").split("/").pop() ?? path;
+  return cut.replace(/\.md$/i, "");
+}
+
 export function MeetingSessionBar() {
+  const openNote = useFormationStore((s) => s.openNote);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [notePath, setNotePath] = useState<string | null>(null);
-  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [attendees, setAttendees] = useState<string[]>([]);
-  const [speaker, setSpeaker] = useState("Self");
-  const [line, setLine] = useState("");
-  const [asNote, setAsNote] = useState(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
   const busy = useRef(false);
-  // ASR model readiness: null = unknown/checking, true = installed, false = needs
-  // download. A build without `local-asr` lacks the command — treat as ready so the
-  // bar still works (manual segments only).
+
+  // Speaker rename popover, anchored to the clicked avatar.
+  const [rename, setRename] = useState<{ from: string; x: number; y: number } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  // ASR model readiness: null = checking, true = installed, false = needs download.
+  // A build without `local-asr` lacks the command — treat as ready (manual only).
   const [asrReady, setAsrReady] = useState<boolean | null>(null);
   const [setupPhase, setSetupPhase] = useState<string | null>(null);
-  // The end-of-session distillation receipt (ADR-0017 §7): a one-line summary +
-  // the audit turn id, surfaced quietly with an undo after a meeting ends.
-  const [distill, setDistill] = useState<{ summary: string; turnId: string } | null>(null);
+  const [setupPct, setSetupPct] = useState<number | null>(null);
+
+  // The end-of-session distillation receipt (ADR-0017 §7): a quiet summary + undo,
+  // plus an optional content-derived title offered as a one-tap rename.
+  const [distill, setDistill] = useState<{
+    summary: string;
+    turnId: string;
+    suggestedTitle: string | null;
+  } | null>(null);
+  const [renaming, setRenaming] = useState(false);
 
   useEffect(() => {
     tauri
@@ -37,45 +71,102 @@ export function MeetingSessionBar() {
       .catch(() => setAsrReady(true));
   }, []);
 
-  const downloadModels = useCallback(async () => {
-    setSetupPhase("starting…");
-    try {
-      await tauri.downloadAsrModel((p) => {
-        const pct = p.total > 0 ? Math.round((p.completed / p.total) * 100) : 0;
-        setSetupPhase(p.done ? "done" : `${p.phase} ${pct}%`);
-      });
-      setAsrReady(true);
-    } catch (err) {
-      console.error("ASR model download failed:", err);
-      setSetupPhase("download failed — see logs");
-    }
-  }, []);
+  // Tick the elapsed clock once a second while recording.
+  useEffect(() => {
+    if (startedAt === null) return;
+    setElapsed(Date.now() - startedAt);
+    const id = window.setInterval(() => setElapsed(Date.now() - startedAt), 1000);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
 
   const onEvent = useCallback((e: SessionEvent) => {
     switch (e.kind) {
       case "status":
         if (e.state === "stopped") {
           setSessionId(null);
+          setStartedAt(null);
         }
-        break;
-      case "segment":
-        setSegments((prev) => [...prev, e.segment]);
         break;
       case "attendeeChanged":
         setAttendees(e.attendees);
         break;
-      case "note":
-        // Notes are time-anchored into ## Notes; surface them inline too.
-        setSegments((prev) => [
-          ...prev,
-          { offsetMs: e.offsetMs, speaker: "📝 note", text: e.text },
-        ]);
-        break;
       case "distilled":
-        // The background distillation finished — show its receipt + undo.
-        setDistill({ summary: e.summary, turnId: e.turnId });
+        setDistill({ summary: e.summary, turnId: e.turnId, suggestedTitle: e.suggestedTitle });
         break;
+      // `segment` / `note` stream into the Meeting note, not this bar — open the
+      // note to watch the transcript grow, or just chat about it below.
     }
+  }, []);
+
+  const downloadModels = useCallback(async () => {
+    setSetupPhase("starting…");
+    setSetupPct(null);
+    try {
+      await tauri.downloadAsrModel((p) => {
+        setSetupPct(p.total > 0 ? Math.round((p.completed / p.total) * 100) : null);
+        setSetupPhase(p.done ? "done" : p.phase);
+      });
+      setAsrReady(true);
+    } catch (err) {
+      console.error("ASR model download failed:", err);
+      setSetupPhase("download failed — see logs");
+      setSetupPct(null);
+    }
+  }, []);
+
+  const start = useCallback(async () => {
+    if (busy.current) return;
+    busy.current = true;
+    try {
+      const res = await tauri.sessionStart(title.trim() || "Meeting", onEvent);
+      setSessionId(res.sessionId);
+      setNotePath(res.notePath);
+      setAttendees([]);
+      setStartedAt(Date.now());
+      setDistill(null);
+    } catch (err) {
+      console.error("session start failed:", err);
+    } finally {
+      busy.current = false;
+    }
+  }, [title, onEvent]);
+
+  const stop = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      await tauri.sessionStop(sessionId);
+    } catch (err) {
+      console.error("session stop failed:", err);
+    } finally {
+      setSessionId(null);
+      setStartedAt(null);
+    }
+  }, [sessionId]);
+
+  // Commit a live speaker rename (ADR-0017 §6); the backend relabels the Meeting
+  // note's transcript + attendees and enrolls the voiceprint.
+  const commitRename = useCallback(
+    async (to: string) => {
+      if (!sessionId || !rename) return;
+      const from = rename.from;
+      const next = to.trim();
+      setRename(null);
+      setRenameValue("");
+      if (!next || next === from) return;
+      setAttendees((prev) => prev.map((a) => (a === from ? next : a)));
+      try {
+        await tauri.sessionRenameSpeaker(sessionId, from, next);
+      } catch (err) {
+        console.error("rename speaker failed:", err);
+      }
+    },
+    [sessionId, rename],
+  );
+
+  const openRename = useCallback((from: string, target: HTMLElement) => {
+    const r = target.getBoundingClientRect();
+    setRenameValue("");
+    setRename({ from, x: r.left, y: r.bottom + 6 });
   }, []);
 
   const undoDistill = useCallback(async () => {
@@ -89,211 +180,278 @@ export function MeetingSessionBar() {
     }
   }, [distill]);
 
-  const start = useCallback(async () => {
-    if (busy.current) return;
-    busy.current = true;
+  // Accept the distillation's suggested title: rename the Meeting note (file + H1
+  // + graph node) and re-point the local note link, then drop the suggestion.
+  const acceptRename = useCallback(async () => {
+    const next = distill?.suggestedTitle?.trim();
+    if (!next || !notePath || renaming) return;
+    setRenaming(true);
     try {
-      const res = await tauri.sessionStart(title.trim() || "Meeting", onEvent);
-      setSessionId(res.sessionId);
+      const res = await tauri.renameMeetingNote(notePath, next);
       setNotePath(res.notePath);
-      setSegments([]);
-      setAttendees([]);
-      setDistill(null);
+      setTitle(next);
+      setDistill((d) => (d ? { ...d, suggestedTitle: null } : d));
     } catch (err) {
-      console.error("session start failed:", err);
+      console.error("rename meeting failed:", err);
     } finally {
-      busy.current = false;
+      setRenaming(false);
     }
-  }, [title, onEvent]);
+  }, [distill, notePath, renaming]);
 
-  const push = useCallback(async () => {
-    const text = line.trim();
-    if (!sessionId || !text) return;
-    try {
-      if (asNote) {
-        await tauri.sessionPushNote(sessionId, text);
-      } else {
-        await tauri.sessionPushSegment(sessionId, speaker.trim() || "Unknown", text);
-      }
-      setLine("");
-    } catch (err) {
-      console.error("session push failed:", err);
-    }
-  }, [sessionId, line, asNote, speaker]);
+  // Decline just the rename, keeping the receipt's summary + undo in place.
+  const dismissRename = useCallback(() => {
+    setDistill((d) => (d ? { ...d, suggestedTitle: null } : d));
+  }, []);
 
-  const stop = useCallback(async () => {
-    if (!sessionId) return;
-    try {
-      await tauri.sessionStop(sessionId);
-    } catch (err) {
-      console.error("session stop failed:", err);
-    } finally {
-      setSessionId(null);
-    }
-  }, [sessionId]);
+  // The distillation receipt rides as a bottom toast (the app's "quiet summary +
+  // undo" idiom, matching UndoToast) so it survives the bar collapsing on stop.
+  const distillToast = distill ? (
+    <div className="-translate-x-1/2 fixed bottom-6 left-1/2 z-50 flex max-w-[34rem] flex-col gap-2 rounded-xl border border-line-strong bg-raised px-4 py-2.5 text-ink-soft shadow-2xl">
+      <div className="flex items-center gap-3">
+        <Icon.Sparkle aria-hidden className="h-4 w-4 shrink-0 text-gold" />
+        <span className="min-w-0 flex-1 truncate text-sm">{distill.summary}</span>
+        <button
+          type="button"
+          onClick={() => void undoDistill()}
+          className="flex items-center gap-1.5 rounded-lg border border-line-strong bg-raised px-3 py-1 font-semibold text-[12px] text-accent-ink hover:border-accent hover:bg-accent-tint"
+        >
+          <Icon.Undo className="h-3 w-3" />
+          Undo
+        </button>
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={() => setDistill(null)}
+          className="grid h-6 w-6 place-items-center rounded-md text-muted hover:bg-bg-sunk hover:text-ink"
+        >
+          <Icon.X className="h-4 w-4" />
+        </button>
+      </div>
 
-  // "That was Sarah" — name a speaker (ADR-0017 §6). Relabels the transcript and
-  // attendees in the note; optimistically relabel the live view too.
-  const renameSpeaker = useCallback(
-    async (from: string) => {
-      if (!sessionId) return;
-      const to = window.prompt(`Name this speaker (was "${from}")`, "")?.trim();
-      if (!to || to === from) return;
-      try {
-        await tauri.sessionRenameSpeaker(sessionId, from, to);
-        setSegments((prev) => prev.map((s) => (s.speaker === from ? { ...s, speaker: to } : s)));
-      } catch (err) {
-        console.error("rename speaker failed:", err);
-      }
-    },
-    [sessionId],
-  );
-
-  const fmt = (ms: number) => {
-    const t = Math.max(0, Math.floor(ms / 1000));
-    return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
-  };
-
-  // The post-meeting distillation receipt (ADR-0017 §7): a quiet one-line summary
-  // with a one-click undo. Shown above the idle bar after a Session ends.
-  const distillBanner = distill ? (
-    <div className="flex items-center gap-2 border-b border-line bg-bg px-3 py-1.5 text-xs">
-      <span className="text-muted">✶ Distilled</span>
-      <span className="min-w-0 flex-1 truncate">{distill.summary}</span>
-      <button type="button" onClick={undoDistill} className="text-muted hover:underline">
-        Undo
-      </button>
-      <button
-        type="button"
-        onClick={() => setDistill(null)}
-        className="text-muted hover:text-fg"
-        aria-label="Dismiss"
-      >
-        ✕
-      </button>
+      {/* Optional: rename the meeting to the title the distillation derived from
+          what was actually discussed (ADR-0017 §7). Suggest, never assert. */}
+      {distill.suggestedTitle && (
+        <div className="flex items-center gap-2 border-line border-t pt-2">
+          <Icon.Pencil aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted" />
+          <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink-soft">
+            Rename to <span className="font-semibold text-ink">“{distill.suggestedTitle}”</span>?
+          </span>
+          <button
+            type="button"
+            onClick={() => void acceptRename()}
+            disabled={renaming}
+            className="flex items-center gap-1.5 rounded-lg border border-line-strong bg-raised px-3 py-1 font-semibold text-[12px] text-accent-ink hover:border-accent hover:bg-accent-tint disabled:opacity-40"
+          >
+            <Icon.Check className="h-3 w-3" />
+            Rename
+          </button>
+          <button
+            type="button"
+            onClick={dismissRename}
+            className="rounded-md px-2 py-1 text-[12px] text-muted hover:bg-bg-sunk hover:text-ink"
+          >
+            Keep
+          </button>
+        </div>
+      )}
     </div>
   ) : null;
 
-  if (!sessionId) {
-    // Models missing → prompt a one-time download instead of opening a Session
-    // that can't transcribe (ADR-0016 explicit-setup posture).
-    if (asrReady === false) {
-      return (
-        <>
-          {distillBanner}
-          <div className="flex items-center gap-2 border-b border-line bg-bg px-3 py-1.5 text-sm">
-            <span className="text-muted">Meeting</span>
-            <span className="min-w-0 flex-1 truncate text-muted">
-              {setupPhase
-                ? `Setting up transcription · ${setupPhase}`
-                : "On-device transcription model needed (~0.3 GB, one time)"}
-            </span>
-            <button
-              type="button"
-              onClick={downloadModels}
-              disabled={!!setupPhase && setupPhase !== "download failed — see logs"}
-              className="rounded bg-accent px-3 py-1 font-medium text-white hover:opacity-90 disabled:opacity-50"
-            >
-              Download models
-            </button>
-          </div>
-        </>
-      );
-    }
+  // ── Idle: model setup needed ──────────────────────────────────────────────
+  if (!sessionId && asrReady === false) {
     return (
       <>
-        {distillBanner}
-        <div className="flex items-center gap-2 border-b border-line bg-bg px-3 py-1.5 text-sm">
-          <span className="text-muted">Meeting</span>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && start()}
-            placeholder="Title (e.g. Q3 Planning)"
-            className="min-w-0 flex-1 rounded border border-line bg-transparent px-2 py-1 outline-none focus:border-accent"
-          />
+        <div className="flex items-center gap-3 border-b border-line bg-surface px-5 py-2.5">
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
+            <Icon.Mic className="h-3.5 w-3.5 text-muted" />
+            Meeting
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[12.5px] text-ink-soft">
+              {setupPhase
+                ? `Setting up transcription · ${setupPhase}${setupPct !== null ? ` · ${setupPct}%` : ""}`
+                : "On-device transcription model needed — once, ~0.3 GB, then it runs offline."}
+            </p>
+            {setupPhase && setupPhase !== "download failed — see logs" && (
+              <div className="mt-1 h-1 overflow-hidden rounded-full bg-bg-sunk">
+                <div
+                  className="h-full bg-accent transition-all"
+                  style={{ width: setupPct !== null ? `${setupPct}%` : "33%" }}
+                />
+              </div>
+            )}
+          </div>
           <button
             type="button"
-            onClick={start}
-            className="rounded bg-accent px-3 py-1 font-medium text-white hover:opacity-90"
+            onClick={() => void downloadModels()}
+            disabled={!!setupPhase && setupPhase !== "download failed — see logs"}
+            className="shrink-0 rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-white hover:bg-accent-ink disabled:opacity-40"
           >
-            ● Start session
+            Download models
           </button>
         </div>
+        {distillToast}
       </>
     );
   }
 
-  return (
-    <div className="flex flex-col border-b border-line bg-bg text-sm">
-      <div className="flex items-center gap-2 px-3 py-1.5">
-        <span className="inline-flex items-center gap-1.5 font-medium text-red-500">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" /> Recording
-        </span>
-        {notePath && <span className="truncate text-xs text-muted">{notePath}</span>}
-        {attendees.length > 0 && (
-          <span className="truncate text-xs text-muted">· {attendees.join(", ")}</span>
-        )}
-        <button
-          type="button"
-          onClick={stop}
-          className="ml-auto rounded border border-line px-3 py-1 hover:border-accent"
-        >
-          ■ Stop
-        </button>
-      </div>
+  // ── Idle: ready to record ─────────────────────────────────────────────────
+  if (!sessionId) {
+    return (
+      <>
+        <div className="flex items-center gap-3 border-b border-line bg-surface px-5 py-2.5">
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
+            <Icon.Mic className="h-3.5 w-3.5 text-muted" />
+            Meeting
+          </span>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void start()}
+            placeholder="Name this meeting, then record…"
+            className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-[13px] text-ink placeholder:text-faint hover:border-line focus:border-accent-ink focus:bg-surface focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => void start()}
+            className="group inline-flex shrink-0 items-center gap-2 rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-white hover:bg-accent-ink"
+          >
+            <span className="h-2 w-2 rounded-full bg-white/90 transition-transform group-hover:scale-110" />
+            Record
+          </button>
+        </div>
+        {distillToast}
+      </>
+    );
+  }
 
-      {segments.length > 0 && (
-        <div className="max-h-40 overflow-y-auto px-3 pb-2">
-          {segments.map((s, i) => (
-            <div key={`${s.offsetMs}-${i}`} className="leading-relaxed">
-              <span className="text-muted">[{fmt(s.offsetMs)}]</span>{" "}
-              {s.speaker.startsWith("📝") ? (
-                <span className="font-medium">{s.speaker}:</span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => renameSpeaker(s.speaker)}
-                  title="Name this speaker"
-                  className="font-medium hover:underline"
-                >
-                  {s.speaker}:
-                </button>
-              )}{" "}
-              {s.text}
-            </div>
-          ))}
+  // ── Recording — a slim strip; the transcript lives in the Meeting note and the
+  //    conversation below is grounded on it ──────────────────────────────────
+  const named = attendees.filter((a) => !isUnknown(a));
+  const renameTargets = rename ? named.filter((a) => a !== rename.from) : [];
+
+  return (
+    <div className="flex items-center gap-2.5 border-b border-line bg-surface px-5 py-2">
+      <span className="inline-flex shrink-0 items-center gap-2 text-[11px] font-bold uppercase tracking-[.08em] text-danger">
+        <span
+          className="h-[7px] w-[7px] rounded-full bg-danger"
+          style={{ animation: "infocus-pulse 1.6s ease-in-out infinite" }}
+          aria-hidden
+        />
+        Recording
+      </span>
+      <span className="font-mono text-[12px] tabular-nums text-ink-soft">{fmtOffset(elapsed)}</span>
+
+      {/* Attendee avatars — click to name a speaker ("that was Sarah", §6) */}
+      {attendees.length > 0 && (
+        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+          <span className="h-[16px] w-px shrink-0 bg-line-strong" aria-hidden />
+          <div className="flex items-center -space-x-1">
+            {attendees.slice(0, 6).map((a) => (
+              <button
+                key={a}
+                type="button"
+                onClick={(e) => openRename(a, e.currentTarget)}
+                title={`Name this speaker (${a})`}
+                aria-label={`Name speaker ${a}`}
+                className="inline-grid h-[20px] w-[20px] place-items-center rounded-full border border-surface text-[9px] font-bold text-white transition-transform hover:z-10 hover:scale-110"
+                style={{ background: speakerTone(a) }}
+              >
+                {isUnknown(a) ? "?" : initials(a)}
+              </button>
+            ))}
+          </div>
+          {attendees.length > 6 && (
+            <span className="text-[11px] text-muted">+{attendees.length - 6}</span>
+          )}
         </div>
       )}
 
-      <div className="flex items-center gap-2 border-t border-line px-3 py-1.5">
-        {!asNote && (
-          <input
-            value={speaker}
-            onChange={(e) => setSpeaker(e.target.value)}
-            placeholder="Speaker"
-            className="w-28 rounded border border-line bg-transparent px-2 py-1 outline-none focus:border-accent"
-          />
+      {/* The "same chat" cue: the conversation below already knows about this. */}
+      <span className="hidden items-center gap-1.5 text-[11px] text-muted lg:inline-flex">
+        <Icon.Chat className="h-3 w-3" aria-hidden />
+        Ask about it in the chat
+      </span>
+
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        {notePath && (
+          <button
+            type="button"
+            onClick={() => openNote(notePath).catch(() => {})}
+            title={`Open transcript · ${notePath}`}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] text-muted hover:bg-bg-sunk hover:text-ink-soft"
+          >
+            <Icon.File className="h-3.5 w-3.5" />
+            <span className="hidden max-w-[14rem] truncate sm:inline">{basename(notePath)}</span>
+          </button>
         )}
-        <input
-          value={line}
-          onChange={(e) => setLine(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && push()}
-          placeholder={asNote ? "Note alongside the meeting…" : "Type a manual line or correction…"}
-          className="min-w-0 flex-1 rounded border border-line bg-transparent px-2 py-1 outline-none focus:border-accent"
-        />
-        <label className="flex items-center gap-1 text-xs text-muted">
-          <input type="checkbox" checked={asNote} onChange={(e) => setAsNote(e.target.checked)} />
-          note
-        </label>
         <button
           type="button"
-          onClick={push}
-          className="rounded bg-accent px-3 py-1 font-medium text-white hover:opacity-90"
+          onClick={() => void stop()}
+          className="inline-flex items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 py-1 text-[12.5px] font-medium text-ink-soft shadow-sm hover:border-danger hover:text-danger"
         >
-          Add
+          <Icon.Stop className="h-3.5 w-3.5" />
+          Stop
         </button>
       </div>
+
+      {/* Speaker rename popover (ADR-0017 §6) — "that was Sarah" */}
+      {rename && (
+        <>
+          <button
+            type="button"
+            aria-label="Close"
+            className="fixed inset-0 z-40 cursor-default"
+            onClick={() => setRename(null)}
+          />
+          <div
+            className="fixed z-50 w-64 rounded-lg border border-line-strong bg-raised p-3 shadow-2xl"
+            style={{ left: Math.min(rename.x, window.innerWidth - 268), top: rename.y }}
+          >
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-muted">
+              Who was speaking?
+            </p>
+            {renameTargets.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {renameTargets.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => void commitRename(name)}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[12px] text-ink hover:border-accent"
+                  >
+                    <span
+                      className="inline-grid h-[16px] w-[16px] place-items-center rounded-full text-[8px] font-bold text-white"
+                      style={{ background: speakerTone(name) }}
+                      aria-hidden
+                    >
+                      {initials(name)}
+                    </span>
+                    {name}
+                  </button>
+                ))}
+              </div>
+            )}
+            <input
+              // biome-ignore lint/a11y/noAutofocus: a popover that opens on intent should focus its field
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void commitRename(renameValue);
+                else if (e.key === "Escape") setRename(null);
+              }}
+              placeholder="New name…"
+              className="w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-[13px] text-ink placeholder:text-faint focus:border-accent-ink focus:outline-none"
+            />
+            <p className="mt-1.5 text-[10px] leading-snug text-faint">
+              Naming a speaker relabels the transcript and remembers their voice for next time.
+            </p>
+          </div>
+        </>
+      )}
+
+      {distillToast}
     </div>
   );
 }

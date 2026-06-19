@@ -29,11 +29,13 @@ use crate::error::AppResult;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
-/// The receipt a finished distillation hands back: a one-line summary and the audit
-/// `turn_id` the UI exposes for undo.
+/// The receipt a finished distillation hands back: a one-line summary, the audit
+/// `turn_id` the UI exposes for undo, and an optional content-derived title the UI
+/// can offer as a rename when it improves on the one typed at Start.
 pub struct DistillResult {
     pub summary: String,
     pub turn_id: String,
+    pub suggested_title: Option<String>,
 }
 
 /// Character cap on the transcript grounding pushed into the distillation turn —
@@ -133,9 +135,11 @@ pub async fn distill_meeting(
         .insert_chat_message("assistant", &reply, conversation_id)
         .await?;
 
+    let (summary, suggested_title) = parse_receipt(&reply, title);
     Ok(Some(DistillResult {
-        summary: summarize(&reply),
+        summary,
         turn_id,
+        suggested_title,
     }))
 }
 
@@ -162,8 +166,16 @@ that are now stale.\n\
 Distil, don't dump: record what matters, not every utterance. Attribute a Fact to \
 a *named* person only when the transcript makes the speaker clear; otherwise record \
 it unattributed rather than guess (a wrong attribution silently pollutes a real \
-person's note). Finish with a single short sentence summarising what you recorded \
-— that line is the receipt the user sees."
+person's note).\n\
+\n\
+Finish your reply with exactly these two lines, each on its own line and nothing \
+after them:\n\
+SUMMARY: <one short sentence summarising what you recorded — the receipt the user sees>\n\
+TITLE: <a concise 3-to-6 word title naming what this meeting was actually about>\n\
+\n\
+The meeting was opened as \"{title}\". If that name already captures the topic well, \
+repeat it on the TITLE line; only suggest a different title when the content clearly \
+warrants a better one."
     )
 }
 
@@ -185,22 +197,68 @@ fn grounding_from_windows(windows: &[String], budget: usize) -> Option<String> {
     wrote_any.then_some(out)
 }
 
-/// One-line receipt from the reply: the last non-empty line (the agent is asked to
-/// end with a summary sentence), capped. Falls back to a fixed line.
-fn summarize(reply: &str) -> String {
-    let line = reply
+/// Pull the receipt out of the reply: the one-line `summary` and an optional
+/// content-derived `suggested_title`, both emitted as trailing `SUMMARY:` / `TITLE:`
+/// marker lines (see `distillation_message`). The summary falls back to the last
+/// non-empty line when the marker is missing, so an older-style reply still yields
+/// a receipt. The title is dropped when it is empty, the bare "Meeting" fallback,
+/// or equal to `current_title` — i.e. only a genuinely *different* name is offered.
+fn parse_receipt(reply: &str, current_title: &str) -> (String, Option<String>) {
+    let summary = marker_value(reply, "SUMMARY:")
+        .or_else(|| last_receipt_line(reply))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Meeting distilled.".to_string());
+    let summary = cap(&summary, 240);
+
+    let suggested_title = marker_value(reply, "TITLE:").and_then(|raw| {
+        let clean = meeting_note::sanitize_title(&raw);
+        let differs = !clean.eq_ignore_ascii_case(&meeting_note::sanitize_title(current_title));
+        (clean != "Meeting" && differs).then(|| cap(&clean, 120))
+    });
+    (summary, suggested_title)
+}
+
+/// The text after the first `MARKER:` line (case-insensitive, list-bullet/`#`
+/// prefixes stripped), trimmed; `None` when absent or empty.
+fn marker_value(reply: &str, marker: &str) -> Option<String> {
+    reply.lines().find_map(|l| {
+        let l = l.trim_start_matches(['-', '*', '#', ' ']).trim();
+        let rest = l
+            .get(..marker.len())?
+            .eq_ignore_ascii_case(marker)
+            .then(|| {
+                l[marker.len()..]
+                    .trim()
+                    .trim_matches(['"', '\'', '“', '”'])
+                    .trim()
+            })?;
+        (!rest.is_empty()).then(|| rest.to_string())
+    })
+}
+
+/// The last non-empty line as a fallback summary, skipping a trailing `TITLE:`
+/// marker so it is never mistaken for the receipt.
+fn last_receipt_line(reply: &str) -> Option<String> {
+    reply
         .lines()
         .map(str::trim)
-        .rfind(|l| !l.is_empty())
-        .unwrap_or("");
-    let line = line.trim_start_matches(['-', '*', '#', ' ']).trim();
-    let line = if line.is_empty() {
-        "Meeting distilled."
-    } else {
-        line
-    };
-    if line.chars().count() > 240 {
-        let truncated: String = line.chars().take(239).collect();
+        .filter(|l| !l.is_empty())
+        .rfind(|l| {
+            !l.trim_start_matches(['-', '*', '#', ' '])
+                .to_ascii_uppercase()
+                .starts_with("TITLE:")
+        })
+        .map(|l| {
+            l.trim_start_matches(['-', '*', '#', ' '])
+                .trim()
+                .to_string()
+        })
+}
+
+/// Cap a line at `max` chars, appending an ellipsis when it had to be cut.
+fn cap(line: &str, max: usize) -> String {
+    if line.chars().count() > max {
+        let truncated: String = line.chars().take(max - 1).collect();
         format!("{truncated}…")
     } else {
         line.to_string()
@@ -226,13 +284,33 @@ mod tests {
     }
 
     #[test]
-    fn summarize_takes_last_line_and_caps() {
-        let reply = "Recorded 3 facts.\nUpdated Sarah's note.\nSummary: filed 2 tasks and noted the Q3 decision.";
-        assert_eq!(
-            summarize(reply),
-            "Summary: filed 2 tasks and noted the Q3 decision."
-        );
-        assert_eq!(summarize("   \n  "), "Meeting distilled.");
-        assert!(summarize(&"x".repeat(500)).chars().count() <= 240);
+    fn parse_receipt_pulls_summary_and_title_markers() {
+        let reply = "Recorded 3 facts.\nUpdated Sarah's note.\n\
+                     SUMMARY: Filed 2 tasks and noted the Q3 budget decision.\n\
+                     TITLE: Q3 Budget Review";
+        let (summary, title) = parse_receipt(reply, "Untitled");
+        assert_eq!(summary, "Filed 2 tasks and noted the Q3 budget decision.");
+        assert_eq!(title.as_deref(), Some("Q3 Budget Review"));
+    }
+
+    #[test]
+    fn parse_receipt_drops_title_equal_to_current_or_fallback() {
+        // Same title (case/space-insensitive via sanitize) → no rename offered.
+        let (_, same) = parse_receipt("SUMMARY: ok\nTITLE: Weekly  Sync", "weekly sync");
+        assert_eq!(same, None);
+        // The bare fallback is never offered as a rename.
+        let (_, fb) = parse_receipt("SUMMARY: ok\nTITLE:    ", "Whatever");
+        assert_eq!(fb, None);
+    }
+
+    #[test]
+    fn parse_receipt_falls_back_to_last_line_without_markers() {
+        // No SUMMARY marker → last non-TITLE line is the receipt; no title offered.
+        let (summary, title) = parse_receipt("Recorded the decision.\nTITLE: A Title", "x");
+        assert_eq!(summary, "Recorded the decision.");
+        assert_eq!(title.as_deref(), Some("A Title"));
+        // Empty reply → the fixed fallback line.
+        assert_eq!(parse_receipt("   \n  ", "x").0, "Meeting distilled.");
+        assert!(cap(&"x".repeat(500), 240).chars().count() <= 240);
     }
 }

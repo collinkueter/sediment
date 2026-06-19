@@ -5,6 +5,7 @@ pub mod audit;
 pub mod chat;
 pub mod formation;
 pub mod hardware;
+pub mod meeting;
 pub mod memory;
 pub mod models;
 pub mod ollama;

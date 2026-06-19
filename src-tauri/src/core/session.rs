@@ -18,7 +18,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
 
 /// Per-session map of speaker label → running speaker-embedding centroid, written
@@ -61,8 +61,14 @@ pub enum SessionEvent {
     Note { offset_ms: i64, text: String },
     /// The end-of-Session distillation turn finished (ADR-0017 §7): a one-line
     /// receipt and the audit `turn_id` for undo. Arrives after `Status{stopped}`,
-    /// once the background distillation completes.
-    Distilled { summary: String, turn_id: String },
+    /// once the background distillation completes. `suggested_title` is a title
+    /// the distillation derived from the meeting's content, offered as an optional
+    /// rename when it differs from the one the user typed at Start (else `None`).
+    Distilled {
+        summary: String,
+        turn_id: String,
+        suggested_title: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -187,6 +193,18 @@ pub fn record_note(
 #[derive(Default)]
 pub struct SessionRegistry {
     inner: Mutex<HashMap<String, MeetingSession>>,
+    /// The most-recently-ended meeting, kept briefly after stop so chat turns just
+    /// after a meeting are still grounded on it (ADR-0017 §7) — "recognise we're
+    /// talking about the meeting" extends past the live session by
+    /// [`RECENT_MEETING_WINDOW`]. `None` until a meeting ends.
+    recent: Mutex<Option<RecentMeeting>>,
+}
+
+/// A just-ended meeting and when it stopped — the "after" half of in-meeting
+/// grounding.
+struct RecentMeeting {
+    note_path: String,
+    ended: Instant,
 }
 
 impl SessionRegistry {
@@ -221,16 +239,44 @@ impl SessionRegistry {
             .contains_key(id)
     }
 
-    /// Grounding block for an open meeting Session's most-recent transcript, for
-    /// live in-meeting chat (ADR-0017 §7). `None` when no Session is open or it has
-    /// no transcript yet. Picks the most-recently-started open Session (the UI
-    /// runs one at a time). Capped at [`LIVE_TRANSCRIPT_BUDGET`] so it never crowds
-    /// the Self (ADR-0015 §3) or Working Set (ADR-0011 §2) above it in the turn's
-    /// grounding (ADR-0017 Q3).
+    /// Note that a meeting just ended, so its transcript keeps grounding chat turns
+    /// for [`RECENT_MEETING_WINDOW`] after stop (ADR-0017 §7). Called from
+    /// `session_stop`.
+    pub fn mark_meeting_ended(&self, note_path: String) {
+        if let Ok(mut recent) = self.recent.lock() {
+            *recent = Some(RecentMeeting {
+                note_path,
+                ended: Instant::now(),
+            });
+        }
+    }
+
+    /// Grounding block for the meeting's most-recent transcript, so chat turns are
+    /// "about the meeting" both *during* it and for a short while *after* (ADR-0017
+    /// §7). Prefers an open Session (live); failing that, falls back to the most
+    /// recently ended one within [`RECENT_MEETING_WINDOW`]. `None` when neither
+    /// applies or there is no transcript yet. Capped at [`LIVE_TRANSCRIPT_BUDGET`]
+    /// so it never crowds the Self (ADR-0015 §3) or Working Set (ADR-0011 §2) above
+    /// it in the turn's grounding (ADR-0017 Q3).
     pub fn live_transcript_grounding(&self, formation_root: &Path) -> Option<String> {
-        let note_rel = {
+        // Live: the most-recently-started open Session (the UI runs one at a time).
+        let open = {
             let guard = self.inner.lock().ok()?;
-            guard.values().max_by_key(|s| s.started)?.note_path.clone()
+            guard
+                .values()
+                .max_by_key(|s| s.started)
+                .map(|s| s.note_path.clone())
+        };
+        // After: a meeting that ended within the window still counts as "in play".
+        let note_rel = match open {
+            Some(p) => p,
+            None => {
+                let recent = self.recent.lock().ok()?;
+                match recent.as_ref() {
+                    Some(r) if r.ended.elapsed() < RECENT_MEETING_WINDOW => r.note_path.clone(),
+                    _ => return None,
+                }
+            }
         };
         let note_abs = formation_root.join(note_rel);
         meeting_note::recent_transcript_grounding(&note_abs, LIVE_TRANSCRIPT_BUDGET)
@@ -242,3 +288,43 @@ impl SessionRegistry {
 /// Cap on the live-transcript grounding slot (ADR-0017 Q3 — a felt-test starting
 /// point of ~2 KB / roughly the last minute or two of speech).
 const LIVE_TRANSCRIPT_BUDGET: usize = 2000;
+
+/// How long after a meeting ends its transcript still grounds chat turns — long
+/// enough that "what did Sarah say about Q3?" right after the call still resolves,
+/// short enough that it stops bleeding into unrelated later conversation.
+const RECENT_MEETING_WINDOW: Duration = Duration::from_secs(30 * 60);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::meeting_note;
+    use chrono::TimeZone;
+
+    // A meeting that ended within the window still grounds chat turns (ADR-0017 §7
+    // "during *and* after"), even with no open Session.
+    #[test]
+    fn recent_meeting_grounds_chat_after_stop() {
+        let root = std::env::temp_dir()
+            .join("sediment-test-recent-grounding")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).unwrap();
+        let started = chrono::Local.with_ymd_and_hms(2026, 6, 18, 15, 30, 0).unwrap();
+        let rel = meeting_note::meeting_note_relative_path(started, "Q3 Planning");
+        let abs = meeting_note::ensure_meeting_note(&root, &rel, "Q3 Planning", started).unwrap();
+        meeting_note::append_transcript_segment(&abs, 5_000, "Sarah Chen", "Let's start with Q3.")
+            .unwrap();
+
+        let registry = SessionRegistry::default();
+        // No open Session and nothing ended yet → nothing to ground on.
+        assert!(registry.live_transcript_grounding(&root).is_none());
+
+        // After the meeting ends, its transcript grounds the next chat turns.
+        registry.mark_meeting_ended(rel.clone());
+        let grounding = registry
+            .live_transcript_grounding(&root)
+            .expect("recent meeting grounds chat");
+        assert!(grounding.contains("Let's start with Q3."));
+
+        std::fs::remove_dir_all(root).ok();
+    }
+}
