@@ -38,33 +38,50 @@ feature additionally `cargo check`ed):
 - **Naming speakers.** `meeting_note::rename_speaker` + `session_rename_speaker`
   (the "that was Sarah" hand-correction).
 
-### Hardware / runtime handoff — the gated remainder
+### Hardware / runtime handoff — landed on macOS (2026-06-18)
 
-These need native libs or the agent CLI runtime, so they could not be compiled or
-run in the CI container and are deliberately **not** written blind. Each slots into
-a seam that already exists; no rework of the above is expected.
+The native-runtime work below was built and verified on Apple Silicon (the default
+`desktop-audio` feature, on by default for dev; CI stays on `--no-default-features`).
+What remains is the distillation turn (needs the agent CLI) and on-device validation
+of the Windows loopback path.
 
-- **M3 — real on-device ASR.** Add `sherpa-onnx` behind a **`local-asr`** feature;
-  implement `LocalTranscriber: Transcriber` (the seam in `core::transcription`).
-  API verified by the M0 spike (`OnlineRecognizer`, `accept_waveform`,
-  `is_ready`/`decode`, `get_result`). Swap it for `MockTranscriber` in
-  `commands::session::spawn_capture`. *Gate:* the crate links a native lib it
-  downloads from a host the CI sandbox blocks. **Note (ADR-0017 Q5):** Parakeet-TDT
-  is offline+VAD in sherpa-onnx, not natively streaming — use streaming-zipformer
-  for continuous partials; bench both via M0 first.
-- **Loopback capture.** A second `CaptureSource` — macOS ScreenCaptureKit
-  (`screencapturekit` crate, 13+), Windows WASAPI loopback (`wasapi` crate) — mixed
-  with `MicSource` in the pipeline. macOS/Windows-only; can't compile on Linux.
-  Mind the OS permission prompts (mic + Screen Recording) and the consent reminder
-  (ADR-0017 §10).
-- **M4 runtime — diarization + embedding extraction.** Per-segment speaker
-  embedding (ECAPA/x-vector ONNX) feeding `enroll_voiceprint`/`match_voiceprint`
-  (already built); diarization to assign `speaker_local_id`. Replaces the pipeline's
-  single placeholder speaker. sherpa-onnx, same native gate as M3.
-- **M6 — distillation turn.** On `session_stop`, run a distillation turn over
-  `transcript_windows` (already built) through the existing conversation engine
-  (cold Claude Code per Gap A), recording Facts / updating People notes / opening
-  Tasks, auto-run with a one-line summary + undo (Q2). Needs the agent CLI runtime.
+- **M3 — real on-device ASR. DONE.** `sherpa-onnx` behind **`local-asr`**;
+  `LocalTranscriber: Transcriber` in `core::transcription` (streaming-zipformer,
+  the M0-benched model). `core::asr_model` provisions the model files (download /
+  import, validate-by-load, atomic promote) and `commands::asr` exposes readiness +
+  acquisition. Verified end-to-end by an ignored test that transcribes the spike WAV
+  verbatim (`transcription::tests::real_wav_transcribes`).
+- **ORT coexistence gotcha (resolved).** `sherpa-onnx` statically links its own
+  newer ONNX Runtime; `ort` (the bundled embedder) statically linked an older one —
+  two runtimes in one binary, the older winning symbol resolution and crashing
+  sherpa (SIGSEGV, "requested API version 24 … only 1,20 supported"). Fix: switch
+  the embedder to `fastembed/ort-load-dynamic` under `local-asr` so `ort` loads its
+  runtime at process start instead of static-linking; `core::ort_runtime` provisions
+  a `libonnxruntime` dylib and sets `ORT_DYLIB_PATH`. Proven by
+  `transcription::tests::embedder_and_asr_coexist` (embed + ASR in one process).
+- **Loopback capture. DONE (macOS verified; Windows written, awaiting on-device
+  validation).** `core::capture` adds `ScreenCaptureSource` (macOS ScreenCaptureKit
+  system audio) and `WasapiLoopbackSource` (Windows WASAPI render-loopback), mixed
+  with `MicSource` by a mic-driven `Mixer`/`MixedSource` (resample each → 16 kHz mono
+  → sum). macOS needs `NSMicrophoneUsageDescription` (`Info.plist`) + a `/usr/lib/swift`
+  rpath (`build.rs`) so the Swift-backed ScreenCaptureKit binary loads. Consent
+  reminder (ADR-0017 §10) still TODO in the UI.
+- **M4 runtime — diarization + identification. DONE.** `core::diarization::Diarizer`
+  extracts a per-segment ECAPA embedding (`SpeakerEmbeddingExtractor`) and assigns a
+  speaker by nearest-centroid clustering, seeded from enrolled Voiceprints
+  (`MemoryStore::all_voiceprints`) so a known voice is auto-named. `session_rename_speaker`
+  persists the named speaker's centroid via `enroll_voiceprint_named` (progressive
+  enrolment). Verified by `capture_pipeline::tests::real_pipeline_wav_to_segments`.
+- **M6 — distillation turn. DONE.** `core::distillation::distill_meeting` runs on
+  `session_stop` (spawned in the background so Stop returns at once), grounding the
+  cold Claude Code engine on the segment-windowed transcript and instructing it to
+  record Facts / update People notes / open Tasks / capture Decisions — distil, not
+  dump, with named attribution gated on a clear speaker (Gap B). It reuses the
+  `chat_turn` snapshot→diff→audit path, so the whole turn is one undoable entry; the
+  one-line receipt + `turn_id` stream back as a `SessionEvent::Distilled` that the
+  capture bar surfaces with an Undo (Q2). Runs only when something was transcribed.
+  *Needs the Claude Code CLI at runtime; the orchestration + pure helpers are tested,
+  the live agent turn validates on a real meeting.*
 
 ---
 

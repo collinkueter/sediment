@@ -17,9 +17,16 @@ use crate::error::AppResult;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::ipc::Channel;
+
+/// Per-session map of speaker label → running speaker-embedding centroid, written
+/// by the live diarizer (`core::diarization`) and read by `session_rename_speaker`
+/// to persist a named speaker's **Voiceprint** (progressive enrolment, ADR-0017
+/// §6). Defined here (not in the `local-asr`-gated diarization module) so the
+/// `MeetingSession` field type exists in every build.
+pub type SharedCentroids = Arc<Mutex<HashMap<String, Vec<f32>>>>;
 
 /// One speaker-attributed, timestamped span of transcribed speech (ADR-0017 §6,
 /// §8). `offset_ms` is measured from Session start — the spine that time-aligns
@@ -52,6 +59,10 @@ pub enum SessionEvent {
     AttendeeChanged { attendees: Vec<String> },
     /// A time-anchored note/chat line was appended to `## Notes`.
     Note { offset_ms: i64, text: String },
+    /// The end-of-Session distillation turn finished (ADR-0017 §7): a one-line
+    /// receipt and the audit `turn_id` for undo. Arrives after `Status{stopped}`,
+    /// once the background distillation completes.
+    Distilled { summary: String, turn_id: String },
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -79,10 +90,16 @@ pub struct MeetingSession {
     /// The running capture→transcription pipeline, when capture is active (the
     /// `audio` feature, ADR-0017 §1). An RAII guard — never read directly; its
     /// `Drop` on `session_stop` tears capture down deterministically (§3). `None`
-    /// in M1 / default builds, where segments come from the manual
+    /// in builds without the `audio` feature, where segments come from the manual
     /// `session_push_segment` source.
     #[allow(dead_code)]
     pub capture: Option<CaptureController>,
+    /// Live diarizer's per-speaker centroids (ADR-0017 §6). Shared with the capture
+    /// worker; `session_rename_speaker` reads it to enroll a named speaker's
+    /// Voiceprint. Empty until diarization writes the first segment's centroid.
+    /// Only read under `local-asr` (the diarizer/enrolment path).
+    #[allow(dead_code)]
+    pub centroids: SharedCentroids,
 }
 
 impl MeetingSession {
@@ -99,6 +116,7 @@ impl MeetingSession {
             started: Instant::now(),
             events,
             capture: None,
+            centroids: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

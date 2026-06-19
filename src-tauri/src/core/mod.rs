@@ -1,5 +1,7 @@
 // Core module: long-lived state and subsystems.
 pub mod agent_tone;
+#[cfg(feature = "local-asr")]
+pub mod asr_model;
 pub mod audio;
 pub mod audit;
 pub mod bundled_embed;
@@ -11,6 +13,9 @@ pub mod cli_launch;
 pub mod conversation;
 pub mod copilot;
 pub mod daily_note;
+#[cfg(feature = "local-asr")]
+pub mod diarization;
+pub mod distillation;
 pub mod embedding;
 pub mod formation_mcp;
 pub mod formation_state;
@@ -19,6 +24,8 @@ pub mod indexer;
 pub mod meeting_note;
 pub mod memory;
 pub mod ollama_sidecar;
+#[cfg(feature = "local-asr")]
+pub mod ort_runtime;
 pub mod pre_pass;
 pub mod reminders;
 pub mod self_model;

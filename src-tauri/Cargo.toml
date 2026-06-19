@@ -15,12 +15,37 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
-# Off by default so the standard build pulls no audio backend (ADR-0017 M2).
-# Enable on macOS/Windows to compile the real microphone capture pipeline
-# (`core::capture::MicSource` via cpal). System-output loopback and the on-device
-# ASR engine land behind this (and a future `local-asr`) feature too.
-default = []
+# `desktop-audio` is the real meeting stack (ADR-0017): mic + system-output
+# loopback capture, on-device streaming ASR, and speaker diarization. It is the
+# DEFAULT so `npm run tauri dev` / `cargo build` on macOS/Windows build the real
+# audio path with no extra flags. Headless CI builds with `--no-default-features`
+# to skip the native audio/ASR backends (which download a platform lib at build
+# time) — see `.github/workflows/ci.yml`.
+default = ["desktop-audio"]
+# The full real meeting stack: mic + system-output loopback capture, on-device
+# streaming ASR, and speaker diarization.
+desktop-audio = ["audio", "local-asr", "loopback"]
+
+# Microphone capture (`core::capture::MicSource` via cpal).
 audio = ["dep:cpal"]
+# On-device streaming ASR + speaker diarization (sherpa-onnx OnlineRecognizer and
+# SpeakerEmbeddingExtractor, ADR-0017 §2/§6; model from the M0 spike). Links a
+# native lib the crate downloads at build time.
+#
+# `fastembed/ort-load-dynamic` is load-bearing: sherpa-onnx **statically** links
+# its own newer onnxruntime, and `ort` (the embedder's runtime) would otherwise
+# *also* statically link an older onnxruntime into the same binary — two ORT copies
+# collide and the older one wins symbol resolution, crashing sherpa (it asks for a
+# newer C API than the old runtime offers). Switching the embedder to `load-dynamic`
+# stops `ort` static-linking; it dlopens its own runtime at process start, leaving
+# sherpa's static runtime uncontested. Only flipped under `local-asr`; the default
+# (no-ASR) build keeps `ort`'s bundled static runtime.
+local-asr = ["dep:sherpa-onnx", "fastembed/ort-load-dynamic"]
+# System-output loopback capture — the meeting's far side (ADR-0017 §1). Pulls a
+# platform backend: macOS ScreenCaptureKit, Windows WASAPI loopback. The deps are
+# declared per-target below; on a target without one, enabling `loopback` is a
+# no-op and only the mic is captured.
+loopback = ["dep:screencapturekit", "dep:wasapi"]
 
 [dependencies]
 # --- Tauri ---
@@ -75,11 +100,32 @@ async-trait = "0.1"
 # --- MCP server (ADR-0009 §5 — the graph-only stdio MCP server) ---
 rmcp = { version = "0.16", features = ["server", "transport-io", "schemars"] }
 
-# --- Audio capture (ADR-0017 M2, `audio` feature only) ---
-# Cross-platform microphone capture. Optional so the default build is unchanged.
-# cpal's Stream is !Send on some backends — `core::capture::MicSource` owns it on
-# a dedicated thread accordingly.
+# --- Audio capture (ADR-0017 §1, `audio` feature) ---
+# Cross-platform microphone capture. Optional so a `--no-default-features` build
+# pulls no audio backend. cpal's Stream is !Send on some backends —
+# `core::capture::MicSource` owns it on a dedicated thread accordingly.
 cpal = { version = "0.15", optional = true }
+
+# --- On-device ASR + diarization (ADR-0017 §2/§6, `local-asr` feature) ---
+# Official streaming-ASR + speaker-embedding bindings. API verified by the M0
+# spike (`OnlineRecognizer`, `accept_waveform`, `is_ready`/`decode`/`get_result`)
+# and `SpeakerEmbeddingExtractor`. Links a native lib downloaded at build time.
+sherpa-onnx = { version = "1.13", optional = true }
+
+# --- System-output loopback capture (ADR-0017 §1, `loopback` feature) ---
+# Per-target: macOS ScreenCaptureKit (13+) and Windows WASAPI loopback. Each is
+# only declared for its own OS, so the other never tries to compile.
+[target.'cfg(target_os = "macos")'.dependencies]
+# `macos_13_0` enables ScreenCaptureKit system-audio capture (the loopback source).
+screencapturekit = { version = "7.0", optional = true, features = ["macos_13_0"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wasapi = { version = "0.23", optional = true }
+
+[dev-dependencies]
+# WAV decode for the ignored, on-hardware ASR verification test
+# (`transcription::tests::real_wav_*`). Test-only; not in the shipped binary.
+hound = "3"
 
 [profile.dev]
 incremental = true

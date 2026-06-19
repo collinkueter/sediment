@@ -276,6 +276,15 @@ pub async fn download_bundled_model(
             .map_err(|e| AppError::other(format!("flush {rel}: {e}")))?;
     }
 
+    // Under `local-asr` the embedder loads ONNX Runtime dynamically; provision the
+    // runtime lib now so validation (which loads an ORT session) has it.
+    #[cfg(feature = "local-asr")]
+    {
+        if let Err(e) = crate::core::ort_runtime::ensure().await {
+            tracing::warn!("ort runtime provisioning failed: {e}");
+        }
+    }
+
     // Validate the staged files (load a session) and install them atomically.
     bundled_embed::promote_staging().await?;
     // Warm the model so the first search doesn't pay the load cost. Non-fatal.

@@ -602,6 +602,38 @@ impl MemoryStore {
         Ok(best)
     }
 
+    /// Enroll `sample` as the Voiceprint of the `person` named `name`, creating the
+    /// person Entity if it does not exist yet (lazy enrolment, ADR-0015/§6). This is
+    /// the "that was Sarah" path: naming a live speaker attaches their segment's
+    /// embedding so future meetings recognise them.
+    #[allow(dead_code)]
+    pub async fn enroll_voiceprint_named(&self, name: &str, sample: &[f32]) -> AppResult<()> {
+        let entity = self.upsert_entity(name, "person", vec![]).await?;
+        self.enroll_voiceprint(&entity.id, sample).await
+    }
+
+    /// Every enrolled **Voiceprint** as `(canonical_name, centroid)` — the seed a
+    /// live Session's diarizer loads so a known voice is named on its first segment
+    /// (ADR-0017 §6). Persons without a voiceprint are skipped.
+    #[allow(dead_code)]
+    pub async fn all_voiceprints(&self) -> AppResult<Vec<(String, Vec<f32>)>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT id, canonical_name, voiceprint FROM entity \
+                 WHERE entity_type = 'person' AND voiceprint != NONE;",
+            )
+            .await
+            .map_err(|e| AppError::other(format!("all_voiceprints: {e}")))?;
+        let rows: Vec<VoiceprintMatchRow> = res
+            .take(0)
+            .map_err(|e| AppError::other(format!("all_voiceprints take: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| r.voiceprint.map(|vp| (r.canonical_name, vp)))
+            .collect())
+    }
+
     /// Formation-relative paths of the most recently (re)indexed notes (by
     /// `indexed_at`) — a cheap proxy for "recently edited", since the indexer
     /// re-indexes a note on every change. Drives the Working Set (ADR-0011 §3).

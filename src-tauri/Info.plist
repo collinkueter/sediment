@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- ADR-0017 §1/§10: a meeting Session captures the microphone and (via
+	     ScreenCaptureKit) system-output audio. macOS requires a usage string for
+	     the mic or the app is killed on first access. Screen Recording is gated by
+	     a separate TCC prompt the system shows on first ScreenCaptureKit use. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Sediment transcribes meetings on-device. Your microphone is captured only while a meeting Session is recording, and audio is transcribed and discarded — never uploaded.</string>
+	<!-- Meeting loopback capture uses ScreenCaptureKit (macos_13_0 feature). Setting
+	     the minimum here prevents a hard crash on older macOS where those APIs do
+	     not exist. The rest of the app (notes, chat, embeddings) runs on macOS 12
+	     but loopback capture requires 13+. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+</dict>
+</plist>

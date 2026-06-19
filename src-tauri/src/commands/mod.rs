@@ -1,4 +1,6 @@
 pub mod app;
+#[cfg(feature = "local-asr")]
+pub mod asr;
 pub mod audit;
 pub mod chat;
 pub mod formation;

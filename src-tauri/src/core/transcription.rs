@@ -4,11 +4,12 @@
 //! designed against one real impl and a stub. But the *pipeline* still needs to be
 //! testable without a real model, so this defines a minimal [`Transcriber`] seam
 //! with two implementations: [`MockTranscriber`] (default build + tests — emits
-//! placeholder utterances on a fixed audio cadence) and, in M3, a real on-device
-//! engine behind the `local-asr` feature (sherpa-onnx streaming zipformer; see the
-//! M0 spike). The seam is intentionally tiny: feed mono-16 kHz samples, get
-//! utterances out. Speaker attribution is NOT here — that is diarization +
-//! Voiceprints (M4); M2 attributes every utterance to a single placeholder speaker.
+//! placeholder utterances on a fixed audio cadence) and [`LocalTranscriber`] (the
+//! real on-device engine behind the **`local-asr`** feature: a sherpa-onnx
+//! streaming-zipformer transducer, the model and API proven by the M0 spike). The
+//! seam is intentionally tiny: feed mono-16 kHz samples, get utterances out.
+//! Speaker attribution is NOT here — that is diarization + Voiceprints
+//! (`core::diarization`), resolved per finalized segment in the capture pipeline.
 
 // M2/M3 transcription seam: the mock + trait are exercised by tests and the real
 // engine lands behind `local-asr`; unused in the default lib build, so allow
@@ -89,6 +90,127 @@ impl Transcriber for MockTranscriber {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Real on-device engine (sherpa-onnx streaming-zipformer), behind `local-asr`.
+// API proven by the M0 spike (`spikes/m0-capture-asr/src/asr.rs`): build an
+// OnlineRecognizer from the transducer model, feed 16 kHz mono waveform, drain
+// ready decode steps, and commit a final on each endpoint. NOT compiled in the
+// default build — it links a native lib (`sherpa-onnx-sys`).
+// ──────────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "local-asr")]
+mod local {
+    use super::{Transcriber, Utterance};
+    use crate::core::audio::TARGET_RATE;
+    use crate::error::{AppError, AppResult};
+    use sherpa_onnx::{OnlineRecognizer, OnlineRecognizerConfig, OnlineStream};
+
+    /// Filesystem paths of a streaming-transducer model (the four files of a
+    /// sherpa-onnx streaming-zipformer release). Built by `core::asr_model`.
+    pub struct AsrModelPaths {
+        pub encoder: String,
+        pub decoder: String,
+        pub joiner: String,
+        pub tokens: String,
+        /// ONNX execution provider — `"cpu"` everywhere (the M0 bench found CoreML
+        /// gave no speedup on the fp32 graph and `cpu` is the safe default).
+        pub provider: String,
+    }
+
+    /// The real streaming transcriber. Wraps one `OnlineRecognizer` + its decode
+    /// stream; endpoints commit final segments. `Send` because both sherpa handles
+    /// are `unsafe impl Send` and the pipeline owns this on its worker thread.
+    pub struct LocalTranscriber {
+        recognizer: OnlineRecognizer,
+        stream: OnlineStream,
+    }
+
+    impl LocalTranscriber {
+        /// Build the recognizer from a model. Returns an actionable error if the
+        /// native create fails (bad/missing model files or provider).
+        pub fn new(m: &AsrModelPaths) -> AppResult<Self> {
+            let mut config = OnlineRecognizerConfig::default();
+            config.model_config.transducer.encoder = Some(m.encoder.clone());
+            config.model_config.transducer.decoder = Some(m.decoder.clone());
+            config.model_config.transducer.joiner = Some(m.joiner.clone());
+            config.model_config.tokens = Some(m.tokens.clone());
+            config.model_config.provider = Some(m.provider.clone());
+            // Endpointing commits a segment on a natural pause — that boundary is
+            // what becomes one `## Transcript` line and one diarization window.
+            config.enable_endpoint = true;
+            config.decoding_method = Some("greedy_search".to_string());
+
+            let recognizer = OnlineRecognizer::create(&config).ok_or_else(|| {
+                AppError::other(
+                    "Failed to create the on-device ASR recognizer. The transcription \
+                     model may be missing or corrupt — run ASR model setup.",
+                )
+            })?;
+            let stream = recognizer.create_stream();
+            Ok(Self { recognizer, stream })
+        }
+
+        /// Decode whatever is buffered and, if the recognizer hit an endpoint,
+        /// return the committed text and reset for the next segment. Mirrors the
+        /// spike's `drain()`: read the result *before* resetting.
+        fn drain(&mut self) -> Vec<Utterance> {
+            while self.recognizer.is_ready(&self.stream) {
+                self.recognizer.decode(&self.stream);
+            }
+            if !self.recognizer.is_endpoint(&self.stream) {
+                return Vec::new();
+            }
+            let text = self
+                .recognizer
+                .get_result(&self.stream)
+                .map(|r| r.text)
+                .unwrap_or_default();
+            self.recognizer.reset(&self.stream);
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![Utterance {
+                    text,
+                    is_final: true,
+                }]
+            }
+        }
+    }
+
+    impl Transcriber for LocalTranscriber {
+        fn accept(&mut self, samples: &[f32]) -> Vec<Utterance> {
+            self.stream.accept_waveform(TARGET_RATE as i32, samples);
+            self.drain()
+        }
+
+        fn finish(&mut self) -> Vec<Utterance> {
+            // Flush the tail: signal end-of-input, decode, and commit whatever
+            // remains even without a trailing endpoint.
+            self.stream.input_finished();
+            while self.recognizer.is_ready(&self.stream) {
+                self.recognizer.decode(&self.stream);
+            }
+            let text = self
+                .recognizer
+                .get_result(&self.stream)
+                .map(|r| r.text.trim().to_string())
+                .unwrap_or_default();
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![Utterance {
+                    text,
+                    is_final: true,
+                }]
+            }
+        }
+    }
+}
+
+#[cfg(feature = "local-asr")]
+pub use local::{AsrModelPaths, LocalTranscriber};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +229,95 @@ mod tests {
         // finish() flushes the buffered tail.
         assert_eq!(t.finish().len(), 1);
         assert_eq!(t.finish().len(), 0);
+    }
+
+    /// End-to-end proof the REAL engine transcribes real speech: feed the M0
+    /// spike's sample WAV through `LocalTranscriber` and assert it returns actual
+    /// words. Ignored by default — it needs the native sherpa lib and the model
+    /// files in `spikes/m0-capture-asr/`. Run on hardware:
+    /// `cargo test --no-default-features --features audio,local-asr \
+    ///    real_wav_transcribes -- --ignored --nocapture`
+    #[cfg(feature = "local-asr")]
+    #[test]
+    #[ignore]
+    fn real_wav_transcribes() {
+        use crate::core::audio::{downmix_to_mono, Resampler};
+        use std::path::PathBuf;
+
+        let spike = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("spikes/m0-capture-asr");
+        let f = |n: &str| spike.join(n).to_string_lossy().into_owned();
+        let paths = super::AsrModelPaths {
+            encoder: f("encoder-epoch-99-avg-1-chunk-16-left-128.onnx"),
+            decoder: f("decoder-epoch-99-avg-1-chunk-16-left-128.onnx"),
+            joiner: f("joiner-epoch-99-avg-1-chunk-16-left-128.onnx"),
+            tokens: f("tokens.txt"),
+            provider: "cpu".to_string(),
+        };
+        let mut asr = super::LocalTranscriber::new(&paths).expect("build recognizer");
+
+        // Decode the WAV to interleaved f32, downmix to mono, resample to 16 kHz.
+        let mut reader = hound::WavReader::open(spike.join("sample-0.wav")).expect("open wav");
+        let spec = reader.spec();
+        let interleaved: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => reader.samples::<f32>().map(|s| s.unwrap()).collect(),
+            hound::SampleFormat::Int => {
+                let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
+                reader
+                    .samples::<i32>()
+                    .map(|s| s.unwrap() as f32 / max)
+                    .collect()
+            }
+        };
+        let mono = downmix_to_mono(&interleaved, spec.channels);
+        let mut resampler = Resampler::new(spec.sample_rate);
+        let samples = resampler.process(&mono);
+
+        // Stream it in 100 ms chunks, as live capture would.
+        let mut text = String::new();
+        for chunk in samples.chunks(1600) {
+            for u in asr.accept(chunk) {
+                text.push_str(&u.text);
+                text.push(' ');
+            }
+        }
+        for u in asr.finish() {
+            text.push_str(&u.text);
+        }
+
+        println!("ASR transcript: {text:?}");
+        let words = text.split_whitespace().count();
+        assert!(words >= 3, "expected real words, got {words}: {text:?}");
+        assert!(
+            text.chars().any(|c| c.is_alphabetic()),
+            "transcript has no letters: {text:?}"
+        );
+    }
+
+    /// The integration that the M0 spike could not catch: the bundled embedder
+    /// (`ort`/fastembed, ONNX Runtime via `load-dynamic`) and sherpa ASR (its own
+    /// static ONNX Runtime) must run in ONE process without the two runtimes
+    /// colliding. Needs `ORT_DYLIB_PATH` set to an onnxruntime dylib and the nomic
+    /// model installed. Run on hardware:
+    /// `ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib cargo test \
+    ///    --no-default-features --features audio,local-asr embedder_and_asr_coexist \
+    ///    -- --ignored --nocapture`
+    #[cfg(feature = "local-asr")]
+    #[test]
+    #[ignore]
+    fn embedder_and_asr_coexist() {
+        // 1. Bundled embedder first — forces ort to init its (dynamic) runtime.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let vec = rt
+            .block_on(crate::core::bundled_embed::embed("hello world"))
+            .expect("embed");
+        assert_eq!(vec.len(), 768, "nomic embedding dim");
+        println!("embedder OK: {}-d vector", vec.len());
+
+        // 2. Then sherpa ASR in the same process — must not be clobbered by ort's ORT.
+        real_wav_transcribes();
+        println!("embedder + ASR coexist OK");
     }
 }

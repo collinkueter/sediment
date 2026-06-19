@@ -61,17 +61,23 @@ impl Drop for CaptureController {
     }
 }
 
-/// Spawn the pipeline. `on_segment(offset_ms, speaker, text)` is invoked on the
-/// worker thread for each final utterance; it must be `Send`.
-pub fn spawn<S, F>(
+/// Spawn the pipeline. For each final utterance, `resolve_speaker` is handed the
+/// segment's 16 kHz mono audio (the samples since the previous final) and returns
+/// a speaker label — `None` falls back to `default_speaker`. `on_segment(offset_ms,
+/// speaker, text)` then lands the segment. Both callbacks run on the worker thread
+/// and must be `Send`. The resolver is the seam where diarization
+/// (`core::diarization`) plugs in without this orchestration knowing about it.
+pub fn spawn<S, F, R>(
     source: S,
     mut transcriber: Box<dyn Transcriber>,
-    speaker: String,
+    default_speaker: String,
+    mut resolve_speaker: R,
     mut on_segment: F,
 ) -> CaptureController
 where
     S: CaptureSource + 'static,
     F: FnMut(i64, &str, &str) + Send + 'static,
+    R: FnMut(&[f32]) -> Option<String> + Send + 'static,
 {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_worker = stop.clone();
@@ -87,6 +93,10 @@ where
         let mut resampler = Resampler::new(cap.format.sample_rate);
         let mut total_16k: u64 = 0;
         let offset_ms = |samples: u64| (samples as i64 * 1000) / TARGET_RATE as i64;
+        // The audio of the segment currently being decoded — the samples since the
+        // last committed final. Handed to `resolve_speaker` when a final lands, then
+        // cleared. This is the window diarization embeds.
+        let mut segment_audio: Vec<f32> = Vec::new();
 
         loop {
             if stop_worker.load(Ordering::Acquire) {
@@ -97,9 +107,13 @@ where
                     let mono = downmix_to_mono(&frame, cap.format.channels);
                     let samples = resampler.process(&mono);
                     total_16k += samples.len() as u64;
+                    segment_audio.extend_from_slice(&samples);
                     for u in transcriber.accept(&samples) {
                         if u.is_final {
+                            let speaker = resolve_speaker(&segment_audio)
+                                .unwrap_or_else(|| default_speaker.clone());
                             on_segment(offset_ms(total_16k), &speaker, &u.text);
+                            segment_audio.clear();
                         }
                     }
                 }
@@ -108,7 +122,10 @@ where
             }
         }
         for u in transcriber.finish() {
+            let speaker =
+                resolve_speaker(&segment_audio).unwrap_or_else(|| default_speaker.clone());
             on_segment(offset_ms(total_16k), &speaker, &u.text);
+            segment_audio.clear();
         }
     });
 
@@ -146,6 +163,7 @@ mod tests {
             source,
             Box::new(MockTranscriber::new(1.0)),
             "Unknown speaker 1".to_string(),
+            |_audio| None, // no diarization in the pipeline test
             move |offset, speaker, text| {
                 sink.lock()
                     .unwrap()
@@ -164,5 +182,95 @@ mod tests {
         // Offsets are monotonic and attributed to the placeholder speaker.
         assert!(got.windows(2).all(|w| w[0].0 <= w[1].0));
         assert!(got.iter().all(|(_, sp, _)| sp == "Unknown speaker 1"));
+    }
+
+    /// Full real pipeline: a WAV-replaying source → real `LocalTranscriber` → real
+    /// `Diarizer` → segments, exercising every link except the mic/loopback backend
+    /// (the same cpal code the M0 spike validated on hardware). Ignored; needs the
+    /// spike ASR model and a speaker model. Run on hardware:
+    /// `SEDIMENT_SPEAKER_MODEL=/path/to/wespeaker_en_voxceleb_CAM++.onnx \
+    ///  cargo test --no-default-features --features audio,local-asr \
+    ///  real_pipeline_wav_to_segments -- --ignored --nocapture`
+    #[cfg(feature = "local-asr")]
+    #[test]
+    #[ignore]
+    fn real_pipeline_wav_to_segments() {
+        use crate::core::diarization::Diarizer;
+        use crate::core::transcription::{AsrModelPaths, LocalTranscriber, Transcriber};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let spike = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("spikes/m0-capture-asr");
+        let f = |n: &str| spike.join(n).to_string_lossy().into_owned();
+        let paths = AsrModelPaths {
+            encoder: f("encoder-epoch-99-avg-1-chunk-16-left-128.onnx"),
+            decoder: f("decoder-epoch-99-avg-1-chunk-16-left-128.onnx"),
+            joiner: f("joiner-epoch-99-avg-1-chunk-16-left-128.onnx"),
+            tokens: f("tokens.txt"),
+            provider: "cpu".to_string(),
+        };
+        let transcriber: Box<dyn Transcriber> =
+            Box::new(LocalTranscriber::new(&paths).expect("recognizer"));
+
+        // Replay the WAV at its native rate through a VecSource (the pipeline
+        // downmixes + resamples, as it does for a real device).
+        let mut reader = hound::WavReader::open(spike.join("sample-0.wav")).expect("wav");
+        let spec = reader.spec();
+        let samples: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => reader.samples::<f32>().map(|s| s.unwrap()).collect(),
+            hound::SampleFormat::Int => {
+                let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
+                reader
+                    .samples::<i32>()
+                    .map(|s| s.unwrap() as f32 / max)
+                    .collect()
+            }
+        };
+        let chunks: Vec<Vec<f32>> = samples.chunks(1600).map(|c| c.to_vec()).collect();
+        let source = VecSource::new(
+            CaptureFormat {
+                sample_rate: spec.sample_rate,
+                channels: spec.channels,
+            },
+            chunks,
+        );
+
+        // Real diarizer over a speaker model (env override → the downloaded model).
+        let model = std::env::var("SEDIMENT_SPEAKER_MODEL")
+            .unwrap_or_else(|_| "/tmp/wespeaker_en_voxceleb_CAM++.onnx".to_string());
+        let centroids = Arc::new(Mutex::new(HashMap::new()));
+        let mut diarizer = Diarizer::new(&model, Vec::new(), centroids).expect("diarizer");
+
+        let segments = Arc::new(Mutex::new(Vec::<(i64, String, String)>::new()));
+        let sink = segments.clone();
+        let controller = spawn(
+            source,
+            transcriber,
+            "Unknown speaker 1".to_string(),
+            move |audio| Some(diarizer.assign(audio)),
+            move |offset, speaker, text| {
+                sink.lock()
+                    .unwrap()
+                    .push((offset, speaker.to_string(), text.to_string()));
+            },
+        );
+        controller.join();
+
+        let got = segments.lock().unwrap();
+        println!("pipeline segments: {got:#?}");
+        assert!(!got.is_empty(), "no segments produced");
+        let words: usize = got
+            .iter()
+            .map(|(_, _, t)| t.split_whitespace().count())
+            .sum();
+        assert!(words >= 3, "expected real words across segments: {got:?}");
+        assert!(
+            got.iter()
+                .all(|(_, sp, _)| sp.starts_with("Unknown speaker") || !sp.is_empty()),
+            "every segment has a speaker label: {got:?}"
+        );
     }
 }

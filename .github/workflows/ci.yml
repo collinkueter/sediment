@@ -27,10 +27,23 @@ jobs:
           workspaces: src-tauri
       - name: cargo fmt
         run: cd src-tauri && cargo fmt --all -- --check
+      # The default feature set (`desktop-audio`) links native audio + on-device
+      # ASR backends that download a platform lib at build time — out of scope for
+      # the headless runner. Build/test the pure path with `--no-default-features`,
+      # then additionally type-check the mic-capture code (`audio`, no native ASR)
+      # so it doesn't bit-rot. `local-asr` (native sherpa-onnx) is verified on
+      # developer hardware, not here.
       - name: cargo clippy
-        run: cd src-tauri && cargo clippy --all-targets -- -D warnings
+        run: cd src-tauri && cargo clippy --all-targets --no-default-features -- -D warnings
       - name: cargo test
-        run: cd src-tauri && cargo test --lib
+        run: cd src-tauri && cargo test --lib --no-default-features
+      - name: cargo clippy (audio capture)
+        run: cd src-tauri && cargo clippy --no-default-features --features audio -- -D warnings
+      # Type-check the platform-specific loopback backends (ScreenCaptureKit on
+      # macOS, WASAPI on Windows). `local-asr` is still excluded — sherpa-onnx
+      # downloads a native lib at build time which CI runners can't do.
+      - name: cargo clippy (loopback capture)
+        run: cd src-tauri && cargo clippy --no-default-features --features audio,loopback -- -D warnings
 
   web:
     name: Web (typecheck + lint + build)

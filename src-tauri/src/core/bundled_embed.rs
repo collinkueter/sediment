@@ -102,6 +102,10 @@ fn model() -> AppResult<&'static Mutex<TextEmbedding>> {
     if let Some(existing) = MODEL.get() {
         return Ok(existing);
     }
+    // Under `local-asr`, `ort` loads ONNX Runtime dynamically — make sure
+    // `ORT_DYLIB_PATH` points at the provisioned lib before the first session build.
+    #[cfg(feature = "local-asr")]
+    crate::core::ort_runtime::set_env_if_present();
     let embedder = build_from(&model_dir())?;
     // A concurrent racer may have set it first — either way `get` succeeds.
     let _ = MODEL.set(Mutex::new(embedder));

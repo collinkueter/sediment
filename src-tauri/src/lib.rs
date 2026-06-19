@@ -75,6 +75,11 @@ pub fn run_mcp_stdio() -> std::process::ExitCode {
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "chat_message:mcp".to_string());
 
+    // The MCP subprocess embeds for `search_notes`; under `local-asr` the embedder
+    // loads ONNX Runtime dynamically, so point it at the provisioned lib on disk.
+    #[cfg(feature = "local-asr")]
+    core::ort_runtime::set_env_if_present();
+
     // Which search backend `search_notes` uses (semantic vs keyword), forwarded
     // by the engine's MCP env block. Defaults to semantic (Ollama).
     let embedding_provider = core::embedding::EmbeddingProvider::from_config(
@@ -126,6 +131,21 @@ pub fn run() {
             // Logging guard is owned by the app so the appender keeps draining.
             let guard = init_logging(app.handle()).expect("init logging");
             app.manage(LoggingGuard(guard));
+            // Under `local-asr` the embedder loads ONNX Runtime dynamically (see the
+            // `local-asr` feature note). Point `ort` at the provisioned lib up front
+            // (instant if present) and provision it in the background if missing, so
+            // the first bundled-embed call has a runtime to load.
+            #[cfg(feature = "local-asr")]
+            {
+                core::ort_runtime::set_env_if_present();
+                if !core::ort_runtime::ready() {
+                    tauri::async_runtime::spawn(async {
+                        if let Err(e) = core::ort_runtime::ensure().await {
+                            tracing::warn!("ort runtime provisioning failed: {e}");
+                        }
+                    });
+                }
+            }
             // Point the shared Ollama sidecar at the user's endpoint (Docker/
             // Podman/remote) if one is configured, so the indexer and Ollama
             // commands talk to it instead of auto-spawning a local daemon.
@@ -180,6 +200,12 @@ pub fn run() {
             commands::models::pull_ollama_model,
             commands::models::download_bundled_model,
             commands::models::import_bundled_model,
+            #[cfg(feature = "local-asr")]
+            commands::asr::check_asr_readiness,
+            #[cfg(feature = "local-asr")]
+            commands::asr::download_asr_model,
+            #[cfg(feature = "local-asr")]
+            commands::asr::import_asr_model,
             commands::settings::get_models_dir,
             commands::settings::set_models_dir,
             commands::settings::get_embedding_provider,

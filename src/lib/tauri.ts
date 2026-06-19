@@ -81,6 +81,14 @@ export interface ModelProgress {
   done: boolean;
 }
 
+/** Readiness of the on-device meeting-transcription models (ADR-0017 §2/§6). */
+export interface AsrReadiness {
+  asrPresent: boolean;
+  speakerPresent: boolean;
+  allPresent: boolean;
+  sizeHint: string;
+}
+
 /**
  * A streamed event during one conversational turn (ADR-0009 §5). The Channel
  * delivers an internally-tagged discriminated union keyed on `kind`.
@@ -286,7 +294,10 @@ export type SessionEvent =
   | { kind: "status"; sessionId: string; notePath: string; state: SessionLifecycle }
   | { kind: "segment"; segment: TranscriptSegment }
   | { kind: "attendeeChanged"; attendees: string[] }
-  | { kind: "note"; offsetMs: number; text: string };
+  | { kind: "note"; offsetMs: number; text: string }
+  // The end-of-Session distillation turn finished (ADR-0017 §7): a one-line
+  // receipt and the audit turn id, for a quiet summary + undo affordance.
+  | { kind: "distilled"; summary: string; turnId: string };
 
 export interface SessionStartResult {
   sessionId: string;
@@ -340,6 +351,21 @@ export const tauri = {
   /** Install the on-device model from a user-chosen folder (offline path). */
   importBundledModel: (sourceDir: string) => invoke<void>("import_bundled_model", { sourceDir }),
 
+  // On-device ASR + speaker models (ADR-0017 §2/§6) — the meeting transcription
+  // stack. Only present in `local-asr` builds; the UI checks readiness before a
+  // Session so it can prompt for setup instead of opening a Session that can't
+  // transcribe. (Throws "command not found" in a build without the feature.)
+  /** Whether the transcription + speaker models are installed on disk. */
+  checkAsrReadiness: () => invoke<AsrReadiness>("check_asr_readiness"),
+  /** Download the ASR + speaker models, streaming per-file byte progress. */
+  downloadAsrModel: (onProgress: (p: ModelProgress) => void) => {
+    const channel = makeChannel<ModelProgress>();
+    channel.onmessage = onProgress;
+    return invoke<void>("download_asr_model", { onProgress: channel });
+  },
+  /** Install the ASR (and optional speaker) model from a folder (offline path). */
+  importAsrModel: (sourceDir: string) => invoke<void>("import_asr_model", { sourceDir }),
+
   // Ollama
   ollamaStatus: () => invoke<OllamaStatus>("ollama_status"),
   ollamaEnsureRunning: () => invoke<OllamaStatus>("ollama_ensure_running"),
@@ -384,15 +410,16 @@ export const tauri = {
   /**
    * Open a Session: creates the Meeting note and streams `SessionEvent`s through
    * `onEvent` (status, segments, attendees, notes) until `sessionStop`. Hold the
-   * returned `sessionId` for the push calls. M1: segments arrive via
-   * `sessionPushSegment` (a fake source); M2+ swaps in real capture.
+   * returned `sessionId` for the push calls. In a `local-asr` build the backend
+   * starts real capture (mic + system-output loopback) → on-device ASR →
+   * diarization, streaming `segment` events as people speak.
    */
   sessionStart: (title: string, onEvent: (e: SessionEvent) => void) => {
     const channel = makeChannel<SessionEvent>();
     channel.onmessage = onEvent;
     return invoke<SessionStartResult>("session_start", { title, onEvent: channel });
   },
-  /** Push one transcript segment into the open Session (M1 fake source). */
+  /** Push a transcript segment by hand (manual correction / a build without ASR). */
   sessionPushSegment: (sessionId: string, speaker: string, text: string) =>
     invoke<void>("session_push_segment", { sessionId, speaker, text }),
   /** Push a time-anchored note/chat line into the open Session's `## Notes`. */
