@@ -383,17 +383,21 @@ pub fn rename_meeting_note(
     let new_relative_path = swap_title_in_path(old_relative_path, &new_title);
     let new_abs = formation_root.join(&new_relative_path);
 
+    // Check for a collision BEFORE mutating anything, so a clash fails cleanly
+    // rather than leaving the H1 rewritten but the file unmoved (a split-brain where
+    // the in-file title no longer matches the filename).
+    if new_abs != old_abs && new_abs.exists() {
+        return Err(AppError::other(format!(
+            "a meeting note already exists at {new_relative_path}"
+        )));
+    }
+
     // Rewrite the note's H1 to the new title (the in-file half of the rename).
     let content = read(&old_abs)?;
     atomic_write(&old_abs, rewrite_h1(&content, &new_title).as_bytes())?;
 
     // Move the file unless the path is unchanged (title sanitised to the same).
     if new_abs != old_abs {
-        if new_abs.exists() {
-            return Err(AppError::other(format!(
-                "a meeting note already exists at {new_relative_path}"
-            )));
-        }
         std::fs::rename(&old_abs, &new_abs)
             .map_err(|e| AppError::other(format!("rename meeting note: {e}")))?;
     }

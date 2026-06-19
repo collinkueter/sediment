@@ -30,6 +30,7 @@ export function MeetingSpeakers({
   const [assigning, setAssigning] = useState<{ from: string; x: number; y: number } | null>(null);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     tauri
@@ -61,12 +62,14 @@ export function MeetingSpeakers({
       setValue("");
       if (!next || next === from) return;
       setBusy(true);
+      setError(null);
       try {
         const res = await tauri.assignMeetingSpeaker(notePath, from, next);
         setSpeakers(res.attendees);
         await onReload();
       } catch (err) {
         console.error("assign speaker failed:", err);
+        setError(typeof err === "string" ? err : "Couldn't assign that speaker.");
       } finally {
         setBusy(false);
       }
@@ -118,7 +121,8 @@ export function MeetingSpeakers({
         );
       })}
 
-      {unknown > 0 && <span className="text-[11px] text-muted">{unknown} to name</span>}
+      {unknown > 0 && !error && <span className="text-[11px] text-muted">{unknown} to name</span>}
+      {error && <span className="truncate text-[11px] text-danger">{error}</span>}
 
       {/* Assign popover */}
       {assigning && (
@@ -131,7 +135,10 @@ export function MeetingSpeakers({
           />
           <div
             className="fixed z-50 w-64 rounded-lg border border-line-strong bg-raised p-3 shadow-2xl"
-            style={{ left: Math.min(assigning.x, window.innerWidth - 268), top: assigning.y }}
+            style={{
+              left: Math.min(assigning.x, window.innerWidth - 268),
+              top: Math.min(assigning.y, window.innerHeight - 200),
+            }}
           >
             <p className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-muted">
               Assign {assigning.from} to…

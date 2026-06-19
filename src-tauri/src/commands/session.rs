@@ -103,6 +103,7 @@ pub async fn session_start(
             on_event.clone(),
             known_voiceprints,
             session.centroids.clone(),
+            session.relabels.clone(),
         ) {
             Ok(controller) => session.capture = Some(controller),
             Err(e) => {
@@ -141,6 +142,7 @@ fn spawn_capture(
     events: Channel<SessionEvent>,
     known_voiceprints: Vec<(String, Vec<f32>)>,
     centroids: crate::core::session::SharedCentroids,
+    relabels: crate::core::session::SharedRelabels,
 ) -> AppResult<crate::core::capture_pipeline::CaptureController> {
     use crate::core::capture::MicSource;
     use crate::core::transcription::Transcriber;
@@ -171,7 +173,12 @@ fn spawn_capture(
     #[cfg(feature = "local-asr")]
     let resolver: SpeakerResolver = match crate::core::asr_model::speaker_model_path() {
         Ok(model) => {
-            match crate::core::diarization::Diarizer::new(&model, known_voiceprints, centroids) {
+            match crate::core::diarization::Diarizer::new(
+                &model,
+                known_voiceprints,
+                centroids,
+                relabels,
+            ) {
                 Ok(mut diarizer) => Box::new(move |audio| Some(diarizer.assign(audio))),
                 Err(e) => {
                     tracing::warn!("diarizer init failed ({e}); single speaker");
@@ -186,7 +193,7 @@ fn spawn_capture(
     };
     #[cfg(not(feature = "local-asr"))]
     let resolver: SpeakerResolver = {
-        let _ = (&known_voiceprints, &centroids);
+        let _ = (&known_voiceprints, &centroids, &relabels);
         Box::new(|_audio| None)
     };
 
@@ -292,6 +299,15 @@ pub async fn session_rename_speaker(
     let attendees = meeting_note::list_attendees(&note_abs)?;
     let _ = events.send(SessionEvent::AttendeeChanged { attendees });
 
+    // Tell the live diarizer about the rename so *ongoing* speech from this speaker
+    // is labeled with the new name too (otherwise its cluster keeps the old label
+    // and new segments revert to "Unknown speaker N"). ADR-0017 §6.
+    sessions.with_session(&session_id, |s| {
+        if let Ok(mut q) = s.relabels.lock() {
+            q.push((from.clone(), to.clone()));
+        }
+    });
+
     // Persist the named speaker's Voiceprint from the diarizer's running centroid
     // for the old label, then re-key the centroid under the new name so further
     // segments keep matching it (ADR-0017 §6 progressive enrolment).
@@ -355,7 +371,10 @@ pub async fn session_stop(
     // Derive the summary from the note — the single source of truth.
     let formation_root = formation.require()?;
     let note_abs = formation_root.join(&session.note_path);
-    let segment_count = meeting_note::count_transcript_segments(&note_abs).unwrap_or(0);
+    let segment_count = meeting_note::count_transcript_segments(&note_abs).unwrap_or_else(|e| {
+        tracing::warn!("session_stop: count segments failed: {e}");
+        0
+    });
     let attendees = meeting_note::list_attendees(&note_abs).unwrap_or_default();
 
     // Distillation (ADR-0017 §7) runs in the background so Stop returns at once. It
@@ -379,6 +398,11 @@ pub async fn session_stop(
                 }
             };
             let cfg = crate::core::formation_state::AppConfig::load(&app);
+            let copilot = app.state::<crate::core::copilot::CopilotEngineHandle>();
+            // Serialize against concurrent chat turns so the distillation's note
+            // edits aren't mis-attributed to a turn's diff (and vice versa).
+            let turn_lock = app.state::<crate::core::session::FormationLock>();
+            let _guard = turn_lock.0.lock().await;
             match crate::core::distillation::distill_meeting(
                 &formation_root,
                 &note_rel,
@@ -387,6 +411,7 @@ pub async fn session_stop(
                 &conversation_id,
                 store,
                 &cfg,
+                &copilot,
             )
             .await
             {
@@ -398,7 +423,17 @@ pub async fn session_stop(
                     });
                 }
                 Ok(None) => tracing::info!("distillation: no transcript to distil"),
-                Err(e) => tracing::warn!("distillation turn failed: {e}"),
+                Err(e) => {
+                    tracing::warn!("distillation turn failed: {e}");
+                    // Surface the failure instead of silently doing nothing — an
+                    // empty turn_id tells the UI to show the note without an Undo.
+                    let _ = events.send(SessionEvent::Distilled {
+                        summary: "Couldn't summarize this meeting — the transcript is saved."
+                            .to_string(),
+                        turn_id: String::new(),
+                        suggested_title: None,
+                    });
+                }
             }
         });
     }
@@ -431,10 +466,15 @@ pub async fn rename_meeting_note(
     new_title: String,
     formation: State<'_, FormationState>,
     memory: State<'_, MemoryHandle>,
+    sessions: State<'_, SessionRegistry>,
 ) -> AppResult<RenameMeetingResult> {
     let formation_root = formation.require()?;
     let old_title = meeting_note::title_from_path(&note_path);
     let new_rel = meeting_note::rename_meeting_note(&formation_root, &note_path, &new_title)?;
+
+    // If this meeting is still in the post-meeting grounding window, re-point the
+    // recent slot at the new path so chat turns keep resolving its transcript.
+    sessions.note_path_renamed(&note_path, &new_rel);
 
     // Keep the graph node's name in step with the file. Best-effort: the file
     // rename has already succeeded and must not be undone by a store hiccup.

@@ -28,6 +28,19 @@ use tauri::ipc::Channel;
 /// `MeetingSession` field type exists in every build.
 pub type SharedCentroids = Arc<Mutex<HashMap<String, Vec<f32>>>>;
 
+/// Pending live speaker relabels (`from` → `to`) the capture worker's diarizer
+/// applies to its own clusters, so naming a speaker mid-meeting sticks to *new*
+/// segments too (ADR-0017 §6). Drained by the `Diarizer` on each `assign`.
+pub type SharedRelabels = Arc<Mutex<Vec<(String, String)>>>;
+
+/// Serialises formation-mutating turns — a `chat_turn` and the background meeting
+/// distillation — so their whole-formation snapshot→diff→audit windows never
+/// overlap. Without it, one turn's diff can attribute a *concurrent* turn's note
+/// edits to itself, so undoing one turn silently reverts another's work
+/// (ADR-0009 §6 assumes serialized turns). Managed as Tauri app state.
+#[derive(Default)]
+pub struct FormationLock(pub tokio::sync::Mutex<()>);
+
 /// One speaker-attributed, timestamped span of transcribed speech (ADR-0017 §6,
 /// §8). `offset_ms` is measured from Session start — the spine that time-aligns
 /// the transcript to the notes taken beside it.
@@ -106,6 +119,11 @@ pub struct MeetingSession {
     /// Only read under `local-asr` (the diarizer/enrolment path).
     #[allow(dead_code)]
     pub centroids: SharedCentroids,
+    /// Pending live speaker relabels the capture worker's diarizer applies to its
+    /// own clusters, so a mid-meeting rename sticks to ongoing speech too (ADR-0017
+    /// §6). Pushed by `session_rename_speaker`. Only read under `local-asr`.
+    #[allow(dead_code)]
+    pub relabels: SharedRelabels,
 }
 
 impl MeetingSession {
@@ -123,6 +141,7 @@ impl MeetingSession {
             events,
             capture: None,
             centroids: Arc::new(Mutex::new(HashMap::new())),
+            relabels: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -208,35 +227,52 @@ struct RecentMeeting {
 }
 
 impl SessionRegistry {
+    /// Lock the inner map, recovering from a poisoned mutex rather than panicking —
+    /// a single panic while holding the lock must not brick every later session
+    /// command (the `recent` slot below is already written defensively).
+    fn inner(&self) -> std::sync::MutexGuard<'_, HashMap<String, MeetingSession>> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn insert(&self, session: MeetingSession) {
-        self.inner
-            .lock()
-            .expect("session registry poisoned")
-            .insert(session.id.clone(), session);
+        self.inner().insert(session.id.clone(), session);
     }
 
     pub fn remove(&self, id: &str) -> Option<MeetingSession> {
-        self.inner
-            .lock()
-            .expect("session registry poisoned")
-            .remove(id)
+        self.inner().remove(id)
     }
 
     /// Run `f` against the open Session `id`, if present. Returns `None` when no
     /// such Session is open (e.g. a push after stop, or an unknown id).
     pub fn with_session<R>(&self, id: &str, f: impl FnOnce(&mut MeetingSession) -> R) -> Option<R> {
-        let mut guard = self.inner.lock().expect("session registry poisoned");
-        guard.get_mut(id).map(f)
+        self.inner().get_mut(id).map(f)
     }
 
     /// Whether a Session is open — used by M5 to gate live in-meeting chat
     /// grounding (push the rolling transcript only while recording).
     #[allow(dead_code)]
     pub fn is_open(&self, id: &str) -> bool {
-        self.inner
-            .lock()
-            .expect("session registry poisoned")
-            .contains_key(id)
+        self.inner().contains_key(id)
+    }
+
+    /// Whether a Session is currently recording into `note_path`. Lets the
+    /// post-meeting `assign_meeting_speaker` refuse to file-edit a note the live
+    /// pipeline is still writing (it would race the diarizer). ADR-0017 §6.
+    pub fn is_recording(&self, note_path: &str) -> bool {
+        self.inner().values().any(|s| s.note_path == note_path)
+    }
+
+    /// Re-point the "recent meeting" grounding slot when a meeting note is renamed
+    /// (its file moved), so post-meeting chat grounding keeps resolving (ADR-0017
+    /// §7) instead of reading the old, now-missing path.
+    pub fn note_path_renamed(&self, old: &str, new: &str) {
+        if let Ok(mut recent) = self.recent.lock() {
+            if let Some(r) = recent.as_mut() {
+                if r.note_path == old {
+                    r.note_path = new.to_string();
+                }
+            }
+        }
     }
 
     /// Note that a meeting just ended, so its transcript keeps grounding chat turns
@@ -308,7 +344,9 @@ mod tests {
             .join("sediment-test-recent-grounding")
             .join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&root).unwrap();
-        let started = chrono::Local.with_ymd_and_hms(2026, 6, 18, 15, 30, 0).unwrap();
+        let started = chrono::Local
+            .with_ymd_and_hms(2026, 6, 18, 15, 30, 0)
+            .unwrap();
         let rel = meeting_note::meeting_note_relative_path(started, "Q3 Planning");
         let abs = meeting_note::ensure_meeting_note(&root, &rel, "Q3 Planning", started).unwrap();
         meeting_note::append_transcript_segment(&abs, 5_000, "Sarah Chen", "Let's start with Q3.")

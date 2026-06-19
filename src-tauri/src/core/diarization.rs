@@ -54,17 +54,20 @@ pub struct Diarizer {
     next_unknown: usize,
     last_label: Option<String>,
     centroids: SharedCentroids,
+    relabels: crate::core::session::SharedRelabels,
 }
 
 impl Diarizer {
     /// Build a diarizer from the speaker-embedding model at `model_path`, seeding
     /// it with the formation's enrolled Voiceprints (`(name, centroid)`), so a
     /// known voice is named on its first segment. `centroids` is the shared map the
-    /// rename flow reads.
+    /// rename flow reads; `relabels` is the queue a live rename pushes into so the
+    /// diarizer renames its own clusters.
     pub fn new(
         model_path: &str,
         known: Vec<(String, Vec<f32>)>,
         centroids: SharedCentroids,
+        relabels: crate::core::session::SharedRelabels,
     ) -> AppResult<Self> {
         let config = SpeakerEmbeddingExtractorConfig {
             model: Some(model_path.to_string()),
@@ -93,7 +96,29 @@ impl Diarizer {
             next_unknown: 1,
             last_label: None,
             centroids,
+            relabels,
         })
+    }
+
+    /// Apply any pending live renames to the cluster set, so a speaker named
+    /// mid-meeting keeps that name on subsequent segments (and the voice is treated
+    /// as a known one, no longer drifting). Drains the shared queue.
+    fn apply_relabels(&mut self) {
+        let pending: Vec<(String, String)> = match self.relabels.lock() {
+            Ok(mut q) if !q.is_empty() => std::mem::take(&mut *q),
+            _ => return,
+        };
+        for (from, to) in pending {
+            for c in self.clusters.iter_mut() {
+                if c.label == from {
+                    c.label = to.clone();
+                    c.known = true;
+                }
+            }
+            if self.last_label.as_deref() == Some(&from) {
+                self.last_label = Some(to);
+            }
+        }
     }
 
     /// Attribute `samples` (16 kHz mono, one finalized segment) to a speaker label.
@@ -101,6 +126,8 @@ impl Diarizer {
     /// `Unknown speaker N` otherwise, or the previous speaker when the clip is too
     /// short to embed.
     pub fn assign(&mut self, samples: &[f32]) -> String {
+        // Pick up any "that was Sarah" renames issued since the last segment.
+        self.apply_relabels();
         let label = match self.embed(samples) {
             Some(embedding) => self.assign_embedding(embedding),
             None => self

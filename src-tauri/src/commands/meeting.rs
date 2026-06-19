@@ -11,6 +11,7 @@
 use crate::commands::formation::APP_DIR;
 use crate::core::formation_state::FormationState;
 use crate::core::memory::MemoryHandle;
+use crate::core::session::SessionRegistry;
 use crate::core::{meeting_note, people_note};
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
@@ -51,11 +52,20 @@ pub async fn assign_meeting_speaker(
     to: String,
     formation: State<'_, FormationState>,
     memory: State<'_, MemoryHandle>,
+    sessions: State<'_, SessionRegistry>,
 ) -> AppResult<AssignSpeakerResult> {
     let root = formation.require()?;
     let to = to.trim();
     if to.is_empty() {
         return Err(AppError::other("assign_meeting_speaker: empty name"));
+    }
+    // This edits the note file directly; while the meeting is still recording the
+    // live pipeline is also writing it. Refuse, so we don't race the diarizer —
+    // name speakers live from the recording bar instead (which the UI routes to).
+    if sessions.is_recording(&note_path) {
+        return Err(AppError::other(
+            "This meeting is still recording — name speakers from the recording bar.",
+        ));
     }
     let note_abs = root.join(&note_path);
     let relabeled = meeting_note::rename_speaker(&note_abs, &from, to)?;

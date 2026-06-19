@@ -179,6 +179,28 @@ pub async fn ensure() -> AppResult<()> {
     }
 }
 
+/// Install the ONNX Runtime shared library from a user-chosen folder — the offline
+/// / air-gapped path. Looks for the platform lib (`libonnxruntime.dylib` /
+/// `onnxruntime.dll` / `.so`) anywhere under `src`, copies it into [`runtime_dir`],
+/// and sets `ORT_DYLIB_PATH`. No-op (Ok) if a runtime is already available. Errors
+/// if no matching lib is in the folder, so the caller can fall back to a download.
+pub fn import_from_dir(src: &Path) -> AppResult<()> {
+    set_env_if_present();
+    if ready() {
+        return Ok(());
+    }
+    let name = lib_filename();
+    let found = find_named(src, name)
+        .ok_or_else(|| AppError::other(format!("no {name} in the chosen folder")))?;
+    let dir = runtime_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| AppError::other(format!("create runtime dir: {e}")))?;
+    std::fs::copy(&found, dir.join(name))
+        .map_err(|e| AppError::other(format!("install onnxruntime lib: {e}")))?;
+    set_env_if_present();
+    Ok(())
+}
+
 /// Recursively find a file named `name` under `root` (the lib is a few levels deep
 /// in the release archive). Bounded by the small archive tree.
 fn find_named(root: &Path, name: &str) -> Option<PathBuf> {

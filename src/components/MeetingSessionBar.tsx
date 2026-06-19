@@ -40,9 +40,13 @@ export function MeetingSessionBar() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [notePath, setNotePath] = useState<string | null>(null);
+  // Mirror of notePath read from event callbacks (which capture a stale closure),
+  // so the distillation receipt is correlated to the meeting it belongs to.
+  const notePathRef = useRef<string | null>(null);
   const [attendees, setAttendees] = useState<string[]>([]);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [barError, setBarError] = useState<string | null>(null);
   const busy = useRef(false);
 
   // Speaker rename popover, anchored to the clicked avatar.
@@ -61,6 +65,7 @@ export function MeetingSessionBar() {
     summary: string;
     turnId: string;
     suggestedTitle: string | null;
+    notePath: string | null;
   } | null>(null);
   const [renaming, setRenaming] = useState(false);
 
@@ -91,7 +96,14 @@ export function MeetingSessionBar() {
         setAttendees(e.attendees);
         break;
       case "distilled":
-        setDistill({ summary: e.summary, turnId: e.turnId, suggestedTitle: e.suggestedTitle });
+        // Correlate to the meeting it belongs to (notePathRef), not whatever note
+        // the bar happens to be pointing at now (a 2nd meeting may have started).
+        setDistill({
+          summary: e.summary,
+          turnId: e.turnId,
+          suggestedTitle: e.suggestedTitle,
+          notePath: notePathRef.current,
+        });
         break;
       // `segment` / `note` stream into the Meeting note, not this bar — open the
       // note to watch the transcript grow, or just chat about it below.
@@ -117,15 +129,18 @@ export function MeetingSessionBar() {
   const start = useCallback(async () => {
     if (busy.current) return;
     busy.current = true;
+    setBarError(null);
     try {
       const res = await tauri.sessionStart(title.trim() || "Meeting", onEvent);
       setSessionId(res.sessionId);
       setNotePath(res.notePath);
+      notePathRef.current = res.notePath;
       setAttendees([]);
       setStartedAt(Date.now());
       setDistill(null);
     } catch (err) {
       console.error("session start failed:", err);
+      setBarError("Couldn't start recording — check the mic permission, then retry.");
     } finally {
       busy.current = false;
     }
@@ -133,13 +148,17 @@ export function MeetingSessionBar() {
 
   const stop = useCallback(async () => {
     if (!sessionId) return;
+    setBarError(null);
     try {
       await tauri.sessionStop(sessionId);
-    } catch (err) {
-      console.error("session stop failed:", err);
-    } finally {
+      // Only collapse the bar on a confirmed stop; otherwise capture may still be
+      // running and we'd lie about the state. (The `status:stopped` event also
+      // clears these, belt-and-suspenders.)
       setSessionId(null);
       setStartedAt(null);
+    } catch (err) {
+      console.error("session stop failed:", err);
+      setBarError("Couldn't stop the recording — it may still be running. Try again.");
     }
   }, [sessionId]);
 
@@ -184,19 +203,24 @@ export function MeetingSessionBar() {
   // + graph node) and re-point the local note link, then drop the suggestion.
   const acceptRename = useCallback(async () => {
     const next = distill?.suggestedTitle?.trim();
-    if (!next || !notePath || renaming) return;
+    const target = distill?.notePath;
+    if (!next || !target || renaming) return;
     setRenaming(true);
     try {
-      const res = await tauri.renameMeetingNote(notePath, next);
-      setNotePath(res.notePath);
-      setTitle(next);
+      const res = await tauri.renameMeetingNote(target, next);
+      // Only re-point the bar's own note link if it's still the same meeting.
+      if (notePathRef.current === target) {
+        setNotePath(res.notePath);
+        notePathRef.current = res.notePath;
+        setTitle(next);
+      }
       setDistill((d) => (d ? { ...d, suggestedTitle: null } : d));
     } catch (err) {
       console.error("rename meeting failed:", err);
     } finally {
       setRenaming(false);
     }
-  }, [distill, notePath, renaming]);
+  }, [distill, renaming]);
 
   // Decline just the rename, keeping the receipt's summary + undo in place.
   const dismissRename = useCallback(() => {
@@ -206,18 +230,22 @@ export function MeetingSessionBar() {
   // The distillation receipt rides as a bottom toast (the app's "quiet summary +
   // undo" idiom, matching UndoToast) so it survives the bar collapsing on stop.
   const distillToast = distill ? (
-    <div className="-translate-x-1/2 fixed bottom-6 left-1/2 z-50 flex max-w-[34rem] flex-col gap-2 rounded-xl border border-line-strong bg-raised px-4 py-2.5 text-ink-soft shadow-2xl">
+    // Tiered above UndoToast (bottom-6) and ReminderToast (bottom-20) so the three
+    // never stack on the same spot.
+    <div className="-translate-x-1/2 fixed bottom-[8.5rem] left-1/2 z-50 flex max-w-[34rem] flex-col gap-2 rounded-xl border border-line-strong bg-raised px-4 py-2.5 text-ink-soft shadow-2xl">
       <div className="flex items-center gap-3">
         <Icon.Sparkle aria-hidden className="h-4 w-4 shrink-0 text-gold" />
         <span className="min-w-0 flex-1 truncate text-sm">{distill.summary}</span>
-        <button
-          type="button"
-          onClick={() => void undoDistill()}
-          className="flex items-center gap-1.5 rounded-lg border border-line-strong bg-raised px-3 py-1 font-semibold text-[12px] text-accent-ink hover:border-accent hover:bg-accent-tint"
-        >
-          <Icon.Undo className="h-3 w-3" />
-          Undo
-        </button>
+        {distill.turnId && (
+          <button
+            type="button"
+            onClick={() => void undoDistill()}
+            className="flex items-center gap-1.5 rounded-lg border border-line-strong bg-raised px-3 py-1 font-semibold text-[12px] text-accent-ink hover:border-accent hover:bg-accent-tint"
+          >
+            <Icon.Undo className="h-3 w-3" />
+            Undo
+          </button>
+        )}
         <button
           type="button"
           aria-label="Dismiss"
@@ -311,6 +339,9 @@ export function MeetingSessionBar() {
             placeholder="Name this meeting, then record…"
             className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-[13px] text-ink placeholder:text-faint hover:border-line focus:border-accent-ink focus:bg-surface focus:outline-none"
           />
+          {barError && (
+            <span className="shrink-0 truncate text-[11px] text-danger">{barError}</span>
+          )}
           <button
             type="button"
             onClick={() => void start()}
@@ -341,6 +372,7 @@ export function MeetingSessionBar() {
         Recording
       </span>
       <span className="font-mono text-[12px] tabular-nums text-ink-soft">{fmtOffset(elapsed)}</span>
+      {barError && <span className="truncate text-[11px] text-danger">{barError}</span>}
 
       {/* Attendee avatars — click to name a speaker ("that was Sarah", §6) */}
       {attendees.length > 0 && (
@@ -406,7 +438,10 @@ export function MeetingSessionBar() {
           />
           <div
             className="fixed z-50 w-64 rounded-lg border border-line-strong bg-raised p-3 shadow-2xl"
-            style={{ left: Math.min(rename.x, window.innerWidth - 268), top: rename.y }}
+            style={{
+              left: Math.min(rename.x, window.innerWidth - 268),
+              top: Math.min(rename.y, window.innerHeight - 200),
+            }}
           >
             <p className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-muted">
               Who was speaking?

@@ -99,6 +99,20 @@ pub fn run_mcp_stdio() -> std::process::ExitCode {
         }
     };
 
+    // The subprocess doesn't inherit the parent's `ORT_DYLIB_PATH` reliably. If the
+    // on-device embedder is the search backend and the runtime isn't provisioned,
+    // fetch it here so `search_notes` doesn't fail with an opaque ORT load error.
+    #[cfg(feature = "local-asr")]
+    if matches!(
+        embedding_provider,
+        core::embedding::EmbeddingProvider::Bundled
+    ) && !core::ort_runtime::ready()
+    {
+        if let Err(e) = runtime.block_on(core::ort_runtime::ensure()) {
+            eprintln!("sediment --mcp-stdio: ort runtime provisioning failed: {e}");
+        }
+    }
+
     match runtime.block_on(core::formation_mcp::serve_stdio(
         formation,
         source_chat_id,
@@ -127,6 +141,7 @@ pub fn run() {
         .manage(core::copilot::CopilotEngineHandle::default())
         .manage(core::cancel::CancelRegistry::default())
         .manage(core::session::SessionRegistry::default())
+        .manage(core::session::FormationLock::default())
         .setup(|app| {
             // Logging guard is owned by the app so the appender keeps draining.
             let guard = init_logging(app.handle()).expect("init logging");

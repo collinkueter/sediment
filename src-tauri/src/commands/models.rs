@@ -96,18 +96,37 @@ pub async fn check_model_readiness(
             });
         }
         EmbeddingProvider::Bundled => {
-            let present = crate::core::bundled_embed::present();
+            let model_present = crate::core::bundled_embed::present();
+            // Under `local-asr` the embedder loads ONNX Runtime dynamically, so the
+            // model files alone aren't enough — the runtime lib must be provisioned
+            // too. Report it as a requirement so a missing runtime surfaces as
+            // not-ready (with an actionable setup screen) instead of a silent
+            // "ready" whose every embed then fails.
+            #[cfg(feature = "local-asr")]
+            let runtime_present = crate::core::ort_runtime::ready();
+            #[cfg(not(feature = "local-asr"))]
+            let runtime_present = true;
+            let mut requirements = vec![ModelRequirement {
+                kind: "embed".into(),
+                id: "nomic-embed-text-v1.5".into(),
+                label: "On-device embedding model · nomic-embed-text-v1.5".into(),
+                size_hint: "~0.5 GB".into(),
+                present: model_present,
+            }];
+            if !runtime_present {
+                requirements.push(ModelRequirement {
+                    kind: "embed".into(),
+                    id: "onnxruntime".into(),
+                    label: "On-device runtime · ONNX Runtime".into(),
+                    size_hint: "~25 MB".into(),
+                    present: false,
+                });
+            }
             return Ok(ModelReadiness {
                 provider: provider.as_str().into(),
                 ollama_installed: false,
-                requirements: vec![ModelRequirement {
-                    kind: "embed".into(),
-                    id: "nomic-embed-text-v1.5".into(),
-                    label: "On-device embedding model · nomic-embed-text-v1.5".into(),
-                    size_hint: "~0.5 GB".into(),
-                    present,
-                }],
-                all_present: present,
+                all_present: model_present && runtime_present,
+                requirements,
             });
         }
         EmbeddingProvider::Ollama => {}
@@ -311,6 +330,19 @@ pub async fn import_bundled_model(source_dir: String) -> AppResult<()> {
     let src = std::path::PathBuf::from(source_dir.trim());
     if !src.is_dir() {
         return Err(AppError::other(format!("Not a folder: {}", src.display())));
+    }
+    // Under `local-asr` the embedder validates by loading an ONNX Runtime session,
+    // which needs the runtime lib. Prefer one in the same folder (true air-gapped),
+    // else fetch it — otherwise the offline import would fail at validation.
+    #[cfg(feature = "local-asr")]
+    {
+        if !crate::core::ort_runtime::ready()
+            && crate::core::ort_runtime::import_from_dir(&src).is_err()
+        {
+            if let Err(e) = crate::core::ort_runtime::ensure().await {
+                tracing::warn!("import_bundled_model: ort runtime provisioning failed: {e}");
+            }
+        }
     }
     bundled_embed::install_from_dir(src).await?;
     let _ = bundled_embed::warmup().await;

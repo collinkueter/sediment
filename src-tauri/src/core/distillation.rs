@@ -47,6 +47,7 @@ const DISTILL_GROUNDING_BUDGET: usize = 8000;
 /// Meeting note has no transcript to distil (nothing was said / captured). On
 /// success the turn is recorded as an undoable audit entry, exactly like a
 /// `chat_turn`, and the assistant reply joins the meeting's conversation.
+#[allow(clippy::too_many_arguments)]
 pub async fn distill_meeting(
     formation_root: &Path,
     note_rel: &str,
@@ -55,6 +56,7 @@ pub async fn distill_meeting(
     conversation_id: &str,
     store: &MemoryStore,
     cfg: &AppConfig,
+    copilot: &crate::core::copilot::CopilotEngineHandle,
 ) -> AppResult<Option<DistillResult>> {
     let note_abs = formation_root.join(note_rel);
     let windows = meeting_note::transcript_windows(&note_abs, meeting_note::DISTILL_WINDOW_BUDGET)?;
@@ -74,12 +76,6 @@ pub async fn distill_meeting(
     let turn_id = audit::new_turn_id();
     let snapshot_dir = audit::snapshot_formation(formation_root, &turn_id)?;
 
-    let engine = ClaudeCodeEngine::new(
-        cfg.claude_code_model
-            .clone()
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or_else(|| claude_code::DEFAULT_MODEL.to_string()),
-    );
     let turn = TurnRequest {
         message: message.clone(),
         history: Vec::new(),
@@ -101,7 +97,26 @@ pub async fn distill_meeting(
     // Quiet: the agent's tokens are not streamed to any live surface.
     let sink: TurnEventSink = Box::new(|_event| {});
 
-    let outcome = match engine.run_turn(&turn, &sink).await {
+    // Run on the user's configured engine — the warm Copilot engine when selected
+    // (so Copilot-only users, who may not have Claude Code installed, still get a
+    // distillation), else cold Claude Code (the ~6 s spawn is irrelevant here).
+    let run = if cfg.conversation_engine.as_deref() == Some("copilot") {
+        let model = cfg
+            .copilot_model
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| crate::core::copilot::DEFAULT_MODEL.to_string());
+        copilot.run_turn(&turn, &sink, &model).await
+    } else {
+        let engine = ClaudeCodeEngine::new(
+            cfg.claude_code_model
+                .clone()
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| claude_code::DEFAULT_MODEL.to_string()),
+        );
+        engine.run_turn(&turn, &sink).await
+    };
+    let outcome = match run {
         Ok(o) => o,
         Err(e) => {
             // A failed turn writes no audit entry, so its snapshot would leak —

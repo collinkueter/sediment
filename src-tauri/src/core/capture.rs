@@ -379,8 +379,10 @@ impl CaptureSource for ScreenCaptureSource {
         });
 
         // Surface a start error (e.g. permission) to the caller so MixedSource can
-        // fall back to mic-only.
-        match ready_rx.recv() {
+        // fall back to mic-only. Bounded wait: `SCShareableContent::get()` blocks on
+        // the Screen-Recording permission prompt, so without a timeout an unanswered
+        // dialog would stall the whole capture (the mic too). Time out → mic-only.
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(8)) {
             Ok(Ok(())) => Ok(CaptureHandle {
                 format: CaptureFormat {
                     sample_rate: SR,
@@ -389,6 +391,9 @@ impl CaptureSource for ScreenCaptureSource {
                 rx,
             }),
             Ok(Err(e)) => Err(AppError::other(format!("ScreenCaptureKit loopback: {e}"))),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(AppError::other(
+                "ScreenCaptureKit loopback did not start (Screen Recording permission?)",
+            )),
             Err(_) => Err(AppError::other("ScreenCaptureKit loopback thread died")),
         }
     }
@@ -461,6 +466,9 @@ impl CaptureSource for WasapiLoopbackSource {
             // it returns `S_FALSE` when COM is already initialised on the thread,
             // and any genuine failure surfaces on the first device call below.
             let _ = initialize_mta();
+            // Signal "started" once the stream is live, *before* the capture loop —
+            // separate sender so the loop's own later errors can't clobber it.
+            let ready_started = ready_tx.clone();
             let run = || -> Result<(), String> {
                 let enumerator = DeviceEnumerator::new().map_err(|e| format!("{e:?}"))?;
                 // Default *render* endpoint, captured in loopback.
@@ -488,6 +496,9 @@ impl CaptureSource for WasapiLoopbackSource {
                     .get_audiocaptureclient()
                     .map_err(|e| format!("{e:?}"))?;
                 audio_client.start_stream().map_err(|e| format!("{e:?}"))?;
+                // Setup succeeded — tell the caller loopback is live so it doesn't
+                // time out and fall back to mic-only.
+                let _ = ready_started.send(Ok(()));
 
                 let mut queue: ByteDeque<u8> = ByteDeque::new();
                 loop {
@@ -515,27 +526,28 @@ impl CaptureSource for WasapiLoopbackSource {
                     }
                 }
             };
-            match run() {
-                Ok(()) => {
-                    let _ = ready_tx.send(Ok(()));
-                }
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e));
-                }
+            // Only setup failures (before `start_stream`) reach here unsignaled;
+            // a post-start loop error is sent too but the receiver has already moved
+            // on (harmless). Success was already signaled above.
+            if let Err(e) = run() {
+                let _ = ready_tx.send(Err(e));
             }
         });
 
-        // The WASAPI loop only reports an error if setup fails before the first
-        // read; give it a moment, but don't block capture if it's already running.
-        match ready_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+        // Wait for the explicit "started" signal; a setup failure surfaces as Err so
+        // MixedSource degrades to mic-only. A generous window covers slow COM init.
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(Err(e)) => Err(AppError::other(format!("WASAPI loopback: {e}"))),
-            _ => Ok(CaptureHandle {
+            Ok(Ok(())) => Ok(CaptureHandle {
                 format: CaptureFormat {
                     sample_rate: SR,
                     channels: CH,
                 },
                 rx,
             }),
+            Err(_) => Err(AppError::other(
+                "WASAPI loopback did not start in time (degrading to mic-only)",
+            )),
         }
     }
 }

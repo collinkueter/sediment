@@ -242,7 +242,9 @@ mod tests {
         let model = std::env::var("SEDIMENT_SPEAKER_MODEL")
             .unwrap_or_else(|_| "/tmp/wespeaker_en_voxceleb_CAM++.onnx".to_string());
         let centroids = Arc::new(Mutex::new(HashMap::new()));
-        let mut diarizer = Diarizer::new(&model, Vec::new(), centroids).expect("diarizer");
+        let relabels = Arc::new(Mutex::new(Vec::new()));
+        let mut diarizer =
+            Diarizer::new(&model, Vec::new(), centroids, relabels).expect("diarizer");
 
         let segments = Arc::new(Mutex::new(Vec::<(i64, String, String)>::new()));
         let sink = segments.clone();

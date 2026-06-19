@@ -570,8 +570,19 @@ impl MemoryStore {
             )));
         };
         // Average the sample into the existing centroid, unless absent / wrong dim.
+        // A dimension change (e.g. the speaker model was swapped) discards the prior
+        // centroid and restarts — log it, since the old voiceprints also become
+        // unmatchable and that's a config problem worth seeing.
         let (centroid, n) = match (row.voiceprint, row.voiceprint_n) {
             (Some(c), Some(n)) if c.len() == sample.len() && n > 0 => (c, n as f32),
+            (Some(c), _) if c.len() != sample.len() => {
+                tracing::warn!(
+                    "enroll_voiceprint: dim change {} -> {} for {entity_id}; resetting centroid",
+                    c.len(),
+                    sample.len()
+                );
+                (Vec::new(), 0.0)
+            }
             _ => (Vec::new(), 0.0),
         };
         let updated: Vec<f32> = if centroid.is_empty() {

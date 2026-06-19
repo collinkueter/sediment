@@ -112,6 +112,7 @@ pub async fn chat_turn(
     copilot: State<'_, CopilotEngineHandle>,
     cancel: State<'_, CancelRegistry>,
     sessions: State<'_, SessionRegistry>,
+    turn_lock: State<'_, crate::core::session::FormationLock>,
     app: tauri::AppHandle,
 ) -> AppResult<ChatTurnResult> {
     // Register this turn so `cancel_turn` can interrupt it by the same client id.
@@ -156,6 +157,12 @@ pub async fn chat_turn(
     if let Err(e) = daily_note::ensure_daily_note(&formation_root, daily_note::today_local()) {
         tracing::warn!("chat_turn: ensure daily note failed: {e}");
     }
+
+    // Serialize formation-mutating turns: hold the lock across snapshot → engine
+    // run → diff → audit so a concurrent turn (another chat turn, or the background
+    // meeting distillation) can't have its note edits mis-attributed to this turn's
+    // diff (which would make undo revert the wrong work). Held until end of turn.
+    let _turn_guard = turn_lock.0.lock().await;
 
     // 3. Snapshot the whole formation BEFORE the turn. The agent edits notes
     //    with its own file tools, so the diff is how the audit log learns what
