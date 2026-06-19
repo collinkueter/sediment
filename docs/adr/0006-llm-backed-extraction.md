@@ -1,6 +1,6 @@
 # ADR-0006: LLM-backed fact extraction
 
-**Status:** Accepted (2026-05-20)
+**Status:** Superseded by [ADR-0009](0009-conversational-agent.md) (2026-05-22) — the `FactExtractor` trait and the LLM/GLiNER extractor split were replaced by the conversational agent, which records Facts directly through graph tools. Kept for historical context.
 **Relates to:** ADR-0003 (extraction pipeline), ADR-0004 (bi-temporal facts)
 
 ## Context

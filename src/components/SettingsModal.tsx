@@ -1,7 +1,7 @@
 import { Segmented } from "@/components/Segmented";
 import { Icon } from "@/components/icons";
 import { useFormationStore } from "@/lib/store";
-import type { ClaudeCodeStatus, CopilotModels, CopilotStatus } from "@/lib/tauri";
+import type { ClaudeCodeStatus, CopilotModels, CopilotStatus, ModelReadiness } from "@/lib/tauri";
 import { tauri } from "@/lib/tauri";
 import { type Theme, useThemeStore } from "@/lib/theme";
 import { useEffect, useRef, useState } from "react";
@@ -24,6 +24,55 @@ const SEARCH_MODE_DESCRIPTIONS: Record<SearchMode, string> = {
 
 /** The Claude Code model aliases offered in the model selector. */
 const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
+
+/** Honest status line for the active note-search model, replacing the old
+ *  hardcoded "all-MiniLM · Ready" placeholder. Keyword mode needs no model;
+ *  the semantic providers show whether their model is installed. */
+function ModelStatusRow({
+  searchMode,
+  readiness,
+}: {
+  searchMode: SearchMode;
+  readiness: ModelReadiness | null;
+}) {
+  let detail: string;
+  let ready: boolean;
+  if (searchMode === "none") {
+    detail = "Keyword search — no model required.";
+    ready = true;
+  } else if (readiness === null) {
+    detail = "Checking…";
+    ready = false;
+  } else {
+    const req = readiness.requirements[0];
+    detail =
+      req?.label ?? (searchMode === "bundled" ? "On-device embedding model" : "Embedding model");
+    ready = readiness.all_present;
+  }
+  const showChip = searchMode === "none" || readiness !== null;
+  return (
+    <div className="flex items-center justify-between py-[11px]">
+      <div className="min-w-0 flex-1 pr-4">
+        <p className="text-[13.5px] font-medium text-ink">Local models</p>
+        <p className="mt-0.5 truncate text-[11.5px] text-muted">{detail}</p>
+      </div>
+      {showChip && (
+        <span
+          className={[
+            "inline-flex items-center gap-[5px] text-[12px] font-semibold",
+            ready ? "text-sage" : "text-warn",
+          ].join(" ")}
+        >
+          <span
+            className="inline-block h-[6px] w-[6px] rounded-full bg-current"
+            aria-hidden="true"
+          />
+          {ready ? "Ready" : "Not installed"}
+        </span>
+      )}
+    </div>
+  );
+}
 
 /** Format a Copilot premium-request multiplier for display: "0x" → "Free". */
 function copilotCost(usage: string | null): string {
@@ -60,12 +109,25 @@ export function SettingsModal({
   const [initialOllamaUrl, setInitialOllamaUrl] = useState("");
   const [ollamaUrlError, setOllamaUrlError] = useState<string | null>(null);
   const [tone, setTone] = useState<Tone>("warm");
+  const [readiness, setReadiness] = useState<ModelReadiness | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Honest readout of the active note-search model. Loaded separately from the
+  // form (an Ollama check can spin up the daemon) so it never blocks the dialog.
+  function refreshReadiness() {
+    tauri
+      .checkModelReadiness()
+      .then(setReadiness)
+      .catch(() => setReadiness(null));
+  }
 
   const { theme, setTheme } = useThemeStore();
   const formationPath = useFormationStore((s) => s.formationPath);
   const pickFormation = useFormationStore((s) => s.pick);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only load; refreshReadiness reads no reactive value and the setters are stable.
   useEffect(() => {
     Promise.all([
       tauri.getModelsDir(),
@@ -107,6 +169,7 @@ export function SettingsModal({
       .catch(() => {
         setCopilot({ installed: false, binary_path: null });
       });
+    refreshReadiness();
   }, []);
 
   // Discover the Copilot account's models live when the Copilot engine is in
@@ -180,15 +243,52 @@ export function SettingsModal({
       // not, the setup screen re-indexes after install. Keyword uses no vectors.
       if (mode !== "none") {
         const r = await tauri.checkModelReadiness();
+        setReadiness(r);
         if (r.all_present) {
           tauri
             .indexFormation(true)
             .catch((e) => console.warn("re-index after search-mode switch failed:", e));
         }
+      } else {
+        refreshReadiness();
       }
     } catch (e) {
       setSearchMode(previous);
       setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // BYO model (on-device): the user downloaded the embedding-model files
+  // themselves and points at the folder. The app validates and installs them
+  // into its own model dir, then uses them — no network. Switches to the
+  // on-device provider if needed, then re-indexes so search uses the new vectors.
+  async function importModelFolder() {
+    setImportMsg(null);
+    let dir: string | null = null;
+    try {
+      dir = await tauri.pickDirectory();
+    } catch (e) {
+      setImportMsg(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    if (!dir) return;
+    setImporting(true);
+    try {
+      if (searchMode !== "bundled") {
+        await tauri.setEmbeddingProvider("bundled");
+        setSearchMode("bundled");
+      }
+      await tauri.importBundledModel(dir);
+      refreshReadiness();
+      onModelConfigChanged();
+      tauri
+        .indexFormation(true)
+        .catch((e) => console.warn("re-index after model import failed:", e));
+      setImportMsg("Model imported.");
+    } catch (e) {
+      setImportMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -217,6 +317,7 @@ export function SettingsModal({
       await tauri.setOllamaUrl(trimmed === "" ? null : trimmed);
       setInitialOllamaUrl(trimmed);
       onModelConfigChanged();
+      refreshReadiness();
     } catch (e) {
       setOllamaUrlError(e instanceof Error ? e.message : String(e));
     }
@@ -601,6 +702,32 @@ export function SettingsModal({
                 )}
               </div>
             )}
+
+            {/* On-device: bring-your-own model. Point Sediment at a folder of
+                model files you downloaded yourself; it installs and uses them
+                (the offline path — no download). */}
+            {searchMode === "bundled" && (
+              <div className="py-[11px]">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13.5px] font-medium text-ink">Model files</p>
+                    <p className="mt-0.5 text-[11.5px] text-muted">
+                      Sediment downloads the model for you. Or, if you downloaded it yourself,
+                      import the folder and Sediment uses those files — no network needed.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void importModelFolder()}
+                    disabled={importing}
+                    className="shrink-0 rounded-md border border-line px-3 py-1.5 text-[12px] font-semibold text-accent-ink hover:bg-raised disabled:cursor-default disabled:opacity-40"
+                  >
+                    {importing ? "Importing…" : "Import folder…"}
+                  </button>
+                </div>
+                {importMsg && <p className="mt-1.5 text-[11.5px] text-muted">{importMsg}</p>}
+              </div>
+            )}
           </section>
 
           {/* ── Formation ── */}
@@ -658,22 +785,9 @@ export function SettingsModal({
                   </div>
                 </div>
 
-                {/* Local models status */}
-                <div className="flex items-center justify-between py-[11px]">
-                  <div>
-                    <p className="text-[13.5px] font-medium text-ink">Local models</p>
-                    <p className="mt-0.5 text-[11.5px] text-muted">
-                      Embeddings · all-MiniLM · installed
-                    </p>
-                  </div>
-                  <span className="inline-flex items-center gap-[5px] text-[12px] font-semibold text-sage">
-                    <span
-                      className="inline-block h-[6px] w-[6px] rounded-full bg-current"
-                      aria-hidden="true"
-                    />
-                    Ready
-                  </span>
-                </div>
+                {/* Local models status — reflects the active search mode and
+                    whether its model is actually installed (no hardcoding). */}
+                <ModelStatusRow searchMode={searchMode} readiness={readiness} />
               </>
             )}
           </section>

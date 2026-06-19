@@ -1,6 +1,11 @@
 import { Icon } from "@/components/icons";
 import { type ModelProgress, type ModelReadiness, type ModelRequirement, tauri } from "@/lib/tauri";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+/** Where to download the on-device model files for the offline / import path. */
+const BUNDLED_MODEL_SOURCE = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5";
+/** Where to install Ollama. */
+const OLLAMA_DOWNLOAD = "ollama.com/download";
 
 // After a semantic provider's model becomes ready, re-embed existing notes so
 // search actually returns results. Switching providers (or installing the
@@ -280,8 +285,10 @@ function BundledSetup({
             Use Ollama instead
           </button>
           <p className="max-w-xs text-[10px] leading-snug text-faint">
-            The folder must contain the model files (onnx/model.onnx plus the tokenizer JSON files).
-            Change anytime in Settings.
+            To import, download the model yourself from{" "}
+            <span className="font-mono text-muted">{BUNDLED_MODEL_SOURCE}</span> and pick that
+            folder — it must contain onnx/model.onnx plus the tokenizer JSON files. Change anytime
+            in Settings.
           </p>
         </div>
         {present ? (
@@ -340,6 +347,47 @@ function OllamaSetup({
   // The embedding model can't be pulled until Ollama itself is installed.
   const blockedOnOllama = !readiness.ollama_installed && missing.length > 0;
 
+  // Self-host endpoint (Docker/Podman/remote). Preloaded so a returning user
+  // sees their value; setting it points the live sidecar at that instance.
+  const [endpoint, setEndpoint] = useState("");
+  const [endpointSaving, setEndpointSaving] = useState(false);
+  useEffect(() => {
+    tauri
+      .getOllamaUrl()
+      .then((u) => {
+        if (u) setEndpoint(u);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Re-probe readiness without a relaunch — used after the user installs Ollama,
+  // starts their own server, or sets a custom endpoint.
+  async function recheck() {
+    try {
+      const fresh = await tauri.checkModelReadiness();
+      setReadiness(fresh);
+      if (fresh.all_present) {
+        reindexNotes();
+        onComplete();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function saveEndpoint() {
+    setEndpointSaving(true);
+    setError(null);
+    try {
+      await tauri.setOllamaUrl(endpoint.trim() === "" ? null : endpoint.trim());
+      await recheck();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEndpointSaving(false);
+    }
+  }
+
   async function downloadAll() {
     setRunning(true);
     setError(null);
@@ -368,20 +416,45 @@ function OllamaSetup({
   return (
     <>
       <div>
-        <h1 className="font-serif text-xl font-semibold text-ink">Set up your models</h1>
+        <h1 className="font-serif text-xl font-semibold text-ink">Set up Ollama search</h1>
         <p className="mt-1 text-sm text-ink-soft">
-          Sediment needs the local embedding model that powers note search. It runs entirely on your
-          machine — Sediment downloads it once.
+          Ollama serves the embedding model that powers note search — it runs on your machine (or
+          one you point Sediment at). Follow the steps below.
         </p>
       </div>
 
-      {blockedOnOllama && (
-        <p className="rounded-md border border-line px-3 py-2 text-xs text-gold bg-gold-tint">
-          Ollama isn't installed — install it from{" "}
-          <span className="font-mono">ollama.com/download</span> and relaunch to download the
-          embedding model.
-        </p>
-      )}
+      {/* Step-by-step — only the unmet steps need the user's attention. */}
+      <ol className="space-y-2">
+        <SetupStep
+          n={1}
+          done={readiness.ollama_installed}
+          title="Install Ollama"
+          body={
+            readiness.ollama_installed ? (
+              "Detected on your machine."
+            ) : (
+              <>
+                Download it from <span className="font-mono text-ink-soft">{OLLAMA_DOWNLOAD}</span>,
+                install, then re-check below. Sediment starts the daemon for you once it's on your
+                PATH (or run <span className="font-mono text-ink-soft">ollama serve</span>{" "}
+                yourself).
+              </>
+            )
+          }
+        />
+        <SetupStep
+          n={2}
+          done={missing.length === 0}
+          title="Get the embedding model"
+          body={
+            missing.length === 0
+              ? "Installed and ready."
+              : readiness.ollama_installed
+                ? "Click Download below — Sediment pulls it through Ollama."
+                : "Available once Ollama is installed."
+          }
+        />
+      </ol>
 
       <ul className="space-y-2">
         {readiness.requirements.map((req) => (
@@ -389,17 +462,57 @@ function OllamaSetup({
         ))}
       </ul>
 
+      {/* Run-it-yourself: Docker/Podman/remote. Lets a user who manages their own
+          Ollama finish setup here instead of relying on a Sediment-managed daemon. */}
+      <div className="rounded-md border border-line px-3 py-2">
+        <p className="text-[11.5px] leading-relaxed text-muted">
+          Running Ollama yourself — in Docker, Podman, or on another machine? Point Sediment at it
+          (leave blank to auto-manage a local daemon).
+        </p>
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            type="text"
+            value={endpoint}
+            onChange={(e) => setEndpoint(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void saveEndpoint();
+            }}
+            placeholder="http://localhost:11434"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-[12px] text-ink placeholder:text-faint focus:border-accent-ink focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => void saveEndpoint()}
+            disabled={endpointSaving}
+            className="shrink-0 rounded-md border border-line px-3 py-1.5 text-[12px] font-semibold text-accent-ink hover:bg-raised disabled:opacity-40"
+          >
+            {endpointSaving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+
       {error && <p className="text-xs text-danger">{error}</p>}
 
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1.5">
           <button
             type="button"
-            onClick={onUseOnDevice}
+            onClick={() => void recheck()}
             disabled={running || preparing}
             className="text-left text-xs font-semibold text-accent-ink hover:underline disabled:opacity-40"
           >
-            {preparing ? "Switching to on-device…" : "Use on-device search (no Ollama)"}
+            Re-check
+          </button>
+          <button
+            type="button"
+            onClick={onUseOnDevice}
+            disabled={running || preparing}
+            className="text-left text-xs font-medium text-muted hover:text-ink-soft disabled:opacity-40"
+          >
+            {preparing ? "Switching to on-device…" : "Use on-device search instead (no Ollama)"}
           </button>
           <button
             type="button"
@@ -436,6 +549,37 @@ function OllamaSetup({
         )}
       </div>
     </>
+  );
+}
+
+/** A numbered setup step with a done/pending marker. */
+function SetupStep({
+  n,
+  done,
+  title,
+  body,
+}: {
+  n: number;
+  done: boolean;
+  title: string;
+  body: React.ReactNode;
+}) {
+  return (
+    <li className="flex gap-2.5">
+      <span
+        aria-hidden
+        className={[
+          "mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full text-[11px] font-semibold",
+          done ? "bg-sage text-white" : "border border-line-strong text-muted",
+        ].join(" ")}
+      >
+        {done ? <Icon.Check className="h-3 w-3" strokeWidth={3} /> : n}
+      </span>
+      <div className="min-w-0">
+        <p className="text-[13px] font-medium text-ink">{title}</p>
+        <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted">{body}</p>
+      </div>
+    </li>
   );
 }
 

@@ -1,6 +1,6 @@
 # ADR-0005: Staging tray and review-before-commit
 
-**Status:** Accepted (2026-05-20)
+**Status:** Accepted (2026-05-20) — **amended by [ADR-0009](0009-conversational-agent.md)** (2026-05-22): the staging tray and the side-by-side conflict dialog were removed in favour of conversational review + the per-Fact audit log. Snapshots remain. Kept for historical context.
 **Relates to:** ADR-0003 (extraction pipeline), ADR-0004 (bi-temporal facts), Phase 3 milestones P3-M1–M8
 
 ## Context

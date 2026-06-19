@@ -1,6 +1,6 @@
 # ADR-0008: Claude Code as an answer-generation engine
 
-**Status:** Proposed (2026-05-22)
+**Status:** Superseded by [ADR-0009](0009-conversational-agent.md) (2026-05-22) — this ADR hardened Claude Code into a tool-less plain answerer; ADR-0009 reverses that, running it as a full conversational agent with file + graph tools. Never shipped as described. Kept for historical context.
 **Relates to:** ADR-0006 (LLM-backed extraction), tech-spec §15 (BYOK cloud generation)
 **Plan:** [docs/plans/claude-code-answer-engine.md](../plans/claude-code-answer-engine.md)
 

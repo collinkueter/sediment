@@ -1,6 +1,6 @@
 # ADR-0003: Entity and relation extraction pipeline
 
-**Status:** Accepted (2026-05-20)
+**Status:** Superseded by [ADR-0009](0009-conversational-agent.md) (2026-05-22) — the deterministic NER/RE extraction pipeline was replaced by the conversational agent, which decides what to record via its own understanding and graph tools. Kept for historical context.
 **Relates to:** ADR-0001 (the gline-rs choice), Phase 2 milestones P2-M1, P2-M2, P2-M5, P2-M6
 
 ## Context
