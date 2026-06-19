@@ -47,10 +47,17 @@ function buildTree(notes: FormationNote[]): TreeNode[] {
   return root.children;
 }
 
-/** Sort each folder's children: folders first, then files, alphabetical within each. */
+/**
+ * Sort each folder's children: folders first, then files newest-first by
+ * modified/created time (the latest notes sit at the top), with the name as a
+ * tiebreak so equal-mtime files stay stable and alphabetical.
+ */
 function sortFolder(folder: FolderNode): void {
   folder.children.sort((a, b) => {
     if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
+    if (a.type === "file" && b.type === "file") {
+      return b.note.modified_secs - a.note.modified_secs || a.name.localeCompare(b.name);
+    }
     return a.name.localeCompare(b.name);
   });
   for (const child of folder.children) {
