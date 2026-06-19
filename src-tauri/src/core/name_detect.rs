@@ -41,14 +41,99 @@ const LEADING_CUES: &[&str] = &[
 /// fillers, and the most common adjectives/verbs/adverbs that follow "I'm …" /
 /// "this is …". Not exhaustive (it can't be); it kills the loudest false positives.
 const STOPWORDS: &[&str] = &[
-    "a", "an", "the", "and", "or", "but", "so", "to", "of", "in", "on", "at", "for", "with",
-    "is", "was", "are", "am", "be", "been", "not", "no", "yes", "just", "really", "very",
-    "here", "there", "now", "then", "going", "gonna", "trying", "about", "like", "good", "great",
-    "fine", "okay", "ok", "sorry", "sure", "done", "ready", "happy", "glad", "afraid", "able",
-    "this", "that", "these", "those", "it", "its", "he", "she", "they", "we", "you", "i", "me",
-    "my", "your", "our", "his", "her", "their", "one", "two", "all", "right", "left", "back",
-    "still", "also", "only", "well", "thinking", "looking", "talking", "calling", "saying",
-    "wondering", "hoping", "pretty", "quite", "kind", "sort", "from", "what", "who", "how", "why",
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "so",
+    "to",
+    "of",
+    "in",
+    "on",
+    "at",
+    "for",
+    "with",
+    "is",
+    "was",
+    "are",
+    "am",
+    "be",
+    "been",
+    "not",
+    "no",
+    "yes",
+    "just",
+    "really",
+    "very",
+    "here",
+    "there",
+    "now",
+    "then",
+    "going",
+    "gonna",
+    "trying",
+    "about",
+    "like",
+    "good",
+    "great",
+    "fine",
+    "okay",
+    "ok",
+    "sorry",
+    "sure",
+    "done",
+    "ready",
+    "happy",
+    "glad",
+    "afraid",
+    "able",
+    "this",
+    "that",
+    "these",
+    "those",
+    "it",
+    "its",
+    "he",
+    "she",
+    "they",
+    "we",
+    "you",
+    "i",
+    "me",
+    "my",
+    "your",
+    "our",
+    "his",
+    "her",
+    "their",
+    "one",
+    "two",
+    "all",
+    "right",
+    "left",
+    "back",
+    "still",
+    "also",
+    "only",
+    "well",
+    "thinking",
+    "looking",
+    "talking",
+    "calling",
+    "saying",
+    "wondering",
+    "hoping",
+    "pretty",
+    "quite",
+    "kind",
+    "sort",
+    "from",
+    "what",
+    "who",
+    "how",
+    "why",
 ];
 
 /// Detect a self-introduction in `text` and return the speaker's Title-cased name,
@@ -153,7 +238,10 @@ mod tests {
 
     #[test]
     fn detects_common_introductions() {
-        assert_eq!(detect_self_introduction("hi i'm sarah"), Some("Sarah".into()));
+        assert_eq!(
+            detect_self_introduction("hi i'm sarah"),
+            Some("Sarah".into())
+        );
         assert_eq!(detect_self_introduction("im john"), Some("John".into()));
         assert_eq!(
             detect_self_introduction("my name is john smith and i lead sales"),
@@ -163,7 +251,10 @@ mod tests {
             detect_self_introduction("this is mary"),
             Some("Mary".into())
         );
-        assert_eq!(detect_self_introduction("call me alex"), Some("Alex".into()));
+        assert_eq!(
+            detect_self_introduction("call me alex"),
+            Some("Alex".into())
+        );
         assert_eq!(
             detect_self_introduction("you're speaking with priya patel today"),
             Some("Priya Patel".into())
@@ -176,7 +267,10 @@ mod tests {
     fn rejects_non_introductions() {
         assert_eq!(detect_self_introduction("i'm not sure about that"), None);
         assert_eq!(detect_self_introduction("i'm going to the store"), None);
-        assert_eq!(detect_self_introduction("this is great work everyone"), None);
+        assert_eq!(
+            detect_self_introduction("this is great work everyone"),
+            None
+        );
         assert_eq!(detect_self_introduction("this is the plan"), None);
         assert_eq!(detect_self_introduction("i am done"), None);
         assert_eq!(detect_self_introduction("let's move over here"), None);

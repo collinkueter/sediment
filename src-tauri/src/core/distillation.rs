@@ -329,7 +329,12 @@ fn last_receipt_line(reply: &str) -> Option<String> {
 /// openings models use to decline; only the first ~200 chars are inspected so a long
 /// genuine summary that happens to contain such a phrase later isn't misflagged.
 fn looks_like_refusal(reply: &str) -> bool {
-    let head: String = reply.trim().chars().take(200).collect::<String>().to_lowercase();
+    let head: String = reply
+        .trim()
+        .chars()
+        .take(200)
+        .collect::<String>()
+        .to_lowercase();
     const SIGNS: &[&str] = &[
         "i'm sorry",
         "i am sorry",
@@ -416,12 +421,16 @@ mod tests {
         assert!(looks_like_refusal(
             "I'm sorry, but I cannot assist with that request."
         ));
-        assert!(looks_like_refusal("I apologize, but I'm unable to help with this."));
+        assert!(looks_like_refusal(
+            "I apologize, but I'm unable to help with this."
+        ));
         assert!(looks_like_refusal("As an AI, I can't do that."));
         // A real summary that merely mentions an apology later is not a refusal.
         assert!(!looks_like_refusal(
             "Recorded that Sarah apologized for the delay and will resend the deck."
         ));
-        assert!(!looks_like_refusal("Filed 2 tasks and noted the Q3 budget decision."));
+        assert!(!looks_like_refusal(
+            "Filed 2 tasks and noted the Q3 budget decision."
+        ));
     }
 }

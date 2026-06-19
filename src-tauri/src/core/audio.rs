@@ -193,7 +193,11 @@ mod tests {
         buf.extend(std::iter::repeat(0.0).take(rate)); // 1 s pause
         buf.extend(tone()); // 1 s speech
         let ranges = split_on_silence(&buf, TARGET_RATE);
-        assert_eq!(ranges.len(), 2, "two utterances split by the pause: {ranges:?}");
+        assert_eq!(
+            ranges.len(),
+            2,
+            "two utterances split by the pause: {ranges:?}"
+        );
         assert!(ranges[0].0 < ranges[0].1 && ranges[1].0 > ranges[0].1);
 
         // Pure silence → one fallback range spanning the whole buffer.

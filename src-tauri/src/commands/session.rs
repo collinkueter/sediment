@@ -369,12 +369,19 @@ fn run_second_pass(samples: &[f32], seed: Vec<(String, Vec<f32>)>) -> AppResult<
         // Slice the audio this segment covers and attribute it to a speaker.
         let start = ((seg.start_ms * rate) / 1000).max(0) as usize;
         let end = (((seg.end_ms * rate) / 1000) as usize).min(samples.len());
-        let slice = if start < end { &samples[start..end] } else { &[] };
+        let slice = if start < end {
+            &samples[start..end]
+        } else {
+            &[]
+        };
         let speaker = diarizer.assign(slice);
 
         // Keep the longest clip per named speaker (unknowns get no persisted clip).
         if !crate::core::session::is_unknown_speaker(&speaker) && !slice.is_empty() {
-            let better = clips.get(&speaker).map(|c| slice.len() > c.len()).unwrap_or(true);
+            let better = clips
+                .get(&speaker)
+                .map(|c| slice.len() > c.len())
+                .unwrap_or(true);
             if better {
                 clips.insert(speaker.clone(), slice[..slice.len().min(MAX_CLIP)].to_vec());
             }

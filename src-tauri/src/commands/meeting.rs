@@ -78,7 +78,10 @@ pub async fn assign_meeting_speaker(
     if let Ok(store) = memory.get_or_init(&memory_dir).await {
         match store.upsert_entity(to, "person", vec![]).await {
             Ok(entity) => {
-                if let Err(e) = store.link_entity_to_note(&entity.id, &person_note_path).await {
+                if let Err(e) = store
+                    .link_entity_to_note(&entity.id, &person_note_path)
+                    .await
+                {
                     tracing::warn!("assign_meeting_speaker: link note failed: {e}");
                 }
             }

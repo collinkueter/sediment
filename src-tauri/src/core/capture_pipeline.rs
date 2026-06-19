@@ -41,7 +41,10 @@ fn record_clip(clips: &SharedClips, label: &str, audio: &[f32]) {
         return;
     }
     if let Ok(mut map) = clips.lock() {
-        let better = map.get(label).map(|c| audio.len() > c.len()).unwrap_or(true);
+        let better = map
+            .get(label)
+            .map(|c| audio.len() > c.len())
+            .unwrap_or(true);
         if better {
             let take = audio.len().min(MAX_CLIP_SAMPLES);
             map.insert(label.to_string(), audio[..take].to_vec());
