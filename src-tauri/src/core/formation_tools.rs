@@ -152,12 +152,18 @@ pub fn tool_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "record_task",
-            description: "Add a reminder to the formation's task list (Tasks.md).",
+            description: "Add a to-do to the formation's task list (Tasks.md): any concrete \
+                          action the user intends to take — an errand, a chore, a reminder, or \
+                          an item in a plan for the day. The due date is optional; record it \
+                          undated when none was given. Completing it later logs the item to \
+                          that day's `## Did`, so this is also how a plan becomes a record of \
+                          the day.",
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "title": str_prop("What the reminder is for."),
-                    "due": str_prop("The due date (YYYY-MM-DD), if there is one.")
+                    "title": str_prop("What needs doing."),
+                    "due": str_prop("The due date (YYYY-MM-DD). Omit when the user named no \
+                                     date — an undated to-do is fine.")
                 },
                 "required": ["title"]
             }),
@@ -304,6 +310,30 @@ async fn find_contradiction(ctx: &ToolContext, args: Value) -> AppResult<Value> 
     Ok(json!({ "contradictions": contradictions }))
 }
 
+/// Make a `person` Fact participant a real, linkable entity: ensure its People note
+/// exists on disk and the graph row points at it, so every `[[Name]]` reference
+/// resolves (ADR-0009/0015 — "everything should be linking"). Idempotent and
+/// best-effort — a note-file hiccup never blocks recording the Fact. A no-op for
+/// non-person types (only People notes have an ensure-helper today).
+async fn ensure_person_note_linked(
+    ctx: &ToolContext,
+    entity_id: &str,
+    entity_type: &str,
+    name: &str,
+) {
+    if entity_type != "person" {
+        return;
+    }
+    match crate::core::people_note::ensure_person_note(&ctx.formation_root, name) {
+        Ok(rel) => {
+            if let Err(e) = ctx.store.link_entity_to_note(entity_id, &rel).await {
+                tracing::warn!("record_fact: link person note for {name} failed: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("record_fact: ensure person note for {name} failed: {e}"),
+    }
+}
+
 /// Record a relationship as a bi-temporal `fact` edge, upserting both endpoint
 /// entities. A closed interval (`valid_to` set) records a historical
 /// relationship; an open one supersedes any contradicting current Fact.
@@ -381,6 +411,12 @@ async fn record_fact(ctx: &ToolContext, args: Value) -> AppResult<Value> {
         .store
         .upsert_entity(&object, &object_type, Vec::new())
         .await?;
+
+    // The moment a person enters the graph from a conversation, give them a People
+    // note and point the graph row at it — so `[[Name]]` links resolve everywhere
+    // (ADR-0009/0015). Best-effort; never blocks the Fact.
+    ensure_person_note_linked(ctx, &subject_entity.id, &subject_type, &subject).await;
+    ensure_person_note_linked(ctx, &object_entity.id, &object_type, &object).await;
 
     let fact_id = ctx
         .store

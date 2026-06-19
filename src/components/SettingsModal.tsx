@@ -11,9 +11,9 @@ type SearchMode = "bundled" | "ollama" | "none";
 type Tone = "stoic" | "warm" | "sassy";
 
 const TONE_DESCRIPTIONS: Record<Tone, string> = {
-  stoic: "Calm and economical — says what's needed, then gets out of your way.",
+  stoic: "Spare and exacting — says what it recorded in a clause, then stops.",
   warm: "A sharp, plainspoken friend who keeps your notes. The default.",
-  sassy: "Good company with a dry, knowing edge — wit that reads the room.",
+  sassy: "Quick and dry — voices opinions and teases when it's earned, but reads the room.",
 };
 
 const SEARCH_MODE_DESCRIPTIONS: Record<SearchMode, string> = {

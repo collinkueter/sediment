@@ -167,6 +167,23 @@ impl MemoryStore {
         })
     }
 
+    /// Point an entity's `note_path` at its on-disk Note, so a lookup can tell the
+    /// agent the note already exists and `[[Name]]` links have a resolved target
+    /// (ADR-0015 — an Entity and its Note are two halves of one thing). Idempotent;
+    /// best-effort callers ignore the error since the file, not the graph, is the
+    /// link's source of truth.
+    pub async fn link_entity_to_note(&self, entity_id: &str, note_path: &str) -> AppResult<()> {
+        let key = entity_id.strip_prefix("entity:").unwrap_or(entity_id);
+        self.db
+            .query(format!("UPDATE entity:{key} SET note_path = $path;"))
+            .bind(("path", note_path.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("link_entity_to_note: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("link_entity_to_note check: {e}")))?;
+        Ok(())
+    }
+
     /// Rename an entity's `canonical_name`, preserving identity (same record id)
     /// across the change: the old name is pushed onto `canonical_name_history`
     /// and kept as an alias so existing `[[Old name]]` references still resolve.

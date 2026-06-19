@@ -812,34 +812,55 @@ function ActivityLine({ activity }: { activity: ToolActivity }) {
   );
 }
 
-/// Render assistant text, turning `[[note path]]` citations into clickable
-/// links that open the cited note in the reference pane.
+/// Matches a note reference inside assistant text: either an explicit `[[…]]`
+/// wiki-link (group 1), or a bare file path the model leaked into its prose
+/// (group 2) — a `Folder/Note.md` style path, optionally absolute and/or wrapped
+/// in backticks. The bare form requires at least one `/` so a stray word ending in
+/// `.md` won't match; folder segments are space-free to avoid swallowing the prose
+/// word before the path. We chip-ify both so a long path never reads as prose.
+const NOTE_REF = /(\[\[[^\]]+\]\])|(`?(?:[~/]?[\w.-]+\/)+[\w .-]+?\.md`?)/g;
+
+/// Split assistant text into plain spans and note references (with their path).
+function tokenizeReply(text: string): { text?: string; path?: string }[] {
+  const out: { text?: string; path?: string }[] = [];
+  let last = 0;
+  for (let m = NOTE_REF.exec(text); m !== null; m = NOTE_REF.exec(text)) {
+    if (m.index > last) out.push({ text: text.slice(last, m.index) });
+    // `[[…]]` carries its path between the brackets; a bare path may be backtick-wrapped.
+    const path = m[1] ? m[1].slice(2, -2) : (m[2] ?? "").replace(/^`|`$/g, "");
+    out.push({ path });
+    last = NOTE_REF.lastIndex;
+  }
+  if (last < text.length) out.push({ text: text.slice(last) });
+  return out;
+}
+
+/// Render assistant text, turning note references — explicit `[[…]]` citations and
+/// bare file paths alike — into clickable chips that open the note in the reference
+/// pane, so raw paths never clutter the conversation.
 function CitedText({ text }: { text: string }) {
   const openNote = useFormationStore((s) => s.openNote);
-  // Split on [[...]] while keeping the delimiters.
-  const parts = text.split(/(\[\[[^\]]+\]\])/g);
   return (
     <>
-      {parts.map((part, i) => {
-        const match = part.match(/^\[\[([^\]]+)\]\]$/);
-        const notePath = match?.[1];
-        if (notePath) {
+      {tokenizeReply(text).map((part, i) => {
+        const path = part.path;
+        if (path !== undefined) {
           return (
             <button
               // biome-ignore lint/suspicious/noArrayIndexKey: parts are positional
               key={i}
               type="button"
               onClick={() => {
-                openNote(notePath).catch((e) => console.error("open cited note failed:", e));
+                openNote(path).catch((e) => console.error("open cited note failed:", e));
               }}
               className="rounded-md bg-accent-tint px-2 font-sans text-[12.5px] font-semibold text-accent-ink"
             >
-              {basename(notePath)}
+              {basename(path)}
             </button>
           );
         }
         // biome-ignore lint/suspicious/noArrayIndexKey: parts are positional
-        return <span key={i}>{part}</span>;
+        return <span key={i}>{part.text}</span>;
       })}
     </>
   );

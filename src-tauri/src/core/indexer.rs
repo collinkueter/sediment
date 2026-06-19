@@ -261,6 +261,12 @@ pub async fn index_note_path(
         }
     }
 
+    // Resolve `[[wikilinks]]` to known people: any link naming an existing `person`
+    // whose People note is missing gets that note created (and the graph row pointed
+    // at it). So a `[[Name]]` written into *any* note we index always has a target —
+    // "everything should be linking". Best-effort; never fails the index pass.
+    ensure_linked_people(formation_root, store, &content).await;
+
     let chunks = chunk_markdown(&content);
     let mut inputs = Vec::with_capacity(chunks.len());
     for (idx, text) in chunks.iter().enumerate() {
@@ -281,6 +287,60 @@ pub async fn index_note_path(
         chunk_count: count,
         task_completions,
     })
+}
+
+/// Distinct `[[Target]]` link targets in `content`, with any `|alias` or `#heading`
+/// suffix stripped — the same `[[…]]` shape `note_backlinks` reads.
+fn wikilink_targets(content: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while let Some(rel) = content[i..].find("[[") {
+        let start = i + rel + 2;
+        let Some(end_rel) = content[start..].find("]]") else {
+            break;
+        };
+        let inner = &content[start..start + end_rel];
+        let target = inner.split(['|', '#']).next().unwrap_or(inner).trim();
+        if !target.is_empty() && !out.iter().any(|t| t == target) {
+            out.push(target.to_string());
+        }
+        i = start + end_rel + 2;
+    }
+    out
+}
+
+/// For each `[[Name]]` in `content` that names a **known `person`** whose People note
+/// is missing, create the note and link the graph row to it. Only acts on entities
+/// the graph already knows are people, so a `[[Q3 Review]]` (a meeting) or an unknown
+/// name is never mis-created as a person. Best-effort — every step is logged, none
+/// fail the index.
+async fn ensure_linked_people(formation_root: &Path, store: &MemoryStore, content: &str) {
+    for target in wikilink_targets(content) {
+        let entity = match store.lookup_entity(&target).await {
+            Ok(Some(e)) if e.entity_type == "person" => e,
+            Ok(_) => continue, // unknown name or non-person — don't guess a type
+            Err(e) => {
+                tracing::warn!("link resolve: lookup {target} failed: {e}");
+                continue;
+            }
+        };
+        let has_file = entity
+            .note_path
+            .as_deref()
+            .map(|p| formation_root.join(p).is_file())
+            .unwrap_or(false);
+        if has_file {
+            continue;
+        }
+        match crate::core::people_note::ensure_person_note(formation_root, &entity.canonical_name) {
+            Ok(rel) => {
+                if let Err(e) = store.link_entity_to_note(&entity.id, &rel).await {
+                    tracing::warn!("link resolve: link {target} note failed: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("link resolve: ensure note for {target} failed: {e}"),
+        }
+    }
 }
 
 /// File mtime as unix epoch seconds, or 0 if unavailable.
@@ -332,6 +392,16 @@ pub fn chunk_markdown(content: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wikilink_targets_extracts_strips_and_dedupes() {
+        let md = "Met [[Sarah Chen]] and [[Bob|Bobby]]; see [[Sarah Chen#Notes]] and [[Q3 Plan]].";
+        let targets = wikilink_targets(md);
+        assert_eq!(targets, vec!["Sarah Chen", "Bob", "Q3 Plan"]);
+        // No links → empty; an unterminated `[[` doesn't panic.
+        assert!(wikilink_targets("plain text").is_empty());
+        assert!(wikilink_targets("dangling [[ open").is_empty());
+    }
 
     #[test]
     fn chunk_markdown_splits_on_paragraphs() {

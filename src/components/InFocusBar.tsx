@@ -3,6 +3,7 @@ import { useFormationStore, useWorkingSetStore } from "@/lib/store";
 import { tauri } from "@/lib/tauri";
 import type { ActiveEntity, OpenLoop, OpenTask } from "@/lib/tauri";
 import { useUiStore } from "@/lib/ui";
+import { useState } from "react";
 
 // ── Avatar style by entity type ────────────────────────────────────────────
 
@@ -214,7 +215,9 @@ export function InFocusBar() {
   const workingSet = useWorkingSetStore((s) => s.workingSet);
   const selfSummary = useWorkingSetStore((s) => s.selfSummary);
   const removeOpenLoop = useWorkingSetStore((s) => s.removeOpenLoop);
-  const toggleReminders = useUiStore((s) => s.toggleReminders);
+  // Reveal the capped-off chips/pills inline. The "N more" chevron means "show the
+  // rest of what's in focus" — not "jump to Reminders" (those are different things).
+  const [expanded, setExpanded] = useState(false);
 
   const today = new Date();
 
@@ -225,17 +228,17 @@ export function InFocusBar() {
   // The bar shows if the agent knows you (Self) OR there's recent activity.
   if (!selfSummary && !hasContent) return null;
 
-  // Visible entity chips (capped)
-  const visibleEntities = activeEntities.slice(0, MAX_ENTITIES);
-
-  // Visible pills (tasks first, then loops, capped combined)
+  // All pills (tasks first, then loops)
   const allPills: Array<{ kind: "task"; item: OpenTask } | { kind: "loop"; item: OpenLoop }> = [
     ...openTasks.map((t) => ({ kind: "task" as const, item: t })),
     ...openLoops.map((l) => ({ kind: "loop" as const, item: l })),
   ];
-  const visiblePills = allPills.slice(0, MAX_PILLS);
+  // How many are capped off when collapsed — drives the "N more" affordance.
   const hiddenCount =
-    activeEntities.length - visibleEntities.length + (allPills.length - visiblePills.length);
+    Math.max(0, activeEntities.length - MAX_ENTITIES) + Math.max(0, allPills.length - MAX_PILLS);
+  // Expanding reveals everything inline; collapsed shows the cap.
+  const visibleEntities = expanded ? activeEntities : activeEntities.slice(0, MAX_ENTITIES);
+  const visiblePills = expanded ? allPills : allPills.slice(0, MAX_PILLS);
 
   function handleDismissLoop(id: string) {
     removeOpenLoop(id);
@@ -284,16 +287,19 @@ export function InFocusBar() {
         ),
       )}
 
-      {/* "N more" affordance */}
+      {/* "N more" / "Show less" — reveals or re-hides the capped chips & pills inline. */}
       {hiddenCount > 0 && (
         <button
           type="button"
-          onClick={toggleReminders}
-          aria-label={`Show ${hiddenCount} more items`}
+          onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? "Show fewer items" : `Show ${hiddenCount} more items`}
+          aria-expanded={expanded}
           className="ml-auto inline-flex items-center gap-1 text-[12px] text-muted hover:text-ink-soft"
         >
-          {hiddenCount} more
-          <Icon.ChevronDown className="h-3.5 w-3.5" />
+          {expanded ? "Show less" : `${hiddenCount} more`}
+          <Icon.ChevronDown
+            className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`}
+          />
         </button>
       )}
     </div>

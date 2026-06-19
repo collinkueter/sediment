@@ -100,32 +100,59 @@ pub async fn distill_meeting(
     // Run on the user's configured engine — the warm Copilot engine when selected
     // (so Copilot-only users, who may not have Claude Code installed, still get a
     // distillation), else cold Claude Code (the ~6 s spawn is irrelevant here).
-    let run = if cfg.conversation_engine.as_deref() == Some("copilot") {
-        let model = cfg
-            .copilot_model
-            .clone()
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or_else(|| crate::core::copilot::DEFAULT_MODEL.to_string());
-        copilot.run_turn(&turn, &sink, &model).await
+    let (engine_label, model_label) = if cfg.conversation_engine.as_deref() == Some("copilot") {
+        (
+            "copilot",
+            cfg.copilot_model
+                .clone()
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| crate::core::copilot::DEFAULT_MODEL.to_string()),
+        )
     } else {
-        let engine = ClaudeCodeEngine::new(
+        (
+            "claude-code",
             cfg.claude_code_model
                 .clone()
                 .filter(|m| !m.trim().is_empty())
                 .unwrap_or_else(|| claude_code::DEFAULT_MODEL.to_string()),
-        );
-        engine.run_turn(&turn, &sink).await
+        )
+    };
+    tracing::info!(
+        engine = engine_label,
+        model = %model_label,
+        windows = windows.len(),
+        attendees = attendees.len(),
+        "distillation: running turn"
+    );
+    let run = if engine_label == "copilot" {
+        copilot.run_turn(&turn, &sink, &model_label).await
+    } else {
+        ClaudeCodeEngine::new(model_label.clone())
+            .run_turn(&turn, &sink)
+            .await
     };
     let outcome = match run {
         Ok(o) => o,
         Err(e) => {
             // A failed turn writes no audit entry, so its snapshot would leak —
             // clean it up before propagating (mirrors `chat_turn`).
+            tracing::warn!(engine = engine_label, error = %e, "distillation: engine turn failed");
             std::fs::remove_dir_all(&snapshot_dir).ok();
             return Err(e);
         }
     };
     let reply = outcome.reply;
+    // The full reply is the single most useful thing to see when a distillation goes
+    // wrong (a refusal, a truncation, the model ignoring the receipt format). Log its
+    // shape at info and the whole text at debug so it's always recoverable from
+    // `sediment.log` (raise with `SEDIMENT_LOG=debug`).
+    tracing::info!(
+        engine = engine_label,
+        reply_chars = reply.len(),
+        has_summary_marker = marker_value(&reply, "SUMMARY:").is_some(),
+        "distillation: engine returned a reply"
+    );
+    tracing::debug!(reply = %reply, "distillation: full agent reply");
 
     // Record the turn as an undoable audit entry (ADR-0009 §6): diff the snapshot
     // for changed notes and collect the Facts stamped with this turn's provenance.
@@ -150,7 +177,32 @@ pub async fn distill_meeting(
         .insert_chat_message("assistant", &reply, conversation_id)
         .await?;
 
-    let (summary, suggested_title) = parse_receipt(&reply, title);
+    // Never let a refusal or empty reply become the receipt the user sees. When the
+    // agent ignored the format AND declined/said nothing, show a neutral line and log
+    // the raw reply (so the *why* is in the log, not lost behind a polite refusal).
+    let had_marker = marker_value(&reply, "SUMMARY:").is_some();
+    let (summary, suggested_title) = if !had_marker
+        && (reply.trim().is_empty() || looks_like_refusal(&reply))
+    {
+        tracing::warn!(
+            engine = engine_label,
+            reply_excerpt = %audit::excerpt(&reply),
+            "distillation: no usable summary (refusal or empty reply) — showing a neutral receipt; \
+             see the full reply at debug level"
+        );
+        (
+            "Meeting saved — couldn't auto-summarize this one.".to_string(),
+            None,
+        )
+    } else {
+        parse_receipt(&reply, title)
+    };
+    tracing::info!(
+        turn_id = %turn_id,
+        summary = %summary,
+        suggested_title = ?suggested_title,
+        "distillation: done"
+    );
     Ok(Some(DistillResult {
         summary,
         turn_id,
@@ -270,6 +322,36 @@ fn last_receipt_line(reply: &str) -> Option<String> {
         })
 }
 
+/// Whether `reply` reads like a model **refusal** or canned non-answer rather than a
+/// distillation. Used so a refusal ("I'm sorry, but I cannot assist with that
+/// request.") never becomes the user-facing receipt — instead we show a neutral line
+/// and log the raw reply for debugging. Matched case-insensitively against the
+/// openings models use to decline; only the first ~200 chars are inspected so a long
+/// genuine summary that happens to contain such a phrase later isn't misflagged.
+fn looks_like_refusal(reply: &str) -> bool {
+    let head: String = reply.trim().chars().take(200).collect::<String>().to_lowercase();
+    const SIGNS: &[&str] = &[
+        "i'm sorry",
+        "i am sorry",
+        "i apologize",
+        "i apologise",
+        "i cannot assist",
+        "i can't assist",
+        "i cannot help",
+        "i can't help",
+        "i cannot fulfill",
+        "i can't fulfill",
+        "i cannot comply",
+        "i can't comply",
+        "unable to assist",
+        "unable to help",
+        "i won't be able to",
+        "i will not be able to",
+        "as an ai",
+    ];
+    SIGNS.iter().any(|sign| head.contains(sign))
+}
+
 /// Cap a line at `max` chars, appending an ellipsis when it had to be cut.
 fn cap(line: &str, max: usize) -> String {
     if line.chars().count() > max {
@@ -327,5 +409,19 @@ mod tests {
         // Empty reply → the fixed fallback line.
         assert_eq!(parse_receipt("   \n  ", "x").0, "Meeting distilled.");
         assert!(cap(&"x".repeat(500), 240).chars().count() <= 240);
+    }
+
+    #[test]
+    fn looks_like_refusal_catches_declines_not_real_summaries() {
+        assert!(looks_like_refusal(
+            "I'm sorry, but I cannot assist with that request."
+        ));
+        assert!(looks_like_refusal("I apologize, but I'm unable to help with this."));
+        assert!(looks_like_refusal("As an AI, I can't do that."));
+        // A real summary that merely mentions an apology later is not a refusal.
+        assert!(!looks_like_refusal(
+            "Recorded that Sarah apologized for the delay and will resend the deck."
+        ));
+        assert!(!looks_like_refusal("Filed 2 tasks and noted the Q3 budget decision."));
     }
 }

@@ -341,6 +341,7 @@ fn run_second_pass(samples: &[f32], seed: Vec<(String, Vec<f32>)>) -> AppResult<
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
+    let seed_speakers = seed.len();
     let paths = crate::core::asr_model::offline_paths()?;
     let transcriber = crate::core::transcription::OfflineTranscriber::new(&paths)?;
     let speaker_model = crate::core::asr_model::speaker_model_path()?;
@@ -357,6 +358,12 @@ fn run_second_pass(samples: &[f32], seed: Vec<(String, Vec<f32>)>) -> AppResult<
 
     let mut segments: Vec<(i64, String, String)> = Vec::new();
     let mut clips: HashMap<String, Vec<f32>> = HashMap::new();
+    tracing::info!(
+        samples = samples.len(),
+        seconds = samples.len() as f32 / crate::core::audio::TARGET_RATE as f32,
+        seed_speakers,
+        "second pass: transcribing buffered meeting audio offline"
+    );
     let refined: Vec<crate::core::transcription::OfflineSegment> = transcriber.transcribe(samples);
     for seg in refined {
         // Slice the audio this segment covers and attribute it to a speaker.
@@ -374,6 +381,11 @@ fn run_second_pass(samples: &[f32], seed: Vec<(String, Vec<f32>)>) -> AppResult<
         }
         segments.push((seg.start_ms, speaker, seg.text));
     }
+    tracing::info!(
+        refined_segments = segments.len(),
+        named_clips = clips.len(),
+        "second pass: offline transcription complete"
+    );
     Ok((segments, clips))
 }
 
@@ -561,6 +573,10 @@ pub async fn session_stop(
             // ── Second pass (ADR-0017 §2) — local-asr only ─────────────────────
             #[cfg(feature = "local-asr")]
             if crate::core::asr_model::offline_present() && !audio_samples.is_empty() {
+                tracing::info!(
+                    samples = audio_samples.len(),
+                    "session_stop: starting offline second pass"
+                );
                 let mut seed = store.all_voiceprints().await.unwrap_or_default();
                 seed.extend(live_named);
                 match tokio::task::spawn_blocking(move || run_second_pass(&audio_samples, seed))
@@ -593,6 +609,12 @@ pub async fn session_stop(
                     Ok(Err(e)) => tracing::warn!("second pass failed: {e}"),
                     Err(e) => tracing::warn!("second pass join failed: {e}"),
                 }
+            } else {
+                tracing::info!(
+                    offline_model = crate::core::asr_model::offline_present(),
+                    have_audio = !audio_samples.is_empty(),
+                    "session_stop: skipping second pass; distilling the live transcript"
+                );
             }
 
             // ── Distillation (ADR-0017 §7) over the (refined) transcript ───────

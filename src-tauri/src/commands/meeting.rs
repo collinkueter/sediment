@@ -70,15 +70,21 @@ pub async fn assign_meeting_speaker(
     let note_abs = root.join(&note_path);
     let relabeled = meeting_note::rename_speaker(&note_abs, &from, to)?;
 
-    // Give the person an Entity (best-effort — the graph is not the source of truth
-    // for the rename) and a People note file the attendee link can resolve to.
+    // Give the person a People note the attendee link resolves to, an Entity, and a
+    // graph row that points back at the note (best-effort — the file, not the graph,
+    // is the link's source of truth).
+    let person_note_path = people_note::ensure_person_note(&root, to)?;
     let memory_dir = root.join(APP_DIR).join("memory");
     if let Ok(store) = memory.get_or_init(&memory_dir).await {
-        if let Err(e) = store.upsert_entity(to, "person", vec![]).await {
-            tracing::warn!("assign_meeting_speaker: upsert entity failed: {e}");
+        match store.upsert_entity(to, "person", vec![]).await {
+            Ok(entity) => {
+                if let Err(e) = store.link_entity_to_note(&entity.id, &person_note_path).await {
+                    tracing::warn!("assign_meeting_speaker: link note failed: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("assign_meeting_speaker: upsert entity failed: {e}"),
         }
     }
-    let person_note_path = people_note::ensure_person_note(&root, to)?;
 
     let attendees = meeting_note::list_attendees(&note_abs).unwrap_or_default();
     Ok(AssignSpeakerResult {
