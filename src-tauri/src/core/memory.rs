@@ -523,7 +523,9 @@ impl MemoryStore {
         let key = entity_id.strip_prefix("entity:").unwrap_or(entity_id);
         let mut res = self
             .db
-            .query(format!("SELECT voiceprint, voiceprint_n FROM entity:{key};"))
+            .query(format!(
+                "SELECT voiceprint, voiceprint_n FROM entity:{key};"
+            ))
             .await
             .map_err(|e| AppError::other(format!("enroll_voiceprint read: {e}")))?;
         let rows: Vec<VoiceprintRow> = res
@@ -1287,7 +1289,10 @@ mod tests {
             .unwrap()
             .is_none());
 
-        store.enroll_voiceprint(&sarah.id, &[1.0, 0.0, 0.0]).await.unwrap();
+        store
+            .enroll_voiceprint(&sarah.id, &[1.0, 0.0, 0.0])
+            .await
+            .unwrap();
 
         // A near-identical sample matches Sarah above threshold.
         let hit = store
@@ -1308,7 +1313,10 @@ mod tests {
 
         // Second enrolment averages into the centroid (Q4 running centroid):
         // (1,0,0) then (0,1,0) → (0.5,0.5,0), which favours a diagonal sample.
-        store.enroll_voiceprint(&sarah.id, &[0.0, 1.0, 0.0]).await.unwrap();
+        store
+            .enroll_voiceprint(&sarah.id, &[0.0, 1.0, 0.0])
+            .await
+            .unwrap();
         let diag = store
             .match_voiceprint(&[1.0, 1.0, 0.0], 0.9)
             .await

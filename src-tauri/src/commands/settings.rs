@@ -85,9 +85,9 @@ pub fn set_ollama_url(
     app: tauri::AppHandle,
 ) -> AppResult<()> {
     let normalized = match url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()) {
-        Some(raw) => Some(
-            crate::core::ollama_sidecar::validate_endpoint(&raw).map_err(AppError::other)?,
-        ),
+        Some(raw) => {
+            Some(crate::core::ollama_sidecar::validate_endpoint(&raw).map_err(AppError::other)?)
+        }
         None => None,
     };
     let mut cfg = AppConfig::load(&app);

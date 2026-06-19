@@ -159,8 +159,13 @@ pub async fn serve_stdio(
     embedding_provider: EmbeddingProvider,
     ollama_url: Option<String>,
 ) -> AppResult<()> {
-    let server =
-        FormationMcp::new(formation_root, source_chat_id, embedding_provider, ollama_url).await?;
+    let server = FormationMcp::new(
+        formation_root,
+        source_chat_id,
+        embedding_provider,
+        ollama_url,
+    )
+    .await?;
 
     let running = server
         .serve(rmcp::transport::stdio())

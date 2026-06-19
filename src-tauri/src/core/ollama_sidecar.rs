@@ -122,7 +122,8 @@ impl OllamaSidecar {
                     None
                 } else {
                     Some(
-                        "Install Ollama from https://ollama.com/download and re-launch.".to_string(),
+                        "Install Ollama from https://ollama.com/download and re-launch."
+                            .to_string(),
                     )
                 },
             }

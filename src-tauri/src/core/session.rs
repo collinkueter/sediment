@@ -86,7 +86,12 @@ pub struct MeetingSession {
 }
 
 impl MeetingSession {
-    pub fn new(id: String, title: String, note_path: String, events: Channel<SessionEvent>) -> Self {
+    pub fn new(
+        id: String,
+        title: String,
+        note_path: String,
+        events: Channel<SessionEvent>,
+    ) -> Self {
         Self {
             id,
             title,
@@ -183,11 +188,7 @@ impl SessionRegistry {
 
     /// Run `f` against the open Session `id`, if present. Returns `None` when no
     /// such Session is open (e.g. a push after stop, or an unknown id).
-    pub fn with_session<R>(
-        &self,
-        id: &str,
-        f: impl FnOnce(&mut MeetingSession) -> R,
-    ) -> Option<R> {
+    pub fn with_session<R>(&self, id: &str, f: impl FnOnce(&mut MeetingSession) -> R) -> Option<R> {
         let mut guard = self.inner.lock().expect("session registry poisoned");
         guard.get_mut(id).map(f)
     }

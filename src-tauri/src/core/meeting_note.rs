@@ -527,7 +527,8 @@ mod tests {
         assert!(recent_transcript_grounding(&abs, 2000).unwrap().is_none());
 
         for i in 0..5 {
-            append_transcript_segment(&abs, i * 1000, "Sarah", &format!("line number {i}")).unwrap();
+            append_transcript_segment(&abs, i * 1000, "Sarah", &format!("line number {i}"))
+                .unwrap();
         }
         let all = recent_transcript_grounding(&abs, 2000).unwrap().unwrap();
         assert!(all.starts_with("## Live meeting transcript"));
@@ -562,7 +563,8 @@ mod tests {
         let rel = meeting_note_relative_path(started(), "Sync");
         let abs = ensure_meeting_note(&root, &rel, "Sync", started()).unwrap();
         for i in 0..6 {
-            append_transcript_segment(&abs, i * 1000, "Sarah", &format!("line number {i}")).unwrap();
+            append_transcript_segment(&abs, i * 1000, "Sarah", &format!("line number {i}"))
+                .unwrap();
         }
 
         // Huge budget → a single window holding every segment.
@@ -572,11 +574,16 @@ mod tests {
 
         // Small budget → multiple windows, each within budget, no segment split.
         let many = transcript_windows(&abs, 60).unwrap();
-        assert!(many.len() > 1, "expected several windows, got {}", many.len());
+        assert!(
+            many.len() > 1,
+            "expected several windows, got {}",
+            many.len()
+        );
         let total: usize = many.iter().map(|w| w.matches("- `[").count()).sum();
         assert_eq!(total, 6, "every segment lands in exactly one window");
         assert!(
-            many.iter().all(|w| w.lines().all(|l| l.starts_with("- `["))),
+            many.iter()
+                .all(|w| w.lines().all(|l| l.starts_with("- `["))),
             "windows contain only whole segment lines"
         );
     }
@@ -586,7 +593,9 @@ mod tests {
         let root = tempdir();
         let rel = meeting_note_relative_path(started(), "Sync");
         let abs = ensure_meeting_note(&root, &rel, "Sync", started()).unwrap();
-        assert!(transcript_windows(&abs, DISTILL_WINDOW_BUDGET).unwrap().is_empty());
+        assert!(transcript_windows(&abs, DISTILL_WINDOW_BUDGET)
+            .unwrap()
+            .is_empty());
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -608,7 +617,11 @@ mod tests {
 
         let body = std::fs::read_to_string(&abs).unwrap();
         assert!(!body.contains("Unknown speaker 2"), "old label gone");
-        assert_eq!(body.matches("**Sarah Chen:**").count(), 3, "all attributed to Sarah");
+        assert_eq!(
+            body.matches("**Sarah Chen:**").count(),
+            3,
+            "all attributed to Sarah"
+        );
         // Attendees deduped to a single Sarah bullet (she was already listed).
         assert_eq!(body.matches("- [[Sarah Chen]]").count(), 1);
         assert!(!body.contains("[[Unknown speaker 2]]"));

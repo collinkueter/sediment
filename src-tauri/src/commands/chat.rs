@@ -12,7 +12,8 @@ use crate::core::audit::{self, AuditEntry, ChangedNote, ChatTurnEntry};
 use crate::core::cancel::{CancelMode, CancelRegistry};
 use crate::core::claude_code::{self, ClaudeCodeEngine};
 use crate::core::conversation::{
-    ConversationEngine, TranscriptTurn, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest, TurnStop,
+    ConversationEngine, TranscriptTurn, TurnEvent, TurnEventSink, TurnOutcome, TurnRequest,
+    TurnStop,
 };
 use crate::core::copilot::{self, CopilotEngineHandle};
 use crate::core::daily_note;
@@ -175,7 +176,8 @@ pub async fn chat_turn(
     // reliability fix), then the Working Set, then related-note excerpts (the
     // first droppable thing). Best-effort — a failing signal degrades to less
     // grounding, never a failed turn.
-    let pre = pre_pass::build_pre_pass(store, &pre_pass_sidecar, embedding_provider, &message).await;
+    let pre =
+        pre_pass::build_pre_pass(store, &pre_pass_sidecar, embedding_provider, &message).await;
     let working_set = working_set::derive_working_set(store).await;
     // ADR-0015 §3: the Self — the durable, authored model of the user — leads the
     // grounding, ranked above the recency-derived Working Set so *who you are* is

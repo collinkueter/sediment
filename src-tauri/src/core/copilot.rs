@@ -690,9 +690,9 @@ impl CopilotSession {
                 // prompt to actually wind down. If its response arrives, the
                 // session is idle again and stays warm; if the grace elapses the
                 // CLI likely ignored the cancel, so flag the session for recycle.
-                let _ =
-                    self.writer_tx
-                        .send(ndjson_line(&session_cancel_msg(&self.session_id)));
+                let _ = self
+                    .writer_tx
+                    .send(ndjson_line(&session_cancel_msg(&self.session_id)));
                 let acknowledged = tokio::time::timeout(CANCEL_GRACE, &mut resp_rx)
                     .await
                     .is_ok();

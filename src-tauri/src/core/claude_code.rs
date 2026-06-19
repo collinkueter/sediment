@@ -845,7 +845,10 @@ async fn drive_turn(
                     "Claude Code returned an empty reply — the turn may have been blocked.",
                 ));
             };
-            Ok(TurnOutcome { reply, stop: TurnStop::Completed })
+            Ok(TurnOutcome {
+                reply,
+                stop: TurnStop::Completed,
+            })
         }
         Some((_answer, true, subtype)) => Err(AppError::other(format!(
             "Claude Code reported an error during the turn (subtype: {}).",
@@ -872,7 +875,10 @@ async fn drive_turn(
                 return Err(AppError::other(msg));
             }
             if !accumulator.is_empty() {
-                Ok(TurnOutcome { reply: accumulator, stop: TurnStop::Completed })
+                Ok(TurnOutcome {
+                    reply: accumulator,
+                    stop: TurnStop::Completed,
+                })
             } else {
                 Err(AppError::other(
                     "Claude Code exited without finishing the turn — make sure you are signed \

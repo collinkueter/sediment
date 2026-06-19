@@ -153,8 +153,11 @@ impl CaptureSource for MicSource {
                         device.build_input_stream(
                             &config,
                             move |data: &[u16], _: &_| {
-                                let _ = tx
-                                    .send(data.iter().map(|&s| (s as f32 - 32768.0) / 32768.0).collect());
+                                let _ = tx.send(
+                                    data.iter()
+                                        .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                                        .collect(),
+                                );
                             },
                             err_fn,
                             None,

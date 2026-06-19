@@ -13,9 +13,11 @@
 
 use crate::commands::formation::APP_DIR;
 use crate::core::formation_state::FormationState;
-use crate::core::memory::MemoryHandle;
 use crate::core::meeting_note;
-use crate::core::session::{record_note, record_segment, MeetingSession, SessionEvent, SessionLifecycle, SessionRegistry};
+use crate::core::memory::MemoryHandle;
+use crate::core::session::{
+    record_note, record_segment, MeetingSession, SessionEvent, SessionLifecycle, SessionRegistry,
+};
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -143,7 +145,14 @@ pub async fn session_push_segment(
         })
         .ok_or_else(|| AppError::other(format!("no open session {session_id}")))?;
 
-    record_segment(&formation_root, &note_rel, &events, offset_ms, &speaker, &text)
+    record_segment(
+        &formation_root,
+        &note_rel,
+        &events,
+        offset_ms,
+        &speaker,
+        &text,
+    )
 }
 
 /// Push a time-anchored note/chat line into `## Notes` (the user typing alongside

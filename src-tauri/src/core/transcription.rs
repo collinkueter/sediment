@@ -92,7 +92,7 @@ mod tests {
     fn mock_emits_one_utterance_per_window() {
         let rate = super::super::audio::TARGET_RATE as usize;
         let mut t = MockTranscriber::new(1.0); // 1 utterance per 16k samples
-        // 2.5 s of audio fed in half-second chunks → 2 finals, 0.5 s buffered.
+                                               // 2.5 s of audio fed in half-second chunks → 2 finals, 0.5 s buffered.
         let half = vec![0.0f32; rate / 2];
         let mut finals = 0;
         for _ in 0..5 {
