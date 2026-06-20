@@ -6,7 +6,7 @@
     <title>Sediment — Talk. It remembers.</title>
     <meta
       name="description"
-      content="Sediment is a desktop note-taking app where you think out loud. An AI agent grounds itself in your notes, records what it learns, and questions you when something is unclear — all on-device, in plain Markdown."
+      content="Sediment is a desktop note-taking app where you think out loud — and now sit in on meetings. An AI agent grounds itself in your notes, transcribes conversations on-device, learns who's speaking, records what it learns, and questions you when something is unclear — all in plain Markdown."
     />
     <meta name="theme-color" content="#f4efe4" />
 
@@ -15,7 +15,7 @@
     <meta property="og:title" content="Sediment — Talk. It remembers." />
     <meta
       property="og:description"
-      content="A desktop note-taking app where the primary input is conversation. You talk; it records, organizes, and sharpens your thinking — on-device, in plain Markdown."
+      content="A desktop note-taking app where the primary input is conversation. You talk — or it sits in on a meeting — and it transcribes, records, organizes, and sharpens your thinking on-device, in plain Markdown."
     />
     <meta property="og:url" content="https://collinkueter.github.io/sediment/" />
 
@@ -49,6 +49,7 @@
       </a>
       <nav class="nav__links" aria-label="Primary">
         <a href="#how">How it works</a>
+        <a href="#meetings">Meetings</a>
         <a href="#features">Features</a>
         <a href="#privacy">Privacy</a>
         <a href="#name">The name</a>
@@ -71,14 +72,14 @@
             you when something is unclear — or contradicts itself.
           </p>
           <div class="hero__cta reveal">
-            <a class="btn btn--primary" href="#download">Download for macOS</a>
+            <a class="btn btn--primary" href="#download">Download</a>
             <a class="btn btn--ghost" href="https://github.com/collinkueter/sediment" target="_blank" rel="noopener">
               View source
               <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 11L11 3M11 3H5M11 3V9" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </a>
           </div>
           <p class="hero__fineprint reveal">
-            macOS · Apple Silicon · runs on your own Claude Code or Copilot subscription
+            macOS &amp; Windows · on-device capture · runs on your own Claude Code or Copilot subscription
           </p>
         </div>
 
@@ -232,6 +233,61 @@
         </div>
       </section>
 
+      <!-- ───────────── SPOTLIGHT — MEETINGS & VOICE ──────────── -->
+      <section class="spotlight spotlight--capture" id="meetings">
+        <div class="spotlight__copy reveal">
+          <p class="eyebrow">Meetings &amp; voice, on-device</p>
+          <h2>It can sit in on the conversation.</h2>
+          <p>
+            Start a <b>session</b> for a meeting or a quick voice memo and
+            Sediment transcribes it live on your machine, labelling each speaker
+            as they talk. Name an unknown voice once — it's recognised by ear the
+            next time, no wizard, no enrollment step.
+          </p>
+          <p>
+            When you stop, a high-accuracy <b>second pass</b> re-transcribes the
+            whole session and the agent distils the action items, facts, and open
+            loops straight into your notes. The audio is discarded — only the
+            meeting note and a few seconds of each voice are kept.
+          </p>
+        </div>
+
+        <!-- A live capture session settling into a meeting note -->
+        <div class="spotlight__media reveal" aria-hidden="true">
+          <div class="session">
+            <div class="session__bar">
+              <span class="session__rec"><span class="session__dot"></span>REC</span>
+              <span class="session__ttl">Session · Standup</span>
+              <span class="wave">
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              </span>
+              <span class="session__clock">12:04</span>
+            </div>
+
+            <div class="session__feed">
+              <div class="seg">
+                <span class="seg__who seg__who--self">You</span>
+                <span class="seg__txt">Let's get the payments fix out today.</span>
+              </div>
+              <div class="seg">
+                <span class="seg__who"><span class="seg__voice"></span>Maya</span>
+                <span class="seg__txt">I'll own the rollout once review clears.</span>
+              </div>
+              <div class="seg seg--naming">
+                <span class="seg__who seg__who--unknown">Speaker 2</span>
+                <span class="seg__txt">QA is green on staging.</span>
+                <span class="seg__name">name ⟶ <b>Devin</b></span>
+              </div>
+            </div>
+
+            <div class="session__foot">
+              <span class="session__stop"><span class="session__sq"></span>Stop &amp; distil</span>
+              <span class="session__note">↳ refined transcript · action items · facts</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- ──────────────────────── FEATURES ───────────────────── -->
       <section class="features" id="features">
         <header class="section-head reveal">
@@ -261,6 +317,40 @@
           <!-- 02 -->
           <article class="card reveal">
             <div class="demo" aria-hidden="true">
+              <div class="d-rec">
+                <span class="d-rec__live"><span class="d-pulse"></span>Session · live</span>
+                <span class="d-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+              </div>
+              <div class="d-utt"><span class="d-spk">Maya</span>ship the fix today</div>
+              <div class="d-utt"><span class="d-spk d-spk--you">You</span>on it after review</div>
+              <span class="d-file">Meetings / 2026-06-17 1204 — Standup.md</span>
+            </div>
+            <span class="card__n">02</span>
+            <h3>Meeting &amp; voice capture</h3>
+            <p>Start a session and Sediment transcribes the room live, then files a speaker-labelled meeting note when you stop.</p>
+          </article>
+
+          <!-- 03 -->
+          <article class="card reveal">
+            <div class="demo" aria-hidden="true">
+              <div class="d-voice">
+                <span class="d-voice__hd"><span class="d-voice__av">◆</span>People / Devin.md</span>
+                <div class="d-voice__row">
+                  <span class="d-voice__lbl">voiceprint</span>
+                  <span class="d-wave d-wave--still"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+                </div>
+                <span class="d-clip">▶ .voices / Devin.wav · 3s</span>
+                <span class="d-recog">↳ recognised next session</span>
+              </div>
+            </div>
+            <span class="card__n">03</span>
+            <h3>Speaker recognition</h3>
+            <p>Name a voice once; a voiceprint and a few seconds of clip let Sediment know them by ear in later sessions.</p>
+          </article>
+
+          <!-- 04 -->
+          <article class="card reveal">
+            <div class="demo" aria-hidden="true">
               <div class="d-panel">
                 <span class="d-panel__cap">Working Set · derived this turn</span>
                 <div class="d-row">
@@ -271,12 +361,29 @@
                 <span class="d-meta">Related notes · Roadmap.md · 1:1s.md</span>
               </div>
             </div>
-            <span class="card__n">02</span>
+            <span class="card__n">04</span>
             <h3>The Working Set</h3>
             <p>A derived view of what's in play right now — entities, tasks, and the most related notes — recomputed each turn.</p>
           </article>
 
-          <!-- 03 -->
+          <!-- 05 -->
+          <article class="card reveal">
+            <div class="demo" aria-hidden="true">
+              <div class="d-note">
+                <span class="d-file">Self.md · your durable model</span>
+                <span class="d-sec">## Working style</span>
+                <span class="d-bul">Prefers async · writes before meetings</span>
+                <span class="d-sec">## Goals</span>
+                <span class="d-bul d-bul--new">Ship Payments v2 this quarter</span>
+              </div>
+              <span class="d-badge"><span class="d-live"></span>injected into every turn</span>
+            </div>
+            <span class="card__n">05</span>
+            <h3>The Self</h3>
+            <p>A note about you — preferences, working style, standing goals — authored and re-read each turn, so the agent answers in your context.</p>
+          </article>
+
+          <!-- 06 -->
           <article class="card reveal">
             <div class="demo" aria-hidden="true">
               <div class="d-flag">
@@ -289,7 +396,7 @@
                 </div>
               </div>
             </div>
-            <span class="card__n">03</span>
+            <span class="card__n">06</span>
             <h3>Contradiction detection</h3>
             <p>Say something that conflicts with a recorded fact and the agent flags it, then asks how to resolve.</p>
           </article>
@@ -304,7 +411,7 @@
               </div>
               <div class="d-toast"><span class="d-toast__x">↶</span>Reverted · undo (10s)</div>
             </div>
-            <span class="card__n">04</span>
+            <span class="card__n">07</span>
             <h3>Audit log &amp; undo</h3>
             <p>Every turn's applied change is browsable and revertable — per turn or per single fact.</p>
           </article>
@@ -321,7 +428,7 @@
                 </div>
               </div>
             </div>
-            <span class="card__n">05</span>
+            <span class="card__n">08</span>
             <h3>Open loops</h3>
             <p>Unresolved questions and stated-but-unfulfilled intentions are noticed and nudged in conversation — never alarmed.</p>
           </article>
@@ -338,7 +445,7 @@
                 <span class="d-notif__body">“Email landlord re: lease” is due today</span>
               </div>
             </div>
-            <span class="card__n">06</span>
+            <span class="card__n">09</span>
             <h3>Tasks &amp; reminders</h3>
             <p>File a reminder into an Obsidian-Tasks-compatible list; a scheduler raises an OS notification when it's due.</p>
           </article>
@@ -351,7 +458,7 @@
               <div class="d-res"><b>1:1s.md</b> — “…standup cadence is…”</div>
               <span class="d-badge"><span class="d-live"></span>on-device · nomic-embed-text</span>
             </div>
-            <span class="card__n">07</span>
+            <span class="card__n">10</span>
             <h3>On-device search</h3>
             <p>Semantic note search runs locally on a small embedding model. Your formation never leaves the machine.</p>
           </article>
@@ -367,9 +474,9 @@
                 <span class="d-bul">Talked through <span class="d-link">[[Josh]]</span>'s move</span>
               </div>
             </div>
-            <span class="card__n">08</span>
-            <h3>Daily notes</h3>
-            <p>Each day's checklist, events, and reflections are captured automatically, with <code>[[backlinks]]</code> that wire it all together.</p>
+            <span class="card__n">11</span>
+            <h3>Daily &amp; weekly notes</h3>
+            <p>Each day's — and each week's — checklist, events, and reflections are captured automatically, with <code>[[backlinks]]</code> that wire it all together.</p>
           </article>
 
           <!-- 09 -->
@@ -383,7 +490,7 @@
               </div>
               <span class="d-open">opens unchanged in Obsidian ⟶</span>
             </div>
-            <span class="card__n">09</span>
+            <span class="card__n">12</span>
             <h3>Obsidian-compatible</h3>
             <p>Plain Markdown with <code>[[wikilinks]]</code>. Open the same folder in Obsidian; edit outside and it re-indexes in seconds.</p>
           </article>
@@ -391,7 +498,7 @@
           <!-- 10 -->
           <article class="card card--wide reveal">
             <div class="card__lead">
-              <span class="card__n">10</span>
+              <span class="card__n">13</span>
               <h3>Bring your own engine</h3>
               <p>Swap between Claude Code and Copilot in Settings. Same agent, same questioning discipline — your subscription, your binary. Sediment never resells access or routes anyone through someone else's login.</p>
             </div>
@@ -413,8 +520,10 @@
           <p class="eyebrow eyebrow--light">A quiet promise</p>
           <h2>It never leaves your machine.</h2>
           <p>
-            The formation is a folder on your disk. The knowledge graph and
-            embeddings live in a local store. The agent runs as your own
+            The formation is a folder on your disk. The knowledge graph,
+            embeddings, and voiceprints live in a local store. Meetings are
+            transcribed on-device and the audio is discarded — only the note and
+            a few seconds of each voice are kept. The agent runs as your own
             installed CLI, under your own login. Sediment keeps no account, runs
             no server, and routes no one through anyone else's subscription.
           </p>
@@ -449,18 +558,18 @@
           <h2>Start a formation.</h2>
           <p>
             Sediment is in active development and open source. Grab the latest
-            macOS build, or clone the repo and run it yourself.
+            build, or clone the repo and run it yourself.
           </p>
           <div class="download__cta">
-            <a class="btn btn--primary btn--lg" href="https://github.com/collinkueter/sediment/releases" target="_blank" rel="noopener">Download for macOS</a>
+            <a class="btn btn--primary btn--lg" href="https://github.com/collinkueter/sediment/releases" target="_blank" rel="noopener">Download for macOS &amp; Windows</a>
             <a class="btn btn--ghost btn--lg" href="https://github.com/collinkueter/sediment" target="_blank" rel="noopener">
               Build from source
               <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 11L11 3M11 3H5M11 3V9" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </a>
           </div>
           <p class="download__req">
-            Requires macOS on Apple Silicon and a signed-in Claude Code or
-            GitHub Copilot CLI.
+            Runs on macOS (Apple Silicon) or Windows 10/11, with a signed-in
+            Claude Code or GitHub Copilot CLI.
           </p>
         </div>
       </section>
@@ -479,6 +588,7 @@
       <p class="foot__tag">Talk. It remembers.</p>
       <nav class="foot__links" aria-label="Footer">
         <a href="#how">How it works</a>
+        <a href="#meetings">Meetings</a>
         <a href="#features">Features</a>
         <a href="#privacy">Privacy</a>
         <a href="https://github.com/collinkueter/sediment" target="_blank" rel="noopener">GitHub</a>
