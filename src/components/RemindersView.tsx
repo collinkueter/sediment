@@ -171,10 +171,27 @@ function GroupBlock({ group }: { group: Group }) {
 function ReminderRow({ task }: { task: Task }) {
   const complete = useRemindersStore((s) => s.complete);
   const snooze = useRemindersStore((s) => s.snooze);
+  const reschedule = useRemindersStore((s) => s.reschedule);
   const openNote = useFormationStore((s) => s.openNote);
   const notes = useFormationStore((s) => s.notes);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
   const isDone = task.status === "done";
   const due = describeDue(isDone ? task.completed_at : task.due, Date.now(), isDone);
+
+  const startEditing = () => {
+    setDraft(toLocalInputValue(task.due));
+    setEditing(true);
+  };
+  const save = () => {
+    if (!draft) return;
+    void reschedule(task.id, new Date(draft).toISOString());
+    setEditing(false);
+  };
+  const clearDate = () => {
+    void reschedule(task.id, null);
+    setEditing(false);
+  };
 
   // Reminders trace back to Tasks.md — let a row deep-link to it for full context.
   const tasksNote = notes.find((n) => n.relative_path.replace(/^.*\//, "") === "Tasks.md");
@@ -215,6 +232,18 @@ function ReminderRow({ task }: { task: Task }) {
           {!isDone && (
             <button
               type="button"
+              onClick={() => (editing ? setEditing(false) : startEditing())}
+              aria-expanded={editing}
+              className={`text-[11px] transition-opacity hover:text-accent-ink group-hover:opacity-100 ${
+                editing ? "text-accent-ink opacity-100" : "text-muted opacity-0"
+              }`}
+            >
+              Reschedule
+            </button>
+          )}
+          {!isDone && (
+            <button
+              type="button"
               onClick={() => void snooze(task.id, tomorrow())}
               className="text-[11px] text-muted opacity-0 transition-opacity hover:text-accent-ink group-hover:opacity-100"
             >
@@ -231,6 +260,42 @@ function ReminderRow({ task }: { task: Task }) {
             </button>
           )}
         </div>
+
+        {editing && !isDone && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              type="datetime-local"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              aria-label={`Due date and time for ${task.title}`}
+              className="rounded-md border border-line bg-raised px-2 py-1 font-mono text-[11px] text-ink-soft outline-none focus:border-accent"
+            />
+            <button
+              type="button"
+              onClick={save}
+              disabled={!draft}
+              className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              Save
+            </button>
+            {task.due && (
+              <button
+                type="button"
+                onClick={clearDate}
+                className="rounded-md px-2 py-1 text-[11px] font-medium text-muted transition-colors hover:text-danger"
+              >
+                Clear date
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="rounded-md px-2 py-1 text-[11px] font-medium text-muted transition-colors hover:text-ink"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
     </li>
   );
@@ -387,4 +452,21 @@ function shortDate(ts: string): string {
 /// An RFC3339 timestamp 24 hours from now — the "Snooze 1 day" target.
 function tomorrow(): string {
   return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+}
+
+/// Convert an RFC3339 due (or null) to the `YYYY-MM-DDTHH:mm` shape a
+/// `<input type="datetime-local">` expects, in the browser's local time. A task
+/// with no due seeds the picker at today 09:00 — the hour the scheduler uses for
+/// date-only reminders (`due_at`).
+function toLocalInputValue(iso: string | null): string {
+  const d = iso ? new Date(iso) : defaultDue();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/// Seed value for a task with no due date: today at 09:00 local.
+function defaultDue(): Date {
+  const d = new Date();
+  d.setHours(9, 0, 0, 0);
+  return d;
 }

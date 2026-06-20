@@ -10,6 +10,7 @@ import {
 } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { useUiStore } from "./ui";
 
 /** One line in a turn's inline tool-activity trail (ADR-0009 §5). */
 export interface ToolActivity {
@@ -221,6 +222,10 @@ interface FormationState {
   openNote: (relativePath: string) => Promise<void>;
   setContent: (content: string) => void;
   save: () => Promise<void>;
+  /** Delete a note file; clears the editor if it was the open note. */
+  deleteNote: (relativePath: string) => Promise<void>;
+  /** Rename/move a note (formation-relative paths); reopens it if it was open. */
+  renameNote: (from: string, to: string) => Promise<void>;
   closeFormation: () => void;
 
   /** Handle a debounced file-watcher event from the Rust core. */
@@ -300,6 +305,13 @@ export const useFormationStore = create<FormationState>((set, get) => ({
       originalContent: content,
       isDirty: false,
     });
+    // Opening a note is a request to *see* it. The note pane only renders in the
+    // Conversation view and only when not collapsed, so surface both — otherwise
+    // opening a note from the Reminders view (or with the pane collapsed) does
+    // nothing on screen until the user switches back manually.
+    const ui = useUiStore.getState();
+    ui.showChat();
+    ui.setNotePaneCollapsed(false);
   },
 
   setContent(content) {
@@ -320,6 +332,23 @@ export const useFormationStore = create<FormationState>((set, get) => ({
     // detected correctly.
     set({ originalContent: currentNoteContent, isDirty: false });
     await get().refreshNotes();
+  },
+
+  async deleteNote(relativePath) {
+    await tauri.deleteNote(relativePath);
+    if (get().currentNotePath === relativePath) {
+      set({ currentNotePath: null, currentNoteContent: "", originalContent: "", isDirty: false });
+    }
+    await get().refreshNotes();
+  },
+
+  async renameNote(from, to) {
+    await tauri.renameNote(from, to);
+    const wasOpen = get().currentNotePath === from;
+    await get().refreshNotes();
+    // Reopen under the new path so the editor follows the rename. openNote
+    // surfaces the note pane; harmless since the note was already open.
+    if (wasOpen) await get().openNote(to);
   },
 
   closeFormation() {
@@ -419,11 +448,28 @@ export const useAuditStore = create<AuditState>((set, get) => {
   }
 
   // The agent edits notes on disk — refresh the file list and reload the
-  // active note so the editor shows the post-undo / post-turn content.
+  // active note so the editor shows the post-undo / post-turn content. Reload
+  // content directly rather than via openNote: this is a background sync, not a
+  // user opening a note, so it must not switch the view or expand the note pane.
   async function reloadFormation() {
     const fs = useFormationStore.getState();
     await fs.refreshNotes();
-    if (fs.currentNotePath) await fs.openNote(fs.currentNotePath);
+    const path = fs.currentNotePath;
+    if (!path) return;
+    try {
+      const content = await tauri.readNote(path);
+      useFormationStore.setState({
+        currentNoteContent: content,
+        originalContent: content,
+        isDirty: false,
+      });
+    } catch {
+      useFormationStore.setState({
+        currentNotePath: null,
+        currentNoteContent: "",
+        originalContent: "",
+      });
+    }
   }
 
   return {
@@ -538,6 +584,8 @@ interface RemindersState {
   complete: (id: string) => Promise<void>;
   /** Push a task's reminder to an RFC3339 time, then refresh. */
   snooze: (id: string, until: string) => Promise<void>;
+  /** Set or clear a task's due date/time (RFC3339, or null), then refresh. */
+  reschedule: (id: string, due: string | null) => Promise<void>;
   /** Surface a fired reminder as a toast — driven by the `reminder-due` event. */
   showDueToast: (task: Task) => void;
   dismissToast: () => void;
@@ -604,6 +652,16 @@ export const useRemindersStore = create<RemindersState>((set, get) => ({
       await tauri.snoozeTask(id, until);
     } catch (e) {
       console.warn("snooze task failed:", e);
+    }
+    set((s) => (s.dueToast?.id === id ? { dueToast: null } : {}));
+    await get().refresh();
+  },
+
+  async reschedule(id, due) {
+    try {
+      await tauri.rescheduleTask(id, due);
+    } catch (e) {
+      console.warn("reschedule task failed:", e);
     }
     set((s) => (s.dueToast?.id === id ? { dueToast: null } : {}));
     await get().refresh();

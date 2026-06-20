@@ -353,6 +353,10 @@ export const tauri = {
   noteBacklinks: (notePath: string) => invoke<Backlink[]>("note_backlinks", { notePath }),
   writeNote: (relativePath: string, content: string) =>
     invoke<void>("write_note", { relativePath, content }),
+  /** Delete a note file and forget it from the index. */
+  deleteNote: (relativePath: string) => invoke<void>("delete_note", { relativePath }),
+  /** Rename/move a note. Both paths are formation-relative and must end in `.md`. */
+  renameNote: (from: string, to: string) => invoke<void>("rename_note", { from, to }),
   indexFormation: (force: boolean) => invoke<IndexFormationResult>("index_formation", { force }),
 
   // Onboarding
@@ -530,4 +534,6 @@ export const tauri = {
   completeTask: (id: string) => invoke<void>("complete_task", { id }),
   /** Push a task's reminder to `until` (an RFC3339 timestamp). */
   snoozeTask: (id: string, until: string) => invoke<void>("snooze_task", { id, until }),
+  /** Set a task's due date/time (an RFC3339 timestamp) or `null` to clear it. */
+  rescheduleTask: (id: string, due: string | null) => invoke<void>("reschedule_task", { id, due }),
 };

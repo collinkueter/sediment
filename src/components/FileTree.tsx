@@ -2,8 +2,40 @@ import { Icon } from "@/components/icons";
 import { useFormationStore, useRemindersStore } from "@/lib/store";
 import type { FormationNote } from "@/lib/tauri";
 import { useUiStore } from "@/lib/ui";
-import { useMemo, useState } from "react";
-import type { ComponentType, ReactNode, SVGProps } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import type { ComponentType, MouseEvent as ReactMouseEvent, ReactNode, SVGProps } from "react";
+
+/**
+ * Right-click affordances shared by every file row, passed via context so the
+ * deeply-nested rows don't have to prop-drill through the folder tree.
+ */
+interface TreeMenuCtx {
+  /** The note path currently being renamed inline, or null. */
+  renamingPath: string | null;
+  /** Open the context menu for a note at the click position. */
+  openMenu: (e: ReactMouseEvent, path: string, name: string) => void;
+  /** Turn a note row into an inline rename input. */
+  beginRename: (path: string) => void;
+  /** Abandon an in-progress inline rename. */
+  cancelRename: () => void;
+  /** Commit an inline rename (no-op on empty/unchanged names). */
+  commitRename: (from: string, newName: string) => void;
+}
+const TreeMenuContext = createContext<TreeMenuCtx | null>(null);
+function useTreeMenu(): TreeMenuCtx {
+  const ctx = useContext(TreeMenuContext);
+  if (!ctx) throw new Error("useTreeMenu used outside FileTree");
+  return ctx;
+}
+
+/** Compute the formation-relative path a note takes after renaming to `newName`
+ *  (same folder, `.md` enforced). `newName` may include slashes to move it. */
+function renamedPath(from: string, newName: string): string {
+  const slash = from.lastIndexOf("/");
+  const dir = slash >= 0 ? from.slice(0, slash + 1) : "";
+  const base = newName.trim().replace(/\.md$/i, "");
+  return `${dir}${base}.md`;
+}
 
 interface FolderNode {
   type: "folder";
@@ -135,12 +167,50 @@ function fileIcon(section: string | undefined): ComponentType<SVGProps<SVGSVGEle
   return Icon.File;
 }
 
+interface MenuState {
+  path: string;
+  name: string;
+  x: number;
+  y: number;
+}
+
 export function FileTree() {
   const notes = useFormationStore((s) => s.notes);
   const formationPath = useFormationStore((s) => s.formationPath);
   const pick = useFormationStore((s) => s.pick);
+  const openNote = useFormationStore((s) => s.openNote);
+  const deleteNote = useFormationStore((s) => s.deleteNote);
+  const renameNote = useFormationStore((s) => s.renameNote);
   const openPalette = useUiStore((s) => s.openPalette);
   const tree = useMemo(() => buildTree(notes), [notes]);
+
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+
+  const treeMenu = useMemo<TreeMenuCtx>(
+    () => ({
+      renamingPath,
+      openMenu: (e, path, name) => {
+        e.preventDefault();
+        // Keep the menu on-screen near the cursor.
+        const x = Math.min(e.clientX, window.innerWidth - 180);
+        const y = Math.min(e.clientY, window.innerHeight - 150);
+        setMenu({ path, name, x, y });
+      },
+      beginRename: (path) => {
+        setMenu(null);
+        setRenamingPath(path);
+      },
+      cancelRename: () => setRenamingPath(null),
+      commitRename: (from, newName) => {
+        setRenamingPath(null);
+        const to = renamedPath(from, newName);
+        if (!newName.trim() || to === from) return;
+        void renameNote(from, to);
+      },
+    }),
+    [renamingPath, renameNote],
+  );
 
   // Split top-level folders (the named sections) from loose root files; order
   // the sections intentionally rather than alphabetically.
@@ -155,101 +225,267 @@ export function FileTree() {
   const formationName = formationPath ? basename(formationPath) : "No formation";
 
   return (
-    <aside className="flex h-full w-full flex-col bg-surface">
-      {/* Formation-switch header button */}
-      <div className="px-3.5 pt-3.5 pb-2.5">
-        <button
-          type="button"
-          aria-label="Switch formation"
-          title="Open a different formation"
-          onClick={() => void pick()}
-          className="flex w-full items-center gap-2.5 rounded-[9px] border border-line bg-raised px-2.5 py-2
+    <TreeMenuContext.Provider value={treeMenu}>
+      <aside className="flex h-full w-full flex-col bg-surface">
+        {/* Formation-switch header button */}
+        <div className="px-3.5 pt-3.5 pb-2.5">
+          <button
+            type="button"
+            aria-label="Switch formation"
+            title="Open a different formation"
+            onClick={() => void pick()}
+            className="flex w-full items-center gap-2.5 rounded-[9px] border border-line bg-raised px-2.5 py-2
             shadow-sm transition-colors hover:border-line-strong"
-        >
-          {/* Gradient layers glyph */}
-          <span
-            className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] text-white"
-            style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-ink))" }}
-            aria-hidden="true"
           >
-            <Icon.Layers className="h-[15px] w-[15px]" />
-          </span>
-
-          {/* Name + note count */}
-          <span className="min-w-0 flex-1 text-left">
-            <span className="block truncate text-[13px] font-semibold leading-tight text-ink">
-              {formationName}
+            {/* Gradient layers glyph */}
+            <span
+              className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] text-white"
+              style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-ink))" }}
+              aria-hidden="true"
+            >
+              <Icon.Layers className="h-[15px] w-[15px]" />
             </span>
-            <span className="block text-[11px] leading-tight text-muted">
-              {notes.length} {notes.length === 1 ? "note" : "notes"}
+
+            {/* Name + note count */}
+            <span className="min-w-0 flex-1 text-left">
+              <span className="block truncate text-[13px] font-semibold leading-tight text-ink">
+                {formationName}
+              </span>
+              <span className="block text-[11px] leading-tight text-muted">
+                {notes.length} {notes.length === 1 ? "note" : "notes"}
+              </span>
             </span>
-          </span>
 
-          {/* Up/down chevron */}
-          <Icon.ChevronUpDown className="h-[14px] w-[14px] shrink-0 text-faint" />
-        </button>
-      </div>
+            {/* Up/down chevron */}
+            <Icon.ChevronUpDown className="h-[14px] w-[14px] shrink-0 text-faint" />
+          </button>
+        </div>
 
-      {/* Primary view nav — Conversation · Reminders */}
-      <PrimaryNav />
+        {/* Primary view nav — Conversation · Reminders */}
+        <PrimaryNav />
 
-      {/* Search / ⌘K trigger */}
-      <div className="px-3.5 pb-2">
-        <button
-          type="button"
-          aria-label="Search notes and entities (⌘K)"
-          onClick={openPalette}
-          className="flex w-full items-center gap-2 rounded-[8px] bg-bg-sunk px-2.5 py-[6px] text-muted
+        {/* Search / ⌘K trigger */}
+        <div className="px-3.5 pb-2">
+          <button
+            type="button"
+            aria-label="Search notes and entities (⌘K)"
+            onClick={openPalette}
+            className="flex w-full items-center gap-2 rounded-[8px] bg-bg-sunk px-2.5 py-[6px] text-muted
             transition-colors hover:text-ink-soft"
-        >
-          <Icon.Search className="h-[14px] w-[14px] shrink-0" />
-          <span className="min-w-0 flex-1 text-left text-[12.5px]">
-            Search notes &amp; entities
-          </span>
-          <kbd
-            className="shrink-0 rounded border border-line-strong font-mono text-[10px] text-faint"
-            style={{ padding: "1px 4px" }}
           >
-            ⌘K
-          </kbd>
-        </button>
-      </div>
+            <Icon.Search className="h-[14px] w-[14px] shrink-0" />
+            <span className="min-w-0 flex-1 text-left text-[12.5px]">
+              Search notes &amp; entities
+            </span>
+            <kbd
+              className="shrink-0 rounded border border-line-strong font-mono text-[10px] text-faint"
+              style={{ padding: "1px 4px" }}
+            >
+              ⌘K
+            </kbd>
+          </button>
+        </div>
 
-      {/* Tree */}
-      <nav
-        className="min-h-0 flex-1 overflow-y-auto px-2 pb-3.5 pt-0.5"
-        aria-label="Formation notes"
-      >
-        {notes.length === 0 ? (
-          <p className="px-3 py-4 text-[12.5px] text-muted">
-            No markdown files in this folder yet.
+        {/* Tree */}
+        <nav
+          className="min-h-0 flex-1 overflow-y-auto px-2 pb-3.5 pt-0.5"
+          aria-label="Formation notes"
+        >
+          {notes.length === 0 ? (
+            <p className="px-3 py-4 text-[12.5px] text-muted">
+              No markdown files in this folder yet.
+            </p>
+          ) : (
+            <ul>
+              {rootFiles.length > 0 && (
+                <li>
+                  <div className="flex items-center gap-1.5 px-2 pt-[9px] pb-1">
+                    <span className="min-w-0 flex-1 truncate text-[10px] font-bold uppercase tracking-[0.08em] text-faint">
+                      Notes
+                    </span>
+                    <span className="ml-auto shrink-0 text-[10px] font-semibold text-faint">
+                      {rootFiles.length}
+                    </span>
+                  </div>
+                  <ul>
+                    {rootFiles.map((node) => (
+                      <FileRow key={nodeKey(node)} node={node} depth={1} />
+                    ))}
+                  </ul>
+                </li>
+              )}
+              {folders.map((node) => (
+                <TreeNodeView key={nodeKey(node)} node={node} depth={0} section={node.name} />
+              ))}
+            </ul>
+          )}
+        </nav>
+      </aside>
+      {menu && (
+        <FileContextMenu
+          menu={menu}
+          onOpen={(p) => void openNote(p)}
+          onRename={treeMenu.beginRename}
+          onDelete={(p) => void deleteNote(p)}
+          onClose={() => setMenu(null)}
+        />
+      )}
+    </TreeMenuContext.Provider>
+  );
+}
+
+/** Cursor-anchored context menu for a note row: Open / Rename / Delete, with a
+ *  two-step confirm guarding the destructive delete. */
+function FileContextMenu({
+  menu,
+  onOpen,
+  onRename,
+  onDelete,
+  onClose,
+}: {
+  menu: MenuState;
+  onOpen: (path: string) => void;
+  onRename: (path: string) => void;
+  onDelete: (path: string) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      aria-label={`Actions for ${menu.name}`}
+      className="fixed z-50 min-w-[168px] rounded-[9px] border border-line bg-raised p-1 shadow-lg"
+      style={{ top: menu.y, left: menu.x }}
+    >
+      {confirming ? (
+        <>
+          <p className="px-2.5 pt-1.5 pb-1 text-[11.5px] leading-snug text-muted">
+            Delete “{menu.name}”? This can’t be undone.
           </p>
-        ) : (
-          <ul>
-            {rootFiles.length > 0 && (
-              <li>
-                <div className="flex items-center gap-1.5 px-2 pt-[9px] pb-1">
-                  <span className="min-w-0 flex-1 truncate text-[10px] font-bold uppercase tracking-[0.08em] text-faint">
-                    Notes
-                  </span>
-                  <span className="ml-auto shrink-0 text-[10px] font-semibold text-faint">
-                    {rootFiles.length}
-                  </span>
-                </div>
-                <ul>
-                  {rootFiles.map((node) => (
-                    <FileRow key={nodeKey(node)} node={node} depth={1} />
-                  ))}
-                </ul>
-              </li>
-            )}
-            {folders.map((node) => (
-              <TreeNodeView key={nodeKey(node)} node={node} depth={0} section={node.name} />
-            ))}
-          </ul>
-        )}
-      </nav>
-    </aside>
+          <MenuItem
+            label="Delete note"
+            tone="danger"
+            onClick={() => {
+              onDelete(menu.path);
+              onClose();
+            }}
+          />
+          <MenuItem label="Cancel" onClick={() => setConfirming(false)} />
+        </>
+      ) : (
+        <>
+          <MenuItem
+            label="Open"
+            onClick={() => {
+              onOpen(menu.path);
+              onClose();
+            }}
+          />
+          <MenuItem
+            label="Rename"
+            onClick={() => {
+              onRename(menu.path);
+              onClose();
+            }}
+          />
+          <MenuItem label="Delete" tone="danger" onClick={() => setConfirming(true)} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function MenuItem({
+  label,
+  onClick,
+  tone,
+}: {
+  label: string;
+  onClick: () => void;
+  tone?: "danger";
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className={`flex w-full items-center rounded-[6px] px-2.5 py-1.5 text-left text-[12.5px] transition-colors ${
+        tone === "danger" ? "text-danger hover:bg-danger/10" : "text-ink-soft hover:bg-bg-sunk"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** Inline rename field shown in place of a file row's label. Commits on Enter or
+ *  blur, cancels on Escape — exactly once, so the blur after Enter is a no-op. */
+function RenameInput({
+  initial,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const ref = useRef<HTMLInputElement>(null);
+  const done = useRef(false);
+
+  useEffect(() => {
+    ref.current?.focus();
+    ref.current?.select();
+  }, []);
+
+  const commit = () => {
+    if (done.current) return;
+    done.current = true;
+    onCommit(value);
+  };
+  const cancel = () => {
+    if (done.current) return;
+    done.current = true;
+    onCancel();
+  };
+
+  return (
+    <input
+      ref={ref}
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancel();
+        }
+      }}
+      onBlur={commit}
+      onClick={(e) => e.stopPropagation()}
+      aria-label="New note name"
+      className="min-w-0 flex-1 rounded-[6px] border border-accent bg-raised px-1.5 py-[2px] text-[13px] text-ink outline-none"
+    />
   );
 }
 
@@ -443,18 +679,42 @@ function FolderRow({
 function FileRow({ node, depth, section }: { node: FileNode; depth: number; section?: string }) {
   const currentPath = useFormationStore((s) => s.currentNotePath);
   const openNote = useFormationStore((s) => s.openNote);
-  const isActive = node.note.relative_path === currentPath;
+  const menu = useTreeMenu();
+  const path = node.note.relative_path;
+  const isActive = path === currentPath;
+  const isRenaming = menu.renamingPath === path;
 
   // Type icon derived from the section (top-level folder) this note lives in.
   const FileIconComp = fileIcon(section);
+  const indent = `${Math.max(depth - 1, 0) * 16 + 24}px`;
+
+  // Inline rename: replace the row's label with an editable field.
+  if (isRenaming) {
+    return (
+      <li>
+        <div
+          className="flex items-center gap-2 rounded-[7px] px-2 py-[5px]"
+          style={{ paddingLeft: indent }}
+        >
+          <FileIconComp className="h-[15px] w-[15px] shrink-0 opacity-70" />
+          <RenameInput
+            initial={displayName(node.name)}
+            onCommit={(value) => menu.commitRename(path, value)}
+            onCancel={menu.cancelRename}
+          />
+        </div>
+      </li>
+    );
+  }
 
   return (
     <li>
       <button
         type="button"
         onClick={() => {
-          void openNote(node.note.relative_path);
+          void openNote(path);
         }}
+        onContextMenu={(e) => menu.openMenu(e, path, displayName(node.name))}
         title={node.note.relative_path}
         aria-current={isActive ? "page" : undefined}
         className={[

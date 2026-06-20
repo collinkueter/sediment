@@ -1,5 +1,6 @@
 use crate::core::formation_state::{atomic_write, AppConfig, FormationNote, FormationState};
 use crate::core::indexer::Indexer;
+use crate::core::memory::MemoryHandle;
 use crate::core::watcher::FormationWatcher;
 use crate::error::{AppError, AppResult};
 use std::path::PathBuf;
@@ -201,6 +202,76 @@ pub fn write_note(
     if relative_path.ends_with(".md") {
         indexer.request(relative_path);
     }
+    Ok(())
+}
+
+/// Delete a note file and forget it from the search index. The watcher's own
+/// emit for this removal is suppressed (`mark_self_write`) so the deletion does
+/// not echo back as an external change. `remove_note_index` clears the note's
+/// embedding chunks and index-state row.
+#[tauri::command]
+pub async fn delete_note(
+    relative_path: String,
+    state: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+    watcher: State<'_, FormationWatcher>,
+) -> AppResult<()> {
+    let formation = state.require()?;
+    if !relative_path.ends_with(".md") {
+        return Err(AppError::other("only .md notes can be deleted"));
+    }
+    let abs = resolve_in_formation(&formation, &relative_path)?;
+    watcher.mark_self_write(&relative_path);
+    std::fs::remove_file(&abs)
+        .map_err(|e| AppError::other(format!("delete {relative_path}: {e}")))?;
+    let store = memory
+        .get_or_init(&formation.join(APP_DIR).join("memory"))
+        .await?;
+    store.remove_note_index(&relative_path).await.ok();
+    Ok(())
+}
+
+/// Rename (or move) a note within the formation. `from` and `to` are formation-
+/// relative paths; `to` must end in `.md`, stay inside the formation, and not
+/// already exist. Forgets the old path from the index, queues the new path for
+/// re-indexing, and re-points any entity Note link so a People/Organization note
+/// survives the rename. Note: existing `[[Old name]]` wiki-links in other notes
+/// are left untouched — Obsidian and the entity alias history still resolve them.
+#[tauri::command]
+pub async fn rename_note(
+    from: String,
+    to: String,
+    state: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+    indexer: State<'_, Indexer>,
+    watcher: State<'_, FormationWatcher>,
+) -> AppResult<()> {
+    let formation = state.require()?;
+    if !from.ends_with(".md") || !to.ends_with(".md") {
+        return Err(AppError::other("a note path must end in .md"));
+    }
+    if from == to {
+        return Ok(());
+    }
+    let from_abs = resolve_in_formation(&formation, &from)?;
+    let to_abs = resolve_in_formation(&formation, &to)?;
+    if to_abs.exists() {
+        return Err(AppError::other(format!("a note already exists at {to}")));
+    }
+    if let Some(parent) = to_abs.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    watcher.mark_self_write(&from);
+    watcher.mark_self_write(&to);
+    std::fs::rename(&from_abs, &to_abs)
+        .map_err(|e| AppError::other(format!("rename {from} -> {to}: {e}")))?;
+
+    let store = memory
+        .get_or_init(&formation.join(APP_DIR).join("memory"))
+        .await?;
+    store.remove_note_index(&from).await.ok();
+    store.repoint_note_path(&from, &to).await.ok();
+    indexer.request(to);
     Ok(())
 }
 

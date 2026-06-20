@@ -100,6 +100,73 @@ pub async fn complete_task(
     Ok(())
 }
 
+/// Change a task's due date/time, or clear it. `due` is an RFC3339 timestamp
+/// (e.g. `2026-06-25T14:30:00Z`), or `None` to remove the due date entirely.
+///
+/// Updates both stores so the in-app surface and an external Obsidian edit stay
+/// consistent: the canonical `Tasks.md` checklist line carries the **date** in
+/// its `📅` token (Obsidian-Tasks dates are date-granularity), and the `task`
+/// table row carries the **full datetime** on `due`/`remind_at` so the scheduler
+/// fires at the chosen time. `notified` resets so a re-armed reminder fires
+/// again. The chosen time-of-day lives on `remind_at`, which a later
+/// `reconcile_tasks_md` preserves even though the markdown only round-trips the
+/// date.
+#[tauri::command]
+pub async fn reschedule_task(
+    id: String,
+    due: Option<String>,
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+    watcher: State<'_, FormationWatcher>,
+) -> AppResult<()> {
+    let root = formation.require()?;
+    let store = memory
+        .get_or_init(&root.join(APP_DIR).join("memory"))
+        .await?;
+
+    // Parse the requested due; an absent/blank value clears the date.
+    let new_due: Option<chrono::DateTime<chrono::Utc>> = match due {
+        Some(s) if !s.trim().is_empty() => Some(
+            chrono::DateTime::parse_from_rfc3339(s.trim())
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|e| AppError::other(format!("parse due time: {e}")))?,
+        ),
+        _ => None,
+    };
+
+    let Some(mut task) = tasks::get_task(store, &id).await? else {
+        return Err(AppError::other(format!("no such task: {id}")));
+    };
+
+    // Canonical store: update the checklist line's `📅` date (date-granularity).
+    let key = task_key(&id);
+    let tasks_path = root.join(TASKS_NOTE_PATH);
+    if let Ok(content) = std::fs::read_to_string(&tasks_path) {
+        let new_date = new_due.map(|d| d.date_naive());
+        let mut lines = parse_tasks_section(&content);
+        let mut changed = false;
+        for line in &mut lines {
+            if line.id.as_deref() == Some(key.as_str()) && line.due != new_date {
+                line.due = new_date;
+                changed = true;
+            }
+        }
+        if changed {
+            let new_content = render_tasks_note(Some(&content), &lines);
+            watcher.mark_self_write(TASKS_NOTE_PATH);
+            atomic_write(&tasks_path, new_content.as_bytes())?;
+        }
+    }
+
+    // Table mirror: due + remind_at carry the full datetime, and notified resets
+    // so the scheduler re-fires at the new time.
+    task.due = new_due;
+    task.remind_at = new_due;
+    task.notified = false;
+    tasks::put_task(store, &task).await?;
+    Ok(())
+}
+
 /// Snooze a task's reminder to `until` (an RFC3339 timestamp). Table-only —
 /// `remind_at` is a scheduling field, not part of the markdown checklist —
 /// and re-arms `notified` so the scheduler fires it again at the new time.

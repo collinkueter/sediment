@@ -1006,6 +1006,37 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Forget a note: drop its embedding chunks and index-state row. Called when
+    /// a note is deleted or renamed away, so the path stops surfacing in search
+    /// and a future file at the same path is re-indexed from scratch.
+    pub async fn remove_note_index(&self, note_path: &str) -> AppResult<()> {
+        self.db
+            .query(
+                "DELETE note_chunk WHERE note_path = $p; \
+                 DELETE note_index_state WHERE note_path = $p;",
+            )
+            .bind(("p", note_path.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("remove note index: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("remove note index check: {e}")))?;
+        Ok(())
+    }
+
+    /// Re-point any entity whose `note_path` is `old` to `new` after a note
+    /// rename, so a People/Organization note keeps its graph link to the file.
+    pub async fn repoint_note_path(&self, old: &str, new: &str) -> AppResult<()> {
+        self.db
+            .query("UPDATE entity SET note_path = $new WHERE note_path = $old;")
+            .bind(("old", old.to_string()))
+            .bind(("new", new.to_string()))
+            .await
+            .map_err(|e| AppError::other(format!("repoint note path: {e}")))?
+            .check()
+            .map_err(|e| AppError::other(format!("repoint note path check: {e}")))?;
+        Ok(())
+    }
+
     /// The file mtime (unix seconds) at which `note_path` was last indexed,
     /// or `None` if it has never been indexed.
     pub async fn indexed_mtime(&self, note_path: &str) -> AppResult<Option<i64>> {
