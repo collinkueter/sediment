@@ -401,6 +401,91 @@ pub fn replace_transcript(note_abs: &Path, segments: &[(i64, String, String)]) -
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Speaker suggestions (ADR-0017 §6) — borderline Voiceprint matches the panel
+// offers for confirmation. Stored as a single trailing HTML comment so they
+// persist with the note yet stay invisible in the rendered view.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Opening marker of the machine-managed speaker-suggestion block.
+const SUGGESTIONS_BEGIN: &str = "<!-- sediment:speakers";
+/// Closing marker (a bare HTML-comment close).
+const SUGGESTIONS_END: &str = "-->";
+
+/// Replace the note's speaker-suggestion block with `suggestions` `(unknown_label,
+/// suggested_name)` — a borderline match the user should confirm rather than have
+/// asserted (ADR-0017 §6). The block is an HTML comment at the very end of the note,
+/// so it never disturbs section appends and stays invisible in the rendered view; the
+/// post-meeting speaker panel parses it to show "possibly <name>". An empty list
+/// removes the block. Stale entries (a label since renamed) are harmless — the panel
+/// only surfaces a suggestion whose label is still an unknown speaker.
+// Written only on the `local-asr` second pass; unused in a headless build.
+#[allow(dead_code)]
+pub fn set_speaker_suggestions(
+    note_abs: &Path,
+    suggestions: &[(String, String)],
+) -> AppResult<()> {
+    let content = read(note_abs)?;
+    let mut updated = strip_suggestions_block(&content).trim_end().to_string();
+    if !suggestions.is_empty() {
+        updated.push_str("\n\n");
+        updated.push_str(SUGGESTIONS_BEGIN);
+        updated.push('\n');
+        for (label, name) in suggestions {
+            let label = label.trim();
+            let name = name.trim();
+            if !label.is_empty() && !name.is_empty() {
+                updated.push_str(&format!("{label} => {name}\n"));
+            }
+        }
+        updated.push_str(SUGGESTIONS_END);
+    }
+    updated.push('\n');
+    if updated != content {
+        atomic_write(note_abs, updated.as_bytes())?;
+    }
+    Ok(())
+}
+
+/// Read the note's speaker suggestions as `(unknown_label, suggested_name)` pairs
+/// (empty when there is no block). The post-meeting distillation reads these so the
+/// Agent can ask about a borderline voice by name in its reply (ADR-0017 §6 Part B).
+// Read only on the `local-asr` distillation path; unused in a headless build.
+#[allow(dead_code)]
+pub fn read_speaker_suggestions(note_abs: &Path) -> AppResult<Vec<(String, String)>> {
+    let content = read(note_abs)?;
+    let Some(start) = content.find(SUGGESTIONS_BEGIN) else {
+        return Ok(Vec::new());
+    };
+    let body_start = start + SUGGESTIONS_BEGIN.len();
+    let Some(rel_end) = content[body_start..].find(SUGGESTIONS_END) else {
+        return Ok(Vec::new());
+    };
+    let block = &content[body_start..body_start + rel_end];
+    let mut out = Vec::new();
+    for line in block.lines() {
+        if let Some((label, name)) = line.split_once("=>") {
+            let (label, name) = (label.trim(), name.trim());
+            if !label.is_empty() && !name.is_empty() {
+                out.push((label.to_string(), name.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Remove an existing suggestion block from `content` (a no-op when there is none).
+fn strip_suggestions_block(content: &str) -> String {
+    let Some(start) = content.find(SUGGESTIONS_BEGIN) else {
+        return content.to_string();
+    };
+    let Some(rel_end) = content[start..].find(SUGGESTIONS_END) else {
+        return content.to_string();
+    };
+    let end = start + rel_end + SUGGESTIONS_END.len();
+    format!("{}{}", &content[..start], &content[end..])
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Rename
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -666,6 +751,34 @@ mod tests {
         let abs2 = ensure_meeting_note(&root, &rel, "Q3 Planning", started()).unwrap();
         assert_eq!(abs, abs2);
         assert_eq!(std::fs::read_to_string(&abs2).unwrap(), "# edited\n");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn speaker_suggestions_round_trip_and_clear() {
+        let root = tempdir();
+        let rel = meeting_note_relative_path(started(), "Suggest");
+        let abs = ensure_meeting_note(&root, &rel, "Suggest", started()).unwrap();
+        append_transcript_segment(&abs, 1_000, "Unknown speaker 2", "From finance…").unwrap();
+
+        set_speaker_suggestions(&abs, &[("Unknown speaker 2".into(), "Dana Kim".into())]).unwrap();
+        let body = std::fs::read_to_string(&abs).unwrap();
+        assert!(body.contains("<!-- sediment:speakers"));
+        assert!(body.contains("Unknown speaker 2 => Dana Kim"));
+        // The block sits after the sections and the transcript is untouched.
+        assert!(body.find("## Transcript").unwrap() < body.find("sediment:speakers").unwrap());
+        assert!(body.contains("**Unknown speaker 2:** From finance…"));
+
+        // Rewriting replaces (not stacks) the block; emptying removes it entirely.
+        set_speaker_suggestions(&abs, &[("Unknown speaker 3".into(), "Marcus Lee".into())]).unwrap();
+        let body = std::fs::read_to_string(&abs).unwrap();
+        assert_eq!(body.matches("sediment:speakers").count(), 1);
+        assert!(body.contains("Unknown speaker 3 => Marcus Lee"));
+        assert!(!body.contains("Dana Kim"));
+
+        set_speaker_suggestions(&abs, &[]).unwrap();
+        let body = std::fs::read_to_string(&abs).unwrap();
+        assert!(!body.contains("sediment:speakers"));
         std::fs::remove_dir_all(root).ok();
     }
 

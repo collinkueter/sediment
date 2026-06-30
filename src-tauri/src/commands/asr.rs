@@ -26,22 +26,29 @@ pub struct AsrReadiness {
     pub speaker_present: bool,
     /// The offline high-accuracy second-pass model (ADR-0017 §2 two-pass).
     pub offline_present: bool,
+    /// The pyannote speaker-segmentation model for high-accuracy diarization
+    /// (ADR-0017 §A2). Part of the standard setup; the second pass falls back to
+    /// greedy diarization without it, so its absence degrades quality, not function.
+    pub diarization_present: bool,
     pub all_present: bool,
     /// Human-readable size hint for the setup screen.
     pub size_hint: String,
 }
 
-/// Report whether the ASR, speaker, and offline second-pass models are on disk.
+/// Report whether the ASR, speaker, offline second-pass, and diarization models are
+/// on disk.
 #[tauri::command]
 pub async fn check_asr_readiness() -> AppResult<AsrReadiness> {
     let asr = asr_model::asr_present();
     let speaker = asr_model::speaker_present();
     let offline = asr_model::offline_present();
+    let diarization = asr_model::segmentation_present();
     Ok(AsrReadiness {
         asr_present: asr,
         speaker_present: speaker,
         offline_present: offline,
-        all_present: asr && speaker && offline,
+        diarization_present: diarization,
+        all_present: asr && speaker && offline && diarization,
         size_hint: "~1 GB".into(),
     })
 }
@@ -162,6 +169,25 @@ pub async fn download_asr_model(on_progress: Channel<ModelProgress>) -> AppResul
         asr_model::promote_offline_staging().await?;
     }
 
+    // Pyannote speaker-segmentation model (one file) → staging → validate → promote
+    // (ADR-0017 §A2). Downloaded after the speaker model, which its validation loads.
+    if !asr_model::segmentation_present() {
+        let segmentation_staging = asr_model::segmentation_staging_dir();
+        if segmentation_staging.exists() {
+            std::fs::remove_dir_all(&segmentation_staging)
+                .map_err(|e| AppError::other(format!("clear segmentation staging: {e}")))?;
+        }
+        download_file(
+            &client,
+            &asr_model::segmentation_url(),
+            &segmentation_staging.join(asr_model::SEGMENTATION_FILE),
+            asr_model::SEGMENTATION_FILE,
+            &on_progress,
+        )
+        .await?;
+        asr_model::promote_segmentation_staging().await?;
+    }
+
     let _ = on_progress.send(ModelProgress {
         model: asr_model::ASR_MODEL_NAME.into(),
         phase: "complete".into(),
@@ -192,7 +218,12 @@ pub async fn import_asr_model(source_dir: String) -> AppResult<()> {
         .iter()
         .all(|f| src.join(f).is_file())
     {
-        asr_model::import_offline_from_dir(src).await?;
+        asr_model::import_offline_from_dir(src.clone()).await?;
+    }
+    // The pyannote segmentation model too — imported after the speaker model, which
+    // its validation loads (ADR-0017 §A2).
+    if src.join(asr_model::SEGMENTATION_FILE).is_file() {
+        asr_model::import_segmentation_from_dir(src).await?;
     }
     Ok(())
 }

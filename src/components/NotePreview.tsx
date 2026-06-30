@@ -101,7 +101,18 @@ function resolveWikiTarget(target: string, notes: { relative_path: string }[]): 
   return byBase?.relative_path ?? null;
 }
 
-export function NotePreview({ source, notePath }: { source: string; notePath?: string }) {
+export function NotePreview({
+  source,
+  notePath,
+  onSpeakerClick,
+}: {
+  source: string;
+  notePath?: string;
+  /** When set (Meeting notes), a transcript speaker label `**Name:**` renders as a
+   *  button that calls this — letting you fix a misattribution right where you see
+   *  it, jumping to that speaker's card in the panel (ADR-0017 §6). */
+  onSpeakerClick?: (name: string) => void;
+}) {
   const notes = useFormationStore((s) => s.notes);
   const openNote = useFormationStore((s) => s.openNote);
   const refreshNotes = useFormationStore((s) => s.refreshNotes);
@@ -223,6 +234,31 @@ export function NotePreview({ source, notePath }: { source: string; notePath?: s
                     {children}
                   </a>
                 );
+              },
+              // Transcript speaker labels (`**Name:**`) become click-to-fix buttons
+              // in a Meeting note. Scoped by `onSpeakerClick` (only passed for
+              // meetings) and the trailing colon, so ordinary bold stays bold.
+              strong({ children }) {
+                const text = Array.isArray(children)
+                  ? children.join("")
+                  : typeof children === "string"
+                    ? children
+                    : "";
+                const trimmed = text.trim();
+                if (onSpeakerClick && /\S:$/.test(trimmed)) {
+                  const name = trimmed.replace(/:$/, "").trim();
+                  return (
+                    <button
+                      type="button"
+                      title={`Fix speaker: ${name}`}
+                      onClick={() => onSpeakerClick(name)}
+                      className="cursor-pointer border-0 bg-transparent p-0 font-semibold text-ink underline decoration-faint decoration-dotted underline-offset-2 hover:decoration-accent"
+                    >
+                      {children}
+                    </button>
+                  );
+                }
+                return <strong>{children}</strong>;
               },
               // GFM task-list checkboxes — render but disabled in V1 (flipping a
               // box requires editing the underlying file; the agent owns that).

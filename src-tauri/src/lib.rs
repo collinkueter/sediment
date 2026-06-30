@@ -207,6 +207,8 @@ pub fn run() {
             commands::meeting::assign_meeting_speaker,
             commands::meeting::meeting_voice_clips,
             commands::meeting::read_voice_clip,
+            commands::meeting::is_self_voice_enrolled,
+            commands::meeting::enroll_self_voice,
             commands::audit::list_audit,
             commands::audit::undo_turn,
             commands::audit::undo_fact,

@@ -32,6 +32,8 @@ pub mod pre_pass;
 pub mod reminders;
 pub mod self_model;
 pub mod session;
+#[cfg(feature = "local-asr")]
+pub mod speaker_diarization;
 pub mod task_note;
 pub mod tasks;
 pub mod transcription;

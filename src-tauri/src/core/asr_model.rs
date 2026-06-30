@@ -46,6 +46,11 @@ pub fn speaker_dir() -> PathBuf {
     models_root().join("speaker-embedding")
 }
 
+/// Directory holding the pyannote segmentation model file (ADR-0017 §A2).
+pub fn segmentation_dir() -> PathBuf {
+    models_root().join(SEGMENTATION_MODEL_NAME)
+}
+
 /// Directory holding the offline (second-pass) high-accuracy ASR model files.
 pub fn offline_dir() -> PathBuf {
     models_root().join(OFFLINE_MODEL_NAME)
@@ -61,6 +66,10 @@ fn speaker_staging() -> PathBuf {
 
 fn offline_staging() -> PathBuf {
     models_root().join(".staging-offline")
+}
+
+fn segmentation_staging() -> PathBuf {
+    models_root().join(".staging-segmentation")
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -113,6 +122,31 @@ pub fn speaker_url() -> String {
         .unwrap_or_else(|| SPEAKER_URL.to_string())
 }
 
+/// The **pyannote segmentation** model (ADR-0017 §A2): the *who-spoke-when* half of
+/// the high-accuracy offline diarization pipeline (`core::speaker_diarization`). A
+/// single ~6 MB ONNX file; it detects speaker turns (and overlap) far better than
+/// the streaming per-segment embedding clustering, then the existing WeSpeaker model
+/// names the resulting clusters. Used only by the second pass — the live path keeps
+/// the streaming `Diarizer`.
+pub const SEGMENTATION_MODEL_NAME: &str = "sherpa-onnx-pyannote-segmentation-3-0";
+
+/// The single file of the pyannote segmentation model.
+pub const SEGMENTATION_FILE: &str = "model.onnx";
+
+/// Full default URL for the segmentation model (one file on the sherpa-onnx
+/// maintainer's HuggingFace repo).
+pub const SEGMENTATION_URL: &str =
+    "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx";
+
+/// `SEDIMENT_SEGMENTATION_MODEL_URL` overrides [`SEGMENTATION_URL`].
+pub fn segmentation_url() -> String {
+    std::env::var("SEDIMENT_SEGMENTATION_MODEL_URL")
+        .ok()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| SEGMENTATION_URL.to_string())
+}
+
 /// The offline **second-pass** model (ADR-0017 §2 two-pass): a non-streaming,
 /// high-accuracy recognizer run once at stop. Default is the NeMo Parakeet-TDT
 /// transducer (English, int8 — compact, with word timestamps). The exact release /
@@ -161,6 +195,24 @@ pub fn speaker_present() -> bool {
 pub fn offline_present() -> bool {
     let dir = offline_dir();
     OFFLINE_FILES.iter().all(|f| dir.join(f).is_file())
+}
+
+/// True when the pyannote segmentation model is present on disk (ADR-0017 §A2).
+pub fn segmentation_present() -> bool {
+    segmentation_dir().join(SEGMENTATION_FILE).is_file()
+}
+
+/// Absolute path of the installed segmentation model, or an actionable error.
+pub fn segmentation_model_path() -> AppResult<String> {
+    let path = segmentation_dir().join(SEGMENTATION_FILE);
+    if path.is_file() {
+        Ok(path.to_string_lossy().into_owned())
+    } else {
+        Err(AppError::other(
+            "On-device speaker-segmentation model missing. Run ASR model setup to \
+             download or import the diarization model.",
+        ))
+    }
 }
 
 /// Resolve the installed offline files into [`OfflineModelPaths`] for
@@ -269,6 +321,16 @@ fn validate_speaker_dir(dir: &Path) -> AppResult<()> {
         })
 }
 
+/// Validate the segmentation model in `dir` by building an `OfflineDiarizer` from it
+/// plus the installed speaker-embedding model (the diarization pipeline needs both).
+/// Requires the speaker model to be installed first — the download/import flows order
+/// it that way.
+fn validate_segmentation_dir(dir: &Path) -> AppResult<()> {
+    let segmentation = dir.join(SEGMENTATION_FILE).to_string_lossy().into_owned();
+    let embedding = speaker_model_path()?;
+    crate::core::speaker_diarization::OfflineDiarizer::new(&segmentation, &embedding).map(|_| ())
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Promote (atomic install) + import-from-folder, mirroring bundled_embed
 // ──────────────────────────────────────────────────────────────────────────
@@ -314,6 +376,30 @@ pub async fn promote_offline_staging() -> AppResult<()> {
         .await
         .map_err(|e| AppError::other(format!("validate offline model join: {e}")))??;
     promote(&staging, &offline_dir())
+}
+
+/// Validate the staged segmentation model and atomically promote it to
+/// [`segmentation_dir`]. The speaker model must already be installed (validation
+/// loads the full diarization pipeline).
+pub async fn promote_segmentation_staging() -> AppResult<()> {
+    let staging = segmentation_staging();
+    let s = staging.clone();
+    tokio::task::spawn_blocking(move || validate_segmentation_dir(&s))
+        .await
+        .map_err(|e| AppError::other(format!("validate segmentation model join: {e}")))??;
+    promote(&staging, &segmentation_dir())
+}
+
+/// Install the segmentation model from a user-chosen folder (air-gapped path).
+pub async fn import_segmentation_from_dir(src: PathBuf) -> AppResult<()> {
+    let staging = segmentation_staging();
+    let staging_for_copy = staging.clone();
+    tokio::task::spawn_blocking(move || -> AppResult<()> {
+        stage_copy(&src, &staging_for_copy, &[SEGMENTATION_FILE])
+    })
+    .await
+    .map_err(|e| AppError::other(format!("import segmentation model join: {e}")))??;
+    promote_segmentation_staging().await
 }
 
 /// Install the ASR model from a user-chosen folder (offline path). The folder must
@@ -408,4 +494,9 @@ pub fn speaker_staging_dir() -> PathBuf {
 /// The staging dir for the offline-model download.
 pub fn offline_staging_dir() -> PathBuf {
     offline_staging()
+}
+
+/// The staging dir for the segmentation-model download.
+pub fn segmentation_staging_dir() -> PathBuf {
+    segmentation_staging()
 }

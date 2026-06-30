@@ -5,43 +5,136 @@ import { tauri } from "@/lib/tauri";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * Post-meeting speaker panel (ADR-0017 §6), shown atop a Meeting note.
+ * Post-meeting speaker reconciliation (ADR-0017 §6), shown atop a Meeting note.
  *
- * Reviewing a finished meeting, you reconcile who spoke: each distinct speaker is a
- * chip; clicking one opens an assign popover offering the people you already know
- * (existing `People/` notes) plus a free-text field. Assigning relabels the
- * transcript + attendees in the note and gives that person their own file — so
- * "Unknown speaker 2" becomes `[[Sarah Chen]]`, linked to `People/Sarah Chen.md`.
+ * Reviewing a finished meeting, you reconcile who spoke. The redesign (speaker-UX
+ * rethink) treats this as *attribution*, not labelling: every decision sits next to
+ * its evidence. Each unidentified voice is a card with its **signature line** (the
+ * longest thing it said), how often it spoke, a ▶ to hear it, and inline naming —
+ * so "who was this?" is answered from the words and the voice, not a bare number.
+ * Already-named speakers collapse to a quiet row; an all-named meeting collapses to
+ * a one-line summary.
  */
 
 function personName(path: string): string {
   return path.replace(/^People\//, "").replace(/\.md$/i, "");
 }
 
+type Profile = {
+  /** The transcript label — the identity we rename *from* (e.g. "Unknown speaker 2"). */
+  name: string;
+  /** How many transcript segments this voice has. */
+  count: number;
+  /** Offset label of the voice's first segment ("03:12"). */
+  firstOffset: string | null;
+  /** The voice's longest utterance — the memorable hook for "who was this?". */
+  signature: string | null;
+};
+
+/** Parse the note's `<!-- sediment:speakers … -->` block into label → suggested
+ *  name. The second pass writes a borderline Voiceprint match here instead of
+ *  asserting it, so the panel can offer "probably <name>" for confirmation
+ *  (confirm-don't-assert, ADR-0017 §6). Invisible in the rendered note. */
+function suggestionsFromNote(md: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const body = md.match(/<!--\s*sediment:speakers\s*([\s\S]*?)-->/)?.[1];
+  if (!body) return out;
+  for (const raw of body.split(/\r?\n/)) {
+    const m = raw.match(/^(.+?)\s*=>\s*(.+?)\s*$/);
+    if (m?.[1] && m[2]) out.set(m[1].trim(), m[2].trim());
+  }
+  return out;
+}
+
+/** A muted but *distinct* tone for an unidentified voice, so three unknowns don't
+ *  read as one grey blur. Hashes the label; named voices keep their real tone. */
+const PROVISIONAL_TONES = ["var(--gold)", "var(--sage)", "var(--accent)"] as const;
+function provisionalTone(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return PROVISIONAL_TONES[h % PROVISIONAL_TONES.length] as string;
+}
+
+/** Parse `## Transcript` bullets (`` - `[mm:ss]` **Speaker:** text ``) into
+ *  per-speaker profiles, unidentified voices first (where the work is), then by
+ *  first appearance. Evidence is derived from the note itself — no extra command. */
+function profilesFromNote(md: string, attendees: string[]): Profile[] {
+  const line = /^-\s+`\[([^\]]+)\]`\s+\*\*(.+?):\*\*\s+(.*)$/;
+  const acc = new Map<string, { count: number; firstOffset: string; signature: string }>();
+  let inTranscript = false;
+  for (const raw of md.split(/\r?\n/)) {
+    if (/^##\s/.test(raw)) {
+      inTranscript = /^##\s+Transcript\s*$/.test(raw);
+      continue;
+    }
+    if (!inTranscript) continue;
+    const m = line.exec(raw.trim());
+    if (!m) continue;
+    const [, offset, speaker, text] = m as unknown as [string, string, string, string];
+    const who = speaker.trim();
+    const prev = acc.get(who);
+    if (!prev) {
+      acc.set(who, { count: 1, firstOffset: offset, signature: text });
+    } else {
+      prev.count += 1;
+      if (text.length > prev.signature.length) prev.signature = text;
+    }
+  }
+  // Union with the attendee list so a speaker with no parsed line still appears.
+  const names = new Set<string>([...acc.keys(), ...attendees]);
+  const profiles: Profile[] = [...names].map((name) => {
+    const e = acc.get(name);
+    return {
+      name,
+      count: e?.count ?? 0,
+      firstOffset: e?.firstOffset ?? null,
+      signature: e?.signature ?? null,
+    };
+  });
+  const offsetVal = (p: Profile) =>
+    p.firstOffset
+      ? p.firstOffset.split(":").reduce((a, b) => a * 60 + Number(b), 0)
+      : Number.MAX_SAFE_INTEGER;
+  return profiles.sort((a, b) => {
+    const au = isUnknown(a.name) ? 0 : 1;
+    const bu = isUnknown(b.name) ? 0 : 1;
+    if (au !== bu) return au - bu; // unidentified voices first — that's the work
+    return offsetVal(a) - offsetVal(b);
+  });
+}
+
 export function MeetingSpeakers({
   notePath,
   onReload,
+  focusSpeaker,
 }: {
   notePath: string;
   onReload: () => Promise<void> | void;
+  /** A click on a transcript speaker label (NoteViewer) — expand the panel, open
+   *  that speaker's card for renaming, and scroll it into view. The nonce lets the
+   *  same name re-trigger on a repeat click. */
+  focusSpeaker?: { name: string; nonce: number } | null;
 }) {
   const notes = useFormationStore((s) => s.notes);
-  const [speakers, setSpeakers] = useState<string[]>([]);
-  // Names with a playable voice clip — drives whether a chip shows a ▶ (never show a
-  // play control that would do nothing).
+  const currentNotePath = useFormationStore((s) => s.currentNotePath);
+  const currentNoteContent = useFormationStore((s) => s.currentNoteContent);
+
+  const [attendees, setAttendees] = useState<string[]>([]);
+  // Names with a playable voice clip — drives whether a card shows a ▶.
   const [clipNames, setClipNames] = useState<string[]>([]);
-  const [assigning, setAssigning] = useState<{ from: string; x: number; y: number } | null>(null);
+  // The card currently being named/reassigned (inline editor open), and its draft.
+  const [editing, setEditing] = useState<string | null>(null);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // When every speaker is already named there's no reconciliation work, so the
-  // band collapses to a quiet one-line summary; clicking it reveals the chips.
+  // All named → collapse to a quiet summary; clicking it reveals the cards.
   const [expanded, setExpanded] = useState(false);
 
-  // Voice-clip playback (ADR-0017 §6): one reused <audio> element and a cache of
-  // blob URLs (revoked on unmount) so a chip's ▶ plays the person's sample.
+  // Voice-clip playback: one reused <audio> and a cache of blob URLs (revoked on
+  // unmount) so a card's ▶ plays the person's sample.
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clipCache = useRef<Map<string, string>>(new Map());
+  const [playing, setPlaying] = useState<string | null>(null);
   useEffect(() => {
     const cache = clipCache.current;
     return () => {
@@ -62,20 +155,24 @@ export function MeetingSpeakers({
         clipCache.current.set(name, url);
       }
       if (!audioRef.current) audioRef.current = new Audio();
-      audioRef.current.src = url;
-      await audioRef.current.play();
+      const el = audioRef.current;
+      el.onended = () => setPlaying(null);
+      el.src = url;
+      setPlaying(name);
+      await el.play();
       setError(null);
     } catch (err) {
       console.error("play voice clip failed:", err);
       setError("Couldn't play that clip.");
+      setPlaying(null);
     }
   }, []);
 
   const refresh = useCallback(() => {
     tauri
       .meetingSpeakers(notePath)
-      .then(setSpeakers)
-      .catch(() => setSpeakers([]));
+      .then(setAttendees)
+      .catch(() => setAttendees([]));
     tauri
       .meetingVoiceClips(notePath)
       .then(setClipNames)
@@ -85,6 +182,42 @@ export function MeetingSpeakers({
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Transcript markdown for this note. The panel always sits atop the open note, so
+  // the store's content is it — and updates live when the second pass refines it.
+  const [fallbackContent, setFallbackContent] = useState("");
+  const noteContent = currentNotePath === notePath ? currentNoteContent : fallbackContent;
+  useEffect(() => {
+    if (currentNotePath === notePath) return;
+    tauri
+      .readNote(notePath)
+      .then(setFallbackContent)
+      .catch(() => setFallbackContent(""));
+  }, [notePath, currentNotePath]);
+
+  const profiles = useMemo(
+    () => profilesFromNote(noteContent, attendees),
+    [noteContent, attendees],
+  );
+  const suggestions = useMemo(() => suggestionsFromNote(noteContent), [noteContent]);
+
+  // Focus a card when its speaker is clicked in the transcript (NoteViewer). Runs
+  // once per click (tracked by nonce) so a later note reload doesn't reopen it.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const handledNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focusSpeaker || focusSpeaker.nonce === handledNonce.current) return;
+    handledNonce.current = focusSpeaker.nonce;
+    const { name } = focusSpeaker;
+    if (!profiles.some((p) => p.name === name)) return;
+    setExpanded(true);
+    setEditing(name);
+    setError(null);
+    requestAnimationFrame(() => {
+      const sel = `[data-speaker="${name.replace(/["\\]/g, "\\$&")}"]`;
+      containerRef.current?.querySelector(sel)?.scrollIntoView({ block: "nearest" });
+    });
+  }, [focusSpeaker, profiles]);
 
   // People you already know — the quick-pick targets, minus whoever's being named.
   const people = useMemo(
@@ -97,20 +230,18 @@ export function MeetingSpeakers({
   );
 
   const assign = useCallback(
-    async (to: string) => {
-      if (!assigning) return;
-      const from = assigning.from;
+    async (from: string, to: string) => {
       const next = to.trim();
-      setAssigning(null);
+      setEditing(null);
       setValue("");
       if (!next || next === from) return;
       setBusy(true);
       setError(null);
       try {
         const res = await tauri.assignMeetingSpeaker(notePath, from, next);
-        setSpeakers(res.attendees);
+        setAttendees(res.attendees);
         await onReload();
-        refresh(); // re-sync clip availability (a renamed speaker may now carry one)
+        refresh();
       } catch (err) {
         console.error("assign speaker failed:", err);
         setError(typeof err === "string" ? err : "Couldn't assign that speaker.");
@@ -118,16 +249,14 @@ export function MeetingSpeakers({
         setBusy(false);
       }
     },
-    [assigning, notePath, onReload, refresh],
+    [notePath, onReload, refresh],
   );
 
-  if (speakers.length === 0) return null;
+  if (profiles.length === 0) return null;
 
-  const unknown = speakers.filter(isUnknown).length;
-  const targets = assigning ? people.filter((p) => p !== assigning.from) : [];
+  const unknown = profiles.filter((p) => isUnknown(p.name)).length;
 
-  // All named and not yet expanded: collapse to a quiet summary. The full
-  // interactive band is reserved for when there's naming work (unknown > 0).
+  // All named and not yet expanded: collapse to a quiet summary.
   if (unknown === 0 && !expanded) {
     return (
       <div className="border-line border-b bg-surface px-4 py-2">
@@ -141,7 +270,7 @@ export function MeetingSpeakers({
           >
             <Icon.Mic className="h-3.5 w-3.5 text-faint" />
             <span>
-              {speakers.length} {speakers.length === 1 ? "speaker" : "speakers"} · all assigned
+              {profiles.length} {profiles.length === 1 ? "speaker" : "speakers"} · all named
             </span>
             <Icon.ChevronRight className="h-3 w-3 text-faint transition-transform group-hover:translate-x-0.5" />
           </button>
@@ -151,135 +280,203 @@ export function MeetingSpeakers({
   }
 
   return (
-    <div className="border-line border-b bg-surface px-4 py-2">
-      <div className="mx-auto flex max-w-[42rem] flex-wrap items-center gap-2">
-        {unknown === 0 ? (
-          <button
-            type="button"
-            onClick={() => setExpanded(false)}
-            aria-label="Hide meeting speakers"
-            aria-expanded={true}
-            className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft transition-colors hover:text-ink"
-          >
-            <Icon.Mic className="h-3.5 w-3.5 text-muted" />
-            Speakers
-            <Icon.ChevronDown className="h-3 w-3 text-faint" />
-          </button>
-        ) : (
-          <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
+    <div ref={containerRef} className="border-line border-b bg-surface px-4 py-3">
+      <div className="mx-auto flex max-w-[42rem] flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
             <Icon.Mic className="h-3.5 w-3.5 text-muted" />
             Speakers
           </span>
-        )}
+          {unknown > 0 ? (
+            <span className="text-[11px] text-muted">
+              {unknown} {unknown === 1 ? "voice" : "voices"} to name
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              aria-label="Hide meeting speakers"
+              className="text-[11px] text-muted hover:text-ink-soft"
+            >
+              Hide
+            </button>
+          )}
+        </div>
 
-        {speakers.map((name) => {
-          const unk = isUnknown(name);
+        {error && <span className="text-[11px] text-danger">{error}</span>}
+
+        {profiles.map((p) => {
+          const unk = isUnknown(p.name);
+          const tone = unk ? provisionalTone(p.name) : speakerTone(p.name);
+          const hasClip = clipNames.includes(p.name);
+          const isEditing = editing === p.name;
+          const targets = people.filter((n) => n !== p.name);
+          // A borderline voiceprint match the second pass recorded but didn't assert.
+          const suggested = unk ? suggestions.get(p.name) : undefined;
           return (
-            <span key={name} className="inline-flex items-center gap-1">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={(e) => {
-                  const r = e.currentTarget.getBoundingClientRect();
-                  setValue("");
-                  setAssigning({ from: name, x: r.left, y: r.bottom + 6 });
-                }}
-                title={unk ? `Assign ${name} to a person` : `Reassign ${name}`}
-                className={[
-                  "group inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12.5px] shadow-sm transition-[border-color,transform] duration-150",
-                  "hover:-translate-y-px hover:border-accent disabled:opacity-50",
-                  unk ? "border-line-strong border-dashed bg-bg-sunk" : "border-line bg-raised",
-                ].join(" ")}
-              >
+            <div
+              key={p.name}
+              data-speaker={p.name}
+              className={[
+                "scroll-mt-2 rounded-xl border bg-raised px-3 py-2.5 shadow-sm transition-colors",
+                unk ? "border-dashed border-line-strong" : "border-line",
+              ].join(" ")}
+            >
+              <div className="flex items-center gap-2.5">
                 <span
-                  className="inline-grid h-[18px] w-[18px] flex-none place-items-center rounded-full text-[9px] font-bold text-white"
-                  style={{ background: speakerTone(name) }}
+                  className="inline-grid h-7 w-7 flex-none place-items-center rounded-full text-[9px] font-bold text-white"
+                  style={{ background: tone }}
                   aria-hidden
                 >
-                  {unk ? "?" : initials(name)}
+                  {unk ? "?" : initials(p.name)}
                 </span>
-                <span className={unk ? "text-muted" : "text-ink"}>{name}</span>
-                <Icon.Pencil className="h-3 w-3 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
-              </button>
-              {/* Hear this person's voice — only when a clip actually exists, so the
-                  ▶ is never a control that does nothing (ADR-0017 §6). */}
-              {!unk && clipNames.includes(name) && (
+                <div className="min-w-0 flex-1">
+                  <span className={unk ? "text-[13px] text-ink-soft" : "text-[13px] text-ink"}>
+                    {unk ? "Unidentified voice" : p.name}
+                  </span>
+                  <div className="text-[11px] text-muted">
+                    {p.count > 0
+                      ? `spoke ${p.count} ${p.count === 1 ? "time" : "times"}${p.firstOffset ? ` · from ${p.firstOffset}` : ""}`
+                      : "no transcript lines"}
+                  </div>
+                </div>
+                {hasClip && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void playClip(p.name)}
+                    title="Hear this voice"
+                    aria-label="Hear this voice"
+                    className="inline-flex flex-none items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-1 text-[11px] text-muted shadow-sm transition-colors hover:border-accent hover:text-accent-ink disabled:opacity-50"
+                  >
+                    <Icon.Play className="h-3 w-3" />
+                    {playing === p.name ? "playing" : "hear"}
+                  </button>
+                )}
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => void playClip(name)}
-                  title={`Hear ${name}'s voice`}
-                  aria-label={`Hear ${name}'s voice`}
-                  className="grid h-[26px] w-[26px] flex-none place-items-center rounded-full border border-line bg-raised text-muted shadow-sm transition-colors hover:border-accent hover:text-accent-ink disabled:opacity-50"
+                  onClick={() => {
+                    setValue("");
+                    setError(null);
+                    setEditing(isEditing ? null : p.name);
+                  }}
+                  className={[
+                    "inline-flex flex-none items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] shadow-sm transition-colors disabled:opacity-50",
+                    unk
+                      ? "border-accent bg-accent-tint text-accent-ink"
+                      : "border-line bg-surface text-muted hover:border-accent hover:text-accent-ink",
+                  ].join(" ")}
                 >
-                  <Icon.Play className="h-3 w-3" />
+                  {unk ? (
+                    "Name"
+                  ) : (
+                    <>
+                      <Icon.Pencil className="h-3 w-3" />
+                      Reassign
+                    </>
+                  )}
                 </button>
-              )}
-            </span>
-          );
-        })}
+              </div>
 
-        {unknown > 0 && !error && <span className="text-[11px] text-muted">{unknown} to name</span>}
-        {error && <span className="truncate text-[11px] text-danger">{error}</span>}
-
-        {/* Assign popover */}
-        {assigning && (
-          <>
-            <button
-              type="button"
-              aria-label="Close"
-              className="fixed inset-0 z-40 cursor-default"
-              onClick={() => setAssigning(null)}
-            />
-            <div
-              className="fixed z-50 w-64 rounded-lg border border-line-strong bg-raised p-3 shadow-2xl"
-              style={{
-                left: Math.min(assigning.x, window.innerWidth - 268),
-                top: Math.min(assigning.y, window.innerHeight - 200),
-              }}
-            >
-              <p className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-muted">
-                Assign {assigning.from} to…
-              </p>
-              {targets.length > 0 && (
-                <div className="mb-2 flex max-h-32 flex-wrap gap-1.5 overflow-y-auto">
-                  {targets.map((name) => (
-                    <button
-                      key={name}
-                      type="button"
-                      onClick={() => void assign(name)}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[12px] text-ink hover:border-accent"
-                    >
-                      <span
-                        className="inline-grid h-[16px] w-[16px] place-items-center rounded-full text-[8px] font-bold text-white"
-                        style={{ background: speakerTone(name) }}
-                        aria-hidden
-                      >
-                        {initials(name)}
-                      </span>
-                      {name}
-                    </button>
-                  ))}
+              {/* Confidence cue: a borderline match, offered for one-tap confirmation
+                  rather than silently asserted (ADR-0017 §6). */}
+              {suggested && !isEditing && (
+                <div className="mt-2 flex items-center gap-2 rounded-lg border border-accent bg-accent-tint px-2.5 py-1.5">
+                  <Icon.Sparkle aria-hidden className="h-3.5 w-3.5 shrink-0 text-accent-ink" />
+                  <span className="min-w-0 flex-1 text-[12px] text-accent-ink">
+                    Probably <span className="font-semibold">{suggested}</span> · by voice match
+                  </span>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void assign(p.name, suggested)}
+                    className="shrink-0 rounded-full bg-accent px-2.5 py-1 text-[11px] font-medium text-white hover:bg-accent-ink disabled:opacity-50"
+                  >
+                    Confirm {suggested}
+                  </button>
                 </div>
               )}
-              <input
-                // biome-ignore lint/a11y/noAutofocus: a popover opened on intent should focus its field
-                autoFocus
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void assign(value);
-                  else if (e.key === "Escape") setAssigning(null);
-                }}
-                placeholder="New person…"
-                className="w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-[13px] text-ink placeholder:text-faint focus:border-accent-ink focus:outline-none"
-              />
-              <p className="mt-1.5 text-[10px] leading-snug text-faint">
-                Relabels the transcript and gives them a note in People.
-              </p>
+
+              {/* Evidence: the longest thing this voice said — the "who was this?" hook. */}
+              {p.signature && (
+                <p className="mt-2 border-line border-l-2 pl-2.5 font-serif text-[12.5px] leading-snug text-ink-soft">
+                  “{p.signature}”
+                </p>
+              )}
+
+              {/* Inline naming — "Self" first (it's you), then the people you know,
+                  or type a new one. */}
+              {isEditing && (
+                <div className="mt-2.5 border-line border-t pt-2.5">
+                  {(p.name !== "Self" || targets.length > 0) && (
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                      {p.name !== "Self" && (
+                        <button
+                          type="button"
+                          onClick={() => void assign(p.name, "Self")}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-accent bg-accent-tint px-2.5 py-1 text-[12px] text-accent-ink hover:border-accent"
+                        >
+                          <span
+                            className="inline-grid h-[16px] w-[16px] place-items-center rounded-full text-[8px] font-bold text-white"
+                            style={{ background: speakerTone("Self") }}
+                            aria-hidden
+                          >
+                            {initials("Self")}
+                          </span>
+                          That's me
+                        </button>
+                      )}
+                      {targets.map((name) => (
+                        <button
+                          key={name}
+                          type="button"
+                          onClick={() => void assign(p.name, name)}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[12px] text-ink hover:border-accent"
+                        >
+                          <span
+                            className="inline-grid h-[16px] w-[16px] place-items-center rounded-full text-[8px] font-bold text-white"
+                            style={{ background: speakerTone(name) }}
+                            aria-hidden
+                          >
+                            {initials(name)}
+                          </span>
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <input
+                      // biome-ignore lint/a11y/noAutofocus: an editor opened on intent should focus its field
+                      autoFocus
+                      value={value}
+                      onChange={(e) => setValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void assign(p.name, value);
+                        else if (e.key === "Escape") setEditing(null);
+                      }}
+                      placeholder="Name this person…"
+                      className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2.5 py-1.5 text-[13px] text-ink placeholder:text-faint focus:border-accent-ink focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void assign(p.name, value)}
+                      disabled={!value.trim()}
+                      className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:bg-accent-ink disabled:opacity-40"
+                    >
+                      Name
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-[10px] leading-snug text-faint">
+                    Relabels the transcript and gives them a note in People. Skip anyone — they stay
+                    unnamed, nothing breaks.
+                  </p>
+                </div>
+              )}
             </div>
-          </>
-        )}
+          );
+        })}
       </div>
     </div>
   );

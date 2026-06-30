@@ -2,7 +2,7 @@ import { Icon, initials } from "@/components/icons";
 import { isUnknown, speakerTone } from "@/lib/speakers";
 import { useFormationStore } from "@/lib/store";
 import { type SessionEvent, tauri } from "@/lib/tauri";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Meeting Session capture bar (ADR-0017 §4) — a *slim* recording strip.
@@ -37,8 +37,22 @@ function basename(path: string): string {
 
 export function MeetingSessionBar() {
   const openNote = useFormationStore((s) => s.openNote);
+  const notes = useFormationStore((s) => s.notes);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
+  // "Who's here" roster picked before recording (ADR-0017 §A2). Seeds the diarizer
+  // with only these voices so the people in the room are named from their first
+  // words. Entirely optional — Record never waits on it.
+  const [expected, setExpected] = useState<string[]>([]);
+  const [showRoster, setShowRoster] = useState(false);
+  const people = useMemo(
+    () =>
+      notes
+        .filter((n) => n.relative_path.startsWith("People/"))
+        .map((n) => n.relative_path.replace(/^People\//, "").replace(/\.md$/i, ""))
+        .sort((a, b) => a.localeCompare(b)),
+    [notes],
+  );
   const [notePath, setNotePath] = useState<string | null>(null);
   // Mirror of notePath read from event callbacks (which capture a stale closure),
   // so the distillation receipt is correlated to the meeting it belongs to.
@@ -169,7 +183,11 @@ export function MeetingSessionBar() {
     busy.current = true;
     setBarError(null);
     try {
-      const res = await tauri.sessionStart(title.trim() || "Meeting", onEvent);
+      const res = await tauri.sessionStart(
+        title.trim() || "Meeting",
+        onEvent,
+        expected.length ? expected : undefined,
+      );
       setSessionId(res.sessionId);
       setNotePath(res.notePath);
       notePathRef.current = res.notePath;
@@ -177,13 +195,14 @@ export function MeetingSessionBar() {
       setStartedAt(Date.now());
       setDistill(null);
       setFinishPhase(null);
+      setShowRoster(false);
     } catch (err) {
       console.error("session start failed:", err);
       setBarError("Couldn't start recording — check the mic permission, then retry.");
     } finally {
       busy.current = false;
     }
-  }, [title, onEvent]);
+  }, [title, onEvent, expected]);
 
   const stop = useCallback(async () => {
     if (!sessionId) return;
@@ -404,31 +423,92 @@ export function MeetingSessionBar() {
 
   // ── Idle: ready to record ─────────────────────────────────────────────────
   if (!sessionId) {
+    const toggleExpected = (name: string) =>
+      setExpected((prev) =>
+        prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+      );
     return (
       <>
-        <div className="flex items-center gap-3 border-b border-line bg-surface px-5 py-2.5">
-          <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
-            <Icon.Mic className="h-3.5 w-3.5 text-muted" />
-            Meeting
-          </span>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && void start()}
-            placeholder="Name this meeting, then record…"
-            className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-[13px] text-ink placeholder:text-faint hover:border-line focus:border-accent-ink focus:bg-surface focus:outline-none"
-          />
-          {barError && (
-            <span className="shrink-0 truncate text-[11px] text-danger">{barError}</span>
+        <div className="border-b border-line bg-surface px-5 py-2.5">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-ink-soft">
+              <Icon.Mic className="h-3.5 w-3.5 text-muted" />
+              Meeting
+            </span>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void start()}
+              placeholder="Name this meeting, then record…"
+              className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-[13px] text-ink placeholder:text-faint hover:border-line focus:border-accent-ink focus:bg-surface focus:outline-none"
+            />
+            {barError && (
+              <span className="shrink-0 truncate text-[11px] text-danger">{barError}</span>
+            )}
+            {/* Optional "who's here" — pick the people in the room so they're named as
+                they speak. Skippable; Record never waits on it (ADR-0017 §A2). */}
+            {people.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowRoster((v) => !v)}
+                aria-expanded={showRoster}
+                title="Pick who's in the room (optional)"
+                className={[
+                  "inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px] transition-colors",
+                  expected.length > 0 || showRoster
+                    ? "border-accent bg-accent-tint text-accent-ink"
+                    : "border-line bg-transparent text-muted hover:border-accent hover:text-accent-ink",
+                ].join(" ")}
+              >
+                <Icon.Person className="h-3.5 w-3.5" />
+                {expected.length > 0 ? `${expected.length} here` : "Who's here"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void start()}
+              className="group inline-flex shrink-0 items-center gap-2 rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-white hover:bg-accent-ink"
+            >
+              <span className="h-2 w-2 rounded-full bg-white/90 transition-transform group-hover:scale-110" />
+              Record
+            </button>
+          </div>
+
+          {showRoster && people.length > 0 && (
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-line border-t pt-2.5">
+              <span className="mr-1 text-[10px] font-bold uppercase tracking-[.08em] text-faint">
+                Who's here
+              </span>
+              {people.map((name) => {
+                const on = expected.includes(name);
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => toggleExpected(name)}
+                    aria-pressed={on}
+                    className={[
+                      "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors",
+                      on
+                        ? "border-accent bg-accent-tint text-accent-ink"
+                        : "border-line bg-raised text-ink-soft hover:border-accent",
+                    ].join(" ")}
+                  >
+                    <span
+                      className="inline-grid h-[16px] w-[16px] place-items-center rounded-full text-[8px] font-bold text-white"
+                      style={{ background: speakerTone(name) }}
+                      aria-hidden
+                    >
+                      {initials(name)}
+                    </span>
+                    {name}
+                    {on && <Icon.Check className="h-3 w-3" />}
+                  </button>
+                );
+              })}
+              <span className="ml-1 text-[10px] text-faint">Named as they speak · optional</span>
+            </div>
           )}
-          <button
-            type="button"
-            onClick={() => void start()}
-            className="group inline-flex shrink-0 items-center gap-2 rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-white hover:bg-accent-ink"
-          >
-            <span className="h-2 w-2 rounded-full bg-white/90 transition-transform group-hover:scale-110" />
-            Record
-          </button>
         </div>
         {finishToast}
         {distillToast}

@@ -377,13 +377,26 @@ opt-in.
 
 ### A2. Re-diarization seeds from named live speakers (refines §6)
 
-The second pass re-diarizes each refined segment with the **existing** speaker-
-embedding `Diarizer`, **seeded** with the formation's enrolled **Voiceprints** *plus
-this meeting's named live speakers' centroids* — so anyone named during the call (by
-hand or by A4) keeps their name in the refined transcript; everyone else is freshly
-labelled `Unknown speaker N`. (The richer `OfflineSpeakerDiarization` pipeline — a
-pyannote segmentation model — is a future quality upgrade, deliberately deferred to
-avoid a third model download.)
+The second pass re-diarizes the meeting and **seeds** identification with the
+formation's enrolled **Voiceprints** *plus this meeting's named live speakers'
+centroids* — so anyone named during the call (by hand or by A4) keeps their name in
+the refined transcript; everyone else is freshly labelled `Unknown speaker N`.
+
+**Update (2026-06-29) — the `OfflineSpeakerDiarization` pipeline is now the default
+second-pass diarizer (`core::speaker_diarization`).** The originally-deferred pyannote
+**segmentation → embedding → global clustering** pipeline shipped: it sees the whole
+meeting at once, so it finds true speaker turns (not ASR endpoints) and clusters each
+voice into one speaker across the meeting — fixing the live per-segment greedy
+clustering's two structural failures (turn-changes mid-segment, and a poisoned
+first-come centroid). The high-accuracy offline ASR still transcribes natural
+silence-split utterances; each is attributed to the diarization turn it overlaps most,
+and each anonymous cluster is **named** by matching its representative audio against the
+seeds (the §6 identification step, reused via `SpeakerNamer`). This needs a third model
+(the ~6 MB pyannote `model.onnx`), now part of standard ASR setup; when it is absent the
+pass **falls back** to the original greedy `Diarizer`-per-segment behaviour, so
+diarization degrades in quality but never in function. The **live** transcript still
+uses the streaming `Diarizer`, now sharpened with silence-trimmed embeddings,
+L2-normalized centroids, and turn-stickiness.
 
 ### A3. **Voice clips** — recognise a person by ear (extends §6, narrow §9 exception)
 

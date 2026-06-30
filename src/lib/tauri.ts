@@ -93,6 +93,8 @@ export interface AsrReadiness {
   speakerPresent: boolean;
   /** The offline high-accuracy second-pass model (ADR-0017 §2 two-pass). */
   offlinePresent: boolean;
+  /** The pyannote speaker-segmentation model for diarization (ADR-0017 §A2). */
+  diarizationPresent: boolean;
   allPresent: boolean;
   sizeHint: string;
 }
@@ -447,10 +449,18 @@ export const tauri = {
    * starts real capture (mic + system-output loopback) → on-device ASR →
    * diarization, streaming `segment` events as people speak.
    */
-  sessionStart: (title: string, onEvent: (e: SessionEvent) => void) => {
+  sessionStart: (
+    title: string,
+    onEvent: (e: SessionEvent) => void,
+    expectedAttendees?: string[],
+  ) => {
     const channel = makeChannel<SessionEvent>();
     channel.onmessage = onEvent;
-    return invoke<SessionStartResult>("session_start", { title, onEvent: channel });
+    return invoke<SessionStartResult>("session_start", {
+      title,
+      expectedAttendees: expectedAttendees ?? null,
+      onEvent: channel,
+    });
   },
   /** Push a transcript segment by hand (manual correction / a build without ASR). */
   sessionPushSegment: (sessionId: string, speaker: string, text: string) =>
@@ -485,6 +495,11 @@ export const tauri = {
    * none — for playing a short sample to recognise them by ear.
    */
   readVoiceClip: (name: string) => invoke<number[] | null>("read_voice_clip", { name }),
+  /** Whether the user's own voice (the Self) is enrolled as a Voiceprint (ADR-0017 §6). */
+  isSelfVoiceEnrolled: () => invoke<boolean>("is_self_voice_enrolled"),
+  /** Record a short mic sample and enroll it as the Self Voiceprint, so the user is
+   *  recognised in meetings instead of labeled an unidentified voice (ADR-0017 §6). */
+  enrollSelfVoice: () => invoke<void>("enroll_self_voice"),
 
   // Audit log — the browsable, revertable backstop (ADR-0009 §6, ADR-0010 §8)
   /** Every turn's audit entry, newest-first. */

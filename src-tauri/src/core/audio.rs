@@ -132,6 +132,41 @@ pub fn split_on_silence(samples: &[f32], rate: u32) -> Vec<(usize, usize)> {
     ranges
 }
 
+/// Extract just the **voiced** portion of a 16 kHz mono buffer: concatenate the
+/// ~20 ms frames whose energy clears an adaptive threshold (a fraction of the
+/// loudest frame), dropping leading/trailing silence *and* internal pauses. A
+/// speaker embedding computed over this is sharper than one over the raw segment —
+/// silence and pauses dilute the vector and make distinct voices look alike, the
+/// single biggest avoidable error in per-segment diarization (ADR-0017 §6).
+///
+/// Returns an empty `Vec` when nothing clears the threshold (near-silence), so the
+/// caller can treat the segment as too weak to embed rather than embedding hiss.
+pub fn voiced_samples(samples: &[f32], rate: u32) -> Vec<f32> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+    let rate = rate.max(1) as usize;
+    let frame = (rate / 50).max(1); // 20 ms analysis frames, as in `split_on_silence`
+    let rms: Vec<f32> = samples
+        .chunks(frame)
+        .map(|c| (c.iter().map(|s| s * s).sum::<f32>() / c.len() as f32).sqrt())
+        .collect();
+    let peak = rms.iter().copied().fold(0.0f32, f32::max);
+    // Slightly stricter than `split_on_silence`'s 12%: we want clearly-voiced
+    // frames for the embedding, not the quiet edges of an utterance.
+    let thresh = (peak * 0.15).max(1e-4);
+
+    let mut out = Vec::with_capacity(samples.len());
+    for (fi, &r) in rms.iter().enumerate() {
+        if r >= thresh {
+            let start = fi * frame;
+            let end = (start + frame).min(samples.len());
+            out.extend_from_slice(&samples[start..end]);
+        }
+    }
+    out
+}
+
 /// Write mono f32 `samples` as a 16-bit PCM WAV at `rate` — used to persist a
 /// person's short **voice clip** (ADR-0017 §6). Dependency-free (a minimal RIFF
 /// writer) so it's available in every build and keeps clips compact (16-bit). f32
@@ -207,6 +242,26 @@ mod tests {
         );
         // Empty input → no ranges.
         assert!(split_on_silence(&[], TARGET_RATE).is_empty());
+    }
+
+    #[test]
+    fn voiced_samples_keeps_speech_and_drops_silence() {
+        let rate = TARGET_RATE as usize;
+        let tone = || (0..rate).map(|i| (i as f32 * 0.1).sin() * 0.5);
+        let mut buf: Vec<f32> = Vec::new();
+        buf.extend(std::iter::repeat(0.0).take(rate)); // 1 s leading silence
+        buf.extend(tone()); // 1 s speech
+        buf.extend(std::iter::repeat(0.0).take(rate)); // 1 s trailing silence
+        let voiced = voiced_samples(&buf, TARGET_RATE);
+        // Roughly the 1 s of speech survives; the 2 s of silence is dropped.
+        assert!(
+            (voiced.len() as i64 - rate as i64).abs() < (rate as i64 / 5),
+            "expected ~{rate} voiced samples, got {}",
+            voiced.len()
+        );
+        // Pure silence yields nothing to embed.
+        assert!(voiced_samples(&vec![0.0f32; rate], TARGET_RATE).is_empty());
+        assert!(voiced_samples(&[], TARGET_RATE).is_empty());
     }
 
     #[test]

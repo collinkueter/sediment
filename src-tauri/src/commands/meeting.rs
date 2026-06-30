@@ -59,6 +59,10 @@ pub async fn assign_meeting_speaker(
     if to.is_empty() {
         return Err(AppError::other("assign_meeting_speaker: empty name"));
     }
+    // "Self" is the reserved user Entity (ADR-0015) — it lives at the root `Self.md`,
+    // never `People/Self.md`. Normalise the label so its tone + entity are consistent.
+    let to_is_self = to.eq_ignore_ascii_case("Self");
+    let to = if to_is_self { "Self" } else { to };
     // This edits the note file directly; while the meeting is still recording the
     // live pipeline is also writing it. Refuse, so we don't race the diarizer —
     // name speakers live from the recording bar instead (which the UI routes to).
@@ -72,8 +76,13 @@ pub async fn assign_meeting_speaker(
 
     // Give the person a People note the attendee link resolves to, an Entity, and a
     // graph row that points back at the note (best-effort — the file, not the graph,
-    // is the link's source of truth).
-    let person_note_path = people_note::ensure_person_note(&root, to)?;
+    // is the link's source of truth). The Self links to the root `Self.md` (which the
+    // agent authors lazily) rather than getting a People note.
+    let person_note_path = if to_is_self {
+        crate::core::self_model::SELF_NOTE_PATH.to_string()
+    } else {
+        people_note::ensure_person_note(&root, to)?
+    };
     let memory_dir = root.join(APP_DIR).join("memory");
     if let Ok(store) = memory.get_or_init(&memory_dir).await {
         match store.upsert_entity(to, "person", vec![]).await {
@@ -144,4 +153,103 @@ pub async fn read_voice_clip(
         return Ok(None);
     };
     Ok(std::fs::read(root.join(&rel)).ok())
+}
+
+/// Whether the user's own voice (the **Self**, ADR-0017 §6) is already enrolled — so
+/// Settings can show "enrolled" vs offer to record. True when a Voiceprint exists on
+/// a person Entity named "Self".
+#[tauri::command]
+pub async fn is_self_voice_enrolled(
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+) -> AppResult<bool> {
+    let root = formation.require()?;
+    let memory_dir = root.join(APP_DIR).join("memory");
+    let Ok(store) = memory.get_or_init(&memory_dir).await else {
+        return Ok(false);
+    };
+    let voiceprints = store.all_voiceprints().await.unwrap_or_default();
+    Ok(voiceprints
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Self")))
+}
+
+/// Enroll the user's own voice as the **Self** Voiceprint (ADR-0017 §6 — the Self is
+/// on every call, the highest-value anchor). Records a few seconds from the mic,
+/// extracts a speaker embedding on-device, and folds it into the `Self` Entity's
+/// running centroid, so future meetings recognise the user from their first words
+/// instead of labeling them `Unknown speaker 1`. Consent is the act of pressing
+/// record in Settings; nothing is captured otherwise. Needs the on-device audio +
+/// speaker model (the default desktop build).
+#[tauri::command]
+pub async fn enroll_self_voice(
+    formation: State<'_, FormationState>,
+    memory: State<'_, MemoryHandle>,
+) -> AppResult<()> {
+    let root = formation.require()?;
+    #[cfg(all(feature = "audio", feature = "local-asr"))]
+    {
+        let model = crate::core::asr_model::speaker_model_path()?;
+        let embedding = tokio::task::spawn_blocking(move || capture_and_embed_self(&model))
+            .await
+            .map_err(|e| AppError::other(format!("self enrolment join: {e}")))??;
+        let memory_dir = root.join(APP_DIR).join("memory");
+        let store = memory.get_or_init(&memory_dir).await?;
+        store.enroll_voiceprint_named("Self", &embedding).await?;
+        tracing::info!("enrolled the Self voiceprint from a mic sample");
+        Ok(())
+    }
+    #[cfg(not(all(feature = "audio", feature = "local-asr")))]
+    {
+        let _ = (&root, &memory);
+        Err(AppError::other(
+            "Voice enrolment needs the on-device audio build (mic capture + speaker model).",
+        ))
+    }
+}
+
+/// Record ~5 s from the default mic, downmix/resample to 16 kHz, and extract an
+/// L2-normalized speaker embedding — the CPU/IO-bound half of [`enroll_self_voice`],
+/// run on a blocking thread. Errors when too little speech was captured to embed.
+#[cfg(all(feature = "audio", feature = "local-asr"))]
+fn capture_and_embed_self(speaker_model: &str) -> AppResult<Vec<f32>> {
+    use crate::core::audio::{downmix_to_mono, Resampler};
+    use crate::core::capture::{CaptureSource, MicSource};
+    use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    const RECORD: Duration = Duration::from_secs(5);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let handle = MicSource.start(stop.clone())?;
+    let channels = handle.format.channels;
+    let mut resampler = Resampler::new(handle.format.sample_rate);
+    let mut samples: Vec<f32> = Vec::new();
+
+    let started = Instant::now();
+    while started.elapsed() < RECORD {
+        match handle.rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(frame) => samples.extend(resampler.process(&downmix_to_mono(&frame, channels))),
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    stop.store(true, Ordering::Release);
+    while let Ok(frame) = handle.rx.try_recv() {
+        samples.extend(resampler.process(&downmix_to_mono(&frame, channels)));
+    }
+
+    let config = SpeakerEmbeddingExtractorConfig {
+        model: Some(speaker_model.to_string()),
+        provider: Some("cpu".to_string()),
+        ..Default::default()
+    };
+    let extractor = SpeakerEmbeddingExtractor::create(&config)
+        .ok_or_else(|| AppError::other("Speaker model failed to load (run ASR model setup)."))?;
+    crate::core::diarization::embed_clip(&extractor, &samples).ok_or_else(|| {
+        AppError::other("Didn't catch enough speech — try again and talk for a few seconds.")
+    })
 }

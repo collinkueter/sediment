@@ -21,6 +21,7 @@ const NOTES = [
   { relative_path: "Projects/Sediment.md", modified_secs: NOW - 4000 },
   { relative_path: "Projects/Lease decision.md", modified_secs: NOW - 1200 },
   { relative_path: "Organizations/Stripe.md", modified_secs: NOW - 60_000 },
+  { relative_path: "Meetings/2026-06-29 Q3 planning.md", modified_secs: NOW - 300 },
 ];
 
 const KEATON = `---
@@ -82,10 +83,39 @@ due: Fri Jun 20
 - Land by Friday — nudge set for Thursday
 `;
 
+const MEETING = `---
+type: meeting
+date: 2026-06-29
+---
+
+# Q3 planning
+
+## Attendees
+- [[Self]]
+- [[Sarah Chen]]
+
+## Transcript
+- \`[00:04]\` **Self:** Okay, let's lock the Q3 roadmap today.
+- \`[00:11]\` **Sarah Chen:** I can walk through the design-systems track first.
+- \`[00:42]\` **Unknown speaker 2:** From finance — if we hold the Q3 number we can't also hire two engineers this quarter.
+- \`[01:03]\` **Unknown speaker 2:** I'd want to see the revised forecast before we commit.
+- \`[01:25]\` **Unknown speaker 3:** I'll own the rollout doc and have it ready Friday.
+- \`[01:40]\` **Sarah Chen:** Great, then I'll sequence the tokens migration behind it.
+- \`[02:02]\` **Unknown speaker 2:** Works for me as long as the forecast holds.
+
+## Notes
+- \`[01:30]\` Decision: rollout doc owner committed for Friday.
+
+<!-- sediment:speakers
+Unknown speaker 2 => Dana Kim
+-->
+`;
+
 function noteBody(path: string): string {
   if (path.includes("Keaton")) return KEATON;
   if (path.includes("Daily Notes")) return DAILY;
   if (path.includes("Lease")) return LEASE;
+  if (path.startsWith("Meetings/")) return MEETING;
   if (path === "Tasks.md")
     return "# Tasks\n\n- [ ] Decide on lease renewal\n- [ ] Send rubric to Keaton\n";
   return `# ${path.replace(/^.*\//, "").replace(/\.md$/, "")}\n\n## Notes\n- Placeholder note.\n`;
@@ -194,12 +224,17 @@ const RESPONSES: Record<string, unknown> = {
   check_asr_readiness: {
     asrPresent: true,
     speakerPresent: true,
+    offlinePresent: true,
+    diarizationPresent: true,
     allPresent: true,
     sizeHint: "~0.3 GB",
   },
   download_asr_model: null,
   import_asr_model: null,
-  meeting_speakers: ["Self", "Sarah Chen", "Unknown speaker 2"],
+  meeting_speakers: ["Self", "Sarah Chen", "Unknown speaker 2", "Unknown speaker 3"],
+  meeting_voice_clips: ["Sarah Chen", "Unknown speaker 2", "Unknown speaker 3"],
+  is_self_voice_enrolled: false,
+  enroll_self_voice: null,
   assign_meeting_speaker: {
     attendees: ["Self", "Sarah Chen"],
     personNotePath: "People/Sarah Chen.md",

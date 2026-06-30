@@ -64,7 +64,21 @@ pub async fn distill_meeting(
         return Ok(None);
     }
 
-    let message = distillation_message(title, note_rel, attendees);
+    // Unidentified voices (with any borderline guess the second pass recorded) so the
+    // agent can ask who they were in its reply — the Agent-led debrief (ADR-0017 §6).
+    let suggestions = meeting_note::read_speaker_suggestions(&note_abs).unwrap_or_default();
+    let unresolved: Vec<(String, Option<String>)> = attendees
+        .iter()
+        .filter(|a| crate::core::session::is_unknown_speaker(a))
+        .map(|a| {
+            let guess = suggestions
+                .iter()
+                .find(|(label, _)| label == a)
+                .map(|(_, name)| name.clone());
+            (a.clone(), guess)
+        })
+        .collect();
+    let message = distillation_message(title, note_rel, attendees, &unresolved);
     // Provenance: a message in the meeting's own conversation, so every Fact the
     // turn records is stamped as coming from this meeting (ADR-0017 §7).
     let source_chat_id = store
@@ -212,11 +226,39 @@ pub async fn distill_meeting(
 
 /// The distillation instruction. A turn-scoped rider rather than a change to the
 /// shared behaviour prompt, so normal chat turns are unaffected.
-fn distillation_message(title: &str, note_rel: &str, attendees: &[String]) -> String {
+/// Build the line the distillation turn asks the agent to act on. `unresolved` lists
+/// the meeting's unidentified voices as `(label, maybe_suggested_name)` so the agent
+/// can raise them by name in its reply (ADR-0017 §6 Part B — the Agent-led debrief).
+fn distillation_message(
+    title: &str,
+    note_rel: &str,
+    attendees: &[String],
+    unresolved: &[(String, Option<String>)],
+) -> String {
     let who = if attendees.is_empty() {
         "the attendees".to_string()
     } else {
         attendees.join(", ")
+    };
+    // When voices went unidentified, ask the user who they were — name a best guess
+    // where the second pass left one, but ask, never assert (suggest-not-assert §6).
+    let reconcile = if unresolved.is_empty() {
+        String::new()
+    } else {
+        let list = unresolved
+            .iter()
+            .map(|(label, guess)| match guess {
+                Some(name) => format!("\"{label}\" (possibly {name})"),
+                None => format!("\"{label}\""),
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "\n\nSome voices were not identified: {list}. Before the SUMMARY line, add one \
+short, friendly sentence asking who they were so they can be named — offer your best \
+guess where there is one, but ask, never assert. Do not record Facts attributed to an \
+unidentified voice.\n"
+        )
     };
     format!(
         "This is an automatic end-of-meeting distillation — no one is waiting on a \
@@ -234,6 +276,7 @@ Distil, don't dump: record what matters, not every utterance. Attribute a Fact t
 a *named* person only when the transcript makes the speaker clear; otherwise record \
 it unattributed rather than guess (a wrong attribution silently pollutes a real \
 person's note).\n\
+{reconcile}\
 \n\
 Finish your reply with exactly these two lines, each on its own line and nothing \
 after them:\n\
@@ -383,6 +426,26 @@ mod tests {
         );
         // Empty transcript → no grounding.
         assert!(grounding_from_windows(&[], 1000).is_none());
+    }
+
+    #[test]
+    fn distillation_message_raises_unresolved_voices_with_guesses() {
+        // No unknowns → no reconciliation ask.
+        let plain = distillation_message("Q3", "Meetings/q3.md", &["Self".into()], &[]);
+        assert!(!plain.contains("not identified"));
+
+        // Unknowns → the agent is asked to raise them, naming a guess where present.
+        let unresolved = vec![
+            ("Unknown speaker 2".to_string(), Some("Dana Kim".to_string())),
+            ("Unknown speaker 3".to_string(), None),
+        ];
+        let m = distillation_message("Q3", "Meetings/q3.md", &["Self".into()], &unresolved);
+        assert!(m.contains("Some voices were not identified"));
+        assert!(m.contains("\"Unknown speaker 2\" (possibly Dana Kim)"));
+        assert!(m.contains("\"Unknown speaker 3\""));
+        assert!(m.contains("ask, never assert"));
+        // The SUMMARY/TITLE contract still terminates the prompt.
+        assert!(m.contains("SUMMARY:") && m.contains("TITLE:"));
     }
 
     #[test]

@@ -85,6 +85,64 @@ function copilotCost(usage: string | null): string {
 ///  - Conversation engine: which agentic CLI runs the conversation (ADR-0009).
 ///  - Appearance: theme picker.
 ///  - Formation: model storage path + local model status.
+/** "Your voice" — one-time Self voice enrolment (ADR-0017 §6). Self-contained: it
+ *  owns its enrolled/recording state so the big settings component stays lean. */
+function SelfVoiceSection() {
+  const [enrolled, setEnrolled] = useState<boolean | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    tauri
+      .isSelfVoiceEnrolled()
+      .then(setEnrolled)
+      .catch(() => setEnrolled(false));
+  }, []);
+
+  async function record() {
+    setRecording(true);
+    setError(null);
+    try {
+      await tauri.enrollSelfVoice();
+      setEnrolled(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRecording(false);
+    }
+  }
+
+  const body = recording
+    ? "Listening — talk for a few seconds…"
+    : enrolled
+      ? "Your voice is enrolled. You'll be recognised as Self in meetings."
+      : "Record a short sample so you're recognised as Self, not an unidentified voice.";
+
+  return (
+    <section className="mb-[26px]">
+      <p className="mb-[11px] text-[11px] font-bold uppercase tracking-[.06em] text-faint">
+        Your voice
+      </p>
+      <div className="flex items-center justify-between border-b border-line py-[11px]">
+        <div className="min-w-0 flex-1 pr-4">
+          <p className="text-[13.5px] font-medium text-ink">Recognise me in meetings</p>
+          <p className="mt-0.5 text-[11.5px] text-muted">{body}</p>
+          {error && <p className="mt-1 text-[11px] text-danger">{error}</p>}
+        </div>
+        <button
+          type="button"
+          onClick={() => void record()}
+          disabled={recording}
+          className="flex shrink-0 items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-[13px] font-semibold text-accent-ink hover:border-accent disabled:opacity-40"
+        >
+          <Icon.Mic className="h-3.5 w-3.5" />
+          {recording ? "Listening…" : enrolled ? "Re-record" : "Record my voice"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export function SettingsModal({
   onClose,
   onModelConfigChanged,
@@ -841,6 +899,9 @@ export function SettingsModal({
               </>
             )}
           </section>
+
+          {/* Your voice — one-time Self enrolment (ADR-0017 §6) */}
+          <SelfVoiceSection />
 
           {/* Engine not ready warning */}
           {showWarning && (

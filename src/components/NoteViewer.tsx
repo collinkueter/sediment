@@ -89,6 +89,9 @@ function Editor() {
   const openNote = useFormationStore((s) => s.openNote);
   // A Meeting note gets a speaker-reconciliation band (ADR-0017 §6).
   const isMeeting = path.startsWith("Meetings/");
+  // Clicking a speaker in the transcript focuses that speaker's panel card. The
+  // nonce lets the same name re-trigger the focus on a repeat click.
+  const [focusSpeaker, setFocusSpeaker] = useState<{ name: string; nonce: number } | null>(null);
 
   // Cmd+S / Ctrl+S to save the current note (Source mode only — Read has
   // nothing to save). Cmd+E toggles between modes, matching Obsidian.
@@ -162,11 +165,21 @@ function Editor() {
         </div>
       </header>
       {isMeeting && mode === "preview" && (
-        <MeetingSpeakers notePath={path} onReload={() => openNote(path)} />
+        <MeetingSpeakers
+          notePath={path}
+          onReload={() => openNote(path)}
+          focusSpeaker={focusSpeaker}
+        />
       )}
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "preview" ? (
-          <NotePreview source={content} notePath={path} />
+          <NotePreview
+            source={content}
+            notePath={path}
+            onSpeakerClick={
+              isMeeting ? (name) => setFocusSpeaker({ name, nonce: Date.now() }) : undefined
+            }
+          />
         ) : (
           <CodeMirror
             value={content}

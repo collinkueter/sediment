@@ -46,11 +46,20 @@ pub struct SessionStopResult {
 #[tauri::command]
 pub async fn session_start(
     title: String,
+    // Optional roster the user picked at Start ("who's here", ADR-0017 §A2). When
+    // given, the live diarizer is seeded with *only* these people's Voiceprints
+    // instead of the whole formation's — a smaller candidate set means fewer false
+    // matches, so the people actually in the room are named from their first words.
+    // `None`/empty falls back to seeding every enrolled voice (prior behaviour).
+    expected_attendees: Option<Vec<String>>,
     on_event: Channel<SessionEvent>,
     formation: State<'_, FormationState>,
     memory: State<'_, MemoryHandle>,
     sessions: State<'_, SessionRegistry>,
 ) -> AppResult<SessionStartResult> {
+    // Only consumed when the capture pipeline is compiled in (`audio`+`local-asr`).
+    #[cfg(not(all(feature = "audio", feature = "local-asr")))]
+    let _ = &expected_attendees;
     let formation_root = formation.require()?;
     let started = chrono::Local::now();
     let title = meeting_note::sanitize_title(&title);
@@ -91,7 +100,10 @@ pub async fn session_start(
         #[cfg(feature = "local-asr")]
         let known_voiceprints: Vec<(String, Vec<f32>)> = match memory.get_or_init(&memory_dir).await
         {
-            Ok(store) => store.all_voiceprints().await.unwrap_or_default(),
+            Ok(store) => {
+                let all = store.all_voiceprints().await.unwrap_or_default();
+                filter_voiceprints_to_expected(all, expected_attendees.as_deref())
+            }
             Err(_) => Vec::new(),
         };
         #[cfg(not(feature = "local-asr"))]
@@ -128,6 +140,27 @@ pub async fn session_start(
         session_id,
         note_path,
     })
+}
+
+/// Narrow seeded Voiceprints to the meeting's expected roster (ADR-0017 §A2). With a
+/// non-empty `expected` list, keep only those people's voices (case-insensitive name
+/// match); otherwise return every voice unchanged. Fewer candidates → fewer live
+/// misidentifications.
+#[cfg(all(feature = "audio", feature = "local-asr"))]
+fn filter_voiceprints_to_expected(
+    all: Vec<(String, Vec<f32>)>,
+    expected: Option<&[String]>,
+) -> Vec<(String, Vec<f32>)> {
+    match expected {
+        Some(names) if !names.is_empty() => {
+            let set: std::collections::HashSet<String> =
+                names.iter().map(|n| n.trim().to_lowercase()).collect();
+            all.into_iter()
+                .filter(|(name, _)| set.contains(&name.trim().to_lowercase()))
+                .collect()
+        }
+        _ => all,
+    }
 }
 
 /// Wire the live capture pipeline whose segments record into the Meeting note:
@@ -320,64 +353,229 @@ fn write_voice_clip(
     }
 }
 
-/// The second pass's output: refined `(offset_ms, speaker, text)` segments and the
-/// longest audio clip captured per *named* speaker (for voice-clip persistence).
+/// The second pass's output: refined `(offset_ms, speaker, text)` segments, the
+/// longest audio clip captured per *named* speaker (for voice-clip persistence), and
+/// per-unknown-label **suggestions** `(unknown_label, suggested_name)` for borderline
+/// Voiceprint matches the user should confirm rather than have asserted (ADR-0017 §6).
 #[cfg(feature = "local-asr")]
 type SecondPassResult = (
     Vec<(i64, String, String)>,
     std::collections::HashMap<String, Vec<f32>>,
+    Vec<(String, String)>,
 );
+
+/// ≈6 s cap per persisted voice clip — enough to recognise a voice by ear without
+/// storing the meeting (ADR-0017 §A3).
+#[cfg(feature = "local-asr")]
+const MAX_CLIP: usize = crate::core::audio::TARGET_RATE as usize * 6;
 
 /// The CPU-bound half of the end-of-Session **second pass** (ADR-0017 §2 two-pass),
 /// run on a blocking thread: re-transcribe the whole meeting with the offline
-/// high-accuracy engine and re-diarize each segment, seeding the diarizer with `seed`
-/// (the formation's enrolled Voiceprints + this meeting's *named* live speakers) so
-/// known/named voices keep their names. Returns the refined `(offset_ms, speaker,
-/// text)` segments and the longest audio clip seen per *named* speaker (for voice-clip
-/// persistence). An empty result (no offline model, or nothing decoded) leaves the
-/// live transcript in place.
+/// high-accuracy engine and re-attribute each segment to a speaker, seeding
+/// identification with `seed` (the formation's enrolled Voiceprints + this meeting's
+/// *named* live speakers) so known/named voices keep their names.
+///
+/// Who-spoke-when comes from the **pyannote diarization pipeline**
+/// (`core::speaker_diarization`, ADR-0017 §A2) when its model is installed — it sees
+/// the whole meeting at once and finds true speaker turns, far better than the live
+/// per-segment clustering. When that model is absent it **falls back** to re-running
+/// the greedy live `Diarizer` over each silence-split segment (the original
+/// behaviour), so the second pass still runs without the extra model.
+///
+/// Returns the refined `(offset_ms, speaker, text)` segments and the longest audio
+/// clip seen per *named* speaker (for voice-clip persistence). An empty result (no
+/// offline model, or nothing decoded) leaves the live transcript in place.
 #[cfg(feature = "local-asr")]
 fn run_second_pass(samples: &[f32], seed: Vec<(String, Vec<f32>)>) -> AppResult<SecondPassResult> {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
-
     let seed_speakers = seed.len();
     let paths = crate::core::asr_model::offline_paths()?;
     let transcriber = crate::core::transcription::OfflineTranscriber::new(&paths)?;
     let speaker_model = crate::core::asr_model::speaker_model_path()?;
-    let mut diarizer = crate::core::diarization::Diarizer::new(
-        &speaker_model,
-        seed,
-        Arc::new(Mutex::new(HashMap::new())),
-        Arc::new(Mutex::new(Vec::new())),
-    )?;
 
-    // ≈6 s cap per clip — enough to recognise a voice without storing the meeting.
-    const MAX_CLIP: usize = crate::core::audio::TARGET_RATE as usize * 6;
-    let rate = crate::core::audio::TARGET_RATE as i64;
-
-    let mut segments: Vec<(i64, String, String)> = Vec::new();
-    let mut clips: HashMap<String, Vec<f32>> = HashMap::new();
     tracing::info!(
         samples = samples.len(),
         seconds = samples.len() as f32 / crate::core::audio::TARGET_RATE as f32,
         seed_speakers,
         "second pass: transcribing buffered meeting audio offline"
     );
+    // High-accuracy ASR over natural (silence-split) utterances — good *text*.
     let refined: Vec<crate::core::transcription::OfflineSegment> = transcriber.transcribe(samples);
-    for seg in refined {
-        // Slice the audio this segment covers and attribute it to a speaker.
-        let start = ((seg.start_ms * rate) / 1000).max(0) as usize;
-        let end = (((seg.end_ms * rate) / 1000) as usize).min(samples.len());
-        let slice = if start < end {
-            &samples[start..end]
-        } else {
-            &[]
-        };
-        let speaker = diarizer.assign(slice);
 
-        // Keep the longest clip per named speaker (unknowns get no persisted clip).
-        if !crate::core::session::is_unknown_speaker(&speaker) && !slice.is_empty() {
+    // Prefer the pyannote pipeline for *who*; fall back to the greedy diarizer.
+    let turns = match crate::core::asr_model::segmentation_model_path() {
+        Ok(seg_model) => match crate::core::speaker_diarization::OfflineDiarizer::new(
+            &seg_model,
+            &speaker_model,
+        ) {
+            Ok(diarizer) => diarizer.diarize(samples),
+            Err(e) => {
+                tracing::warn!("second pass: pyannote diarizer init failed ({e}); greedy fallback");
+                Vec::new()
+            }
+        },
+        Err(_) => {
+            tracing::info!("second pass: no segmentation model; greedy diarization fallback");
+            Vec::new()
+        }
+    };
+
+    let (segments, clips, suggestions) = if turns.is_empty() {
+        diarize_segments_greedy(samples, &refined, &speaker_model, seed)?
+    } else {
+        tracing::info!(turns = turns.len(), "second pass: pyannote diarization");
+        attribute_by_turns(samples, &refined, &turns, &speaker_model, seed)?
+    };
+
+    tracing::info!(
+        refined_segments = segments.len(),
+        named_clips = clips.len(),
+        suggestions = suggestions.len(),
+        "second pass: offline transcription complete"
+    );
+    Ok((segments, clips, suggestions))
+}
+
+/// Slice the [`MAX_CLIP`]-capped audio a `[start_ms, end_ms)` span covers.
+#[cfg(feature = "local-asr")]
+fn slice_ms(samples: &[f32], start_ms: i64, end_ms: i64) -> &[f32] {
+    let rate = crate::core::audio::TARGET_RATE as i64;
+    let start = ((start_ms * rate) / 1000).max(0) as usize;
+    let end = (((end_ms * rate) / 1000) as usize).min(samples.len());
+    if start < end {
+        &samples[start..end]
+    } else {
+        &[]
+    }
+}
+
+/// Attribute each ASR segment to the pyannote speaker turn it overlaps most, then put
+/// a name on each anonymous cluster by matching its representative audio against the
+/// seeded Voiceprints. Globally-clustered turns make this far more accurate than the
+/// per-segment greedy path: a speaker is one cluster across the whole meeting.
+#[cfg(feature = "local-asr")]
+fn attribute_by_turns(
+    samples: &[f32],
+    refined: &[crate::core::transcription::OfflineSegment],
+    turns: &[crate::core::speaker_diarization::DiarTurn],
+    speaker_model: &str,
+    seed: Vec<(String, Vec<f32>)>,
+) -> AppResult<SecondPassResult> {
+    use crate::core::session::is_unknown_speaker;
+    use std::collections::HashMap;
+
+    // Per anonymous cluster, gather a capped representative clip (concatenated turn
+    // audio) in first-appearance order, for naming and voice-clip persistence.
+    let mut order: Vec<i32> = Vec::new();
+    let mut audio_by_idx: HashMap<i32, Vec<f32>> = HashMap::new();
+    for t in turns {
+        let slice = slice_ms(samples, t.start_ms, t.end_ms);
+        if slice.is_empty() {
+            continue;
+        }
+        let buf = audio_by_idx.entry(t.speaker).or_insert_with(|| {
+            order.push(t.speaker);
+            Vec::new()
+        });
+        if buf.len() < MAX_CLIP {
+            let take = slice.len().min(MAX_CLIP - buf.len());
+            buf.extend_from_slice(&slice[..take]);
+        }
+    }
+
+    // Name each cluster by confidence: a strong match is asserted; a borderline one
+    // stays `Unknown speaker N` but records a suggestion the user confirms; no match
+    // is a plain unknown. Unknown numbering is stable in first-appearance order.
+    use crate::core::speaker_diarization::SpeakerMatch;
+    let namer = crate::core::speaker_diarization::SpeakerNamer::new(speaker_model, seed)?;
+    let mut names: HashMap<i32, String> = HashMap::new();
+    let mut suggestions: Vec<(String, String)> = Vec::new();
+    let mut next_unknown = 1;
+    let mut fresh_unknown = |suggested: Option<String>| {
+        let label = format!("Unknown speaker {next_unknown}");
+        next_unknown += 1;
+        if let Some(name) = suggested {
+            suggestions.push((label.clone(), name));
+        }
+        label
+    };
+    for idx in &order {
+        let audio = &audio_by_idx[idx];
+        let label = match namer.classify(audio) {
+            SpeakerMatch::Certain(name) => name,
+            SpeakerMatch::Likely(name, _score) => fresh_unknown(Some(name)),
+            SpeakerMatch::Unknown => fresh_unknown(None),
+        };
+        names.insert(*idx, label);
+    }
+
+    // Attribute each refined ASR segment to the max-overlap turn's speaker.
+    let mut segments: Vec<(i64, String, String)> = Vec::new();
+    let mut last_name: Option<String> = None;
+    for seg in refined {
+        let mut best_idx: Option<i32> = None;
+        let mut best_overlap: i64 = 0;
+        for t in turns {
+            let overlap = seg.end_ms.min(t.end_ms) - seg.start_ms.max(t.start_ms);
+            if overlap > best_overlap {
+                best_overlap = overlap;
+                best_idx = Some(t.speaker);
+            }
+        }
+        let name = best_idx
+            .and_then(|i| names.get(&i).cloned())
+            .or_else(|| last_name.clone())
+            .unwrap_or_else(|| "Unknown speaker 1".to_string());
+        last_name = Some(name.clone());
+        segments.push((seg.start_ms, name, seg.text.clone()));
+    }
+
+    // Voice clip per *named* speaker — the representative audio we already gathered.
+    let mut clips: HashMap<String, Vec<f32>> = HashMap::new();
+    for idx in &order {
+        let name = &names[idx];
+        if is_unknown_speaker(name) {
+            continue;
+        }
+        let audio = &audio_by_idx[idx];
+        if audio.is_empty() {
+            continue;
+        }
+        let better = clips.get(name).map(|c| audio.len() > c.len()).unwrap_or(true);
+        if better {
+            clips.insert(name.clone(), audio.clone());
+        }
+    }
+
+    Ok((segments, clips, suggestions))
+}
+
+/// Fallback diarization for the second pass when the pyannote model isn't installed:
+/// re-run the greedy live [`Diarizer`] over each silence-split ASR segment (the
+/// original §A2 behaviour).
+#[cfg(feature = "local-asr")]
+fn diarize_segments_greedy(
+    samples: &[f32],
+    refined: &[crate::core::transcription::OfflineSegment],
+    speaker_model: &str,
+    seed: Vec<(String, Vec<f32>)>,
+) -> AppResult<SecondPassResult> {
+    use crate::core::session::is_unknown_speaker;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    let mut diarizer = crate::core::diarization::Diarizer::new(
+        speaker_model,
+        seed,
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(Vec::new())),
+    )?;
+
+    let mut segments: Vec<(i64, String, String)> = Vec::new();
+    let mut clips: HashMap<String, Vec<f32>> = HashMap::new();
+    for seg in refined {
+        let slice = slice_ms(samples, seg.start_ms, seg.end_ms);
+        let speaker = diarizer.assign(slice);
+        if !is_unknown_speaker(&speaker) && !slice.is_empty() {
             let better = clips
                 .get(&speaker)
                 .map(|c| slice.len() > c.len())
@@ -386,14 +584,11 @@ fn run_second_pass(samples: &[f32], seed: Vec<(String, Vec<f32>)>) -> AppResult<
                 clips.insert(speaker.clone(), slice[..slice.len().min(MAX_CLIP)].to_vec());
             }
         }
-        segments.push((seg.start_ms, speaker, seg.text));
+        segments.push((seg.start_ms, speaker, seg.text.clone()));
     }
-    tracing::info!(
-        refined_segments = segments.len(),
-        named_clips = clips.len(),
-        "second pass: offline transcription complete"
-    );
-    Ok((segments, clips))
+    // The greedy fallback asserts whatever the diarizer returns — no confidence tier,
+    // so no suggestions to offer.
+    Ok((segments, clips, Vec::new()))
 }
 
 /// Name a speaker — the "that was Sarah" move (ADR-0017 §6). Rewrites the
@@ -589,10 +784,18 @@ pub async fn session_stop(
                 match tokio::task::spawn_blocking(move || run_second_pass(&audio_samples, seed))
                     .await
                 {
-                    Ok(Ok((segments, clips))) if !segments.is_empty() => {
+                    Ok(Ok((segments, clips, suggestions))) if !segments.is_empty() => {
                         let note_abs = formation_root.join(&note_rel);
                         match meeting_note::replace_transcript(&note_abs, &segments) {
                             Ok(n) => {
+                                // Record borderline matches as suggestions the panel
+                                // surfaces for confirmation (confirm-don't-assert, §6).
+                                if let Err(e) = meeting_note::set_speaker_suggestions(
+                                    &note_abs,
+                                    &suggestions,
+                                ) {
+                                    tracing::warn!("second pass: set suggestions: {e}");
+                                }
                                 // Persist a voice clip for each named speaker so they
                                 // can be recognised by ear later (ADR-0017 §6).
                                 for (name, clip) in clips {
